@@ -1,0 +1,15 @@
+[package]
+name = "ssh"
+version = "0.1.0"
+authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
+
+[dependencies]
+mio = "*"
+rand = "*"
+bufstream = "*"
+log = "*"
+env_logger = "*"
+byteorder = "*"
+sodiumoxide = "*"
+regex = "*"
+rustc-serialize = "*"
