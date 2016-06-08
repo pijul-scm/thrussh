@@ -14,18 +14,15 @@ extern crate env_logger;
 use std::io::{ Read, Write };
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::path::Path;
-use std::fs::File;
 
 use ssh::*;
 
-
-struct Server { list:TcpListener,
-                server_pubkey:Option<Vec<u8>>,
-                sessions:HashMap<usize, (BufStream<TcpStream>, std::net::SocketAddr, Vec<u8>, Session)> }
+struct Server<'a> { list:TcpListener,
+                    server_config: &'a config::Config,
+                    sessions:HashMap<usize, (BufStream<TcpStream>, std::net::SocketAddr, Vec<u8>, ssh::ServerSession<'a>)> }
 
 const SERVER: Token = Token(0);
-impl Handler for Server {
+impl<'a> Handler for Server<'a> {
     type Timeout = ();
     type Message = ();
 
@@ -45,7 +42,10 @@ impl Handler for Server {
 
                     let buf = Vec::new();
                     self.sessions.insert(id, (BufStream::new(socket), addr, buf,
-                                              Session::new(self.server_pubkey.as_ref())));
+                                              ServerSession::new(
+                                                  &self.server_config.server_publickey,
+                                                  &self.server_config.server_secretkey
+                                              )));
                 }
             },
             Token(id) => {
@@ -63,29 +63,37 @@ impl Handler for Server {
                 } else {
                     if events.is_readable() {
                         println!("readable");
-                        let session = match self.sessions.entry(id) {
-                            Entry::Occupied(e) => e.remove(),
+                        match self.sessions.entry(id) {
+                            Entry::Occupied(mut e) => {
+
+                                let result = {
+                                    let &mut (ref mut stream, ref addr, ref mut buf, ref mut session) = e.get_mut();
+                                    session.read(stream, buf)
+                                };
+                                if result.is_err() {
+                                    let (stream,_,_,_) = e.remove();
+                                    event_loop.deregister(stream.get_ref()).unwrap();                            
+                                }
+                            },
                             _ => unreachable!()
                         };
-                        let (mut stream, addr, mut buf, session) = session;
-                        if let Ok(next_session) = session.read(&mut stream, &mut buf) {
-                            self.sessions.insert(id, (stream, addr, buf, next_session));
-                        } else {
-                            event_loop.deregister(stream.get_ref()).unwrap();                            
-                        }
                     }
                     if events.is_writable() {
                         println!("writable");
-                        let session = match self.sessions.entry(id) {
-                            Entry::Occupied(e) => Some(e.remove()),
-                            _ => None
-                        };
-                        if let Some((mut stream, addr, mut buf, session)) = session {
-                            if let Ok(next_session) = session.write(&mut stream, &mut buf) {
-                                self.sessions.insert(id, (stream, addr, buf, next_session));
-                            } else {
-                                event_loop.deregister(stream.get_ref()).unwrap();
-                            }
+                        match self.sessions.entry(id) {
+                            Entry::Occupied(mut e) => {
+
+                                let result = {
+                                    let &mut (ref mut stream, ref addr, ref mut buf, ref mut session) = e.get_mut();
+                                    session.write(stream, buf)
+                                };
+                                if result.is_err() {
+                                    let (stream,_,_,_) = e.remove();
+                                    event_loop.deregister(stream.get_ref()).unwrap();                            
+                                }
+
+                            },
+                            _ => {}
                         }
                     }
                 }
@@ -98,6 +106,12 @@ fn main () {
     // Setup some tokens to allow us to identify which event is
     // for which socket.
     env_logger::init().unwrap();
+
+    let config = ssh::config::Config {
+        server_publickey: ssh::config::read_public_key("ssh_host_ed25519_key.pub").unwrap(),
+        server_secretkey: ssh::config::read_secret_key("ssh_host_ed25519_key").unwrap(),
+    };
+    println!("config : {:?}", config);
     let addr = "127.0.0.1:13265".parse().unwrap();
 
     // Setup the server socket
@@ -124,7 +138,7 @@ fn main () {
     // Start handling events;
     let mut server = Server {
         list: server,
-        server_pubkey: Some(ssh::key::read_key("ssh_host_ed25519_key.pub").unwrap()),
+        server_config: &config,
         sessions:HashMap::new()
     };
     event_loop.run(&mut server).unwrap();

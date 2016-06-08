@@ -5,6 +5,7 @@ extern crate byteorder;
 extern crate regex;
 extern crate rustc_serialize;
 
+use rustc_serialize::hex::ToHex;
 
 use byteorder::{ByteOrder,BigEndian,WriteBytesExt};
 
@@ -12,7 +13,7 @@ use std::io::{ Read, Write, BufRead };
 
 use std::sync::{Once, ONCE_INIT};
 
-pub mod key;
+pub mod config;
 
 static SODIUM_INIT: Once = ONCE_INIT;
 #[derive(Debug)]
@@ -31,51 +32,65 @@ impl From<std::io::Error> for Error {
     }
 }
 
+use sodiumoxide::crypto::sign::ed25519::{PublicKey,SecretKey,SIGNATUREBYTES};
+
 #[derive(Debug)]
 pub struct Exchange {
     client_id:Option<Vec<u8>>,
     server_id:Option<Vec<u8>>,
     client_kex_init:Option<Vec<u8>>,
     server_kex_init:Option<Vec<u8>>,
-    server_public_host_key:Option<Vec<u8>>,
     client_ephemeral:Option<Vec<u8>>,
     server_ephemeral:Option<Vec<u8>>
 }
+
 impl Exchange {
-    fn new<T:AsRef<[u8]>>(pubkey:Option<&T>) -> Exchange {
+    fn new() -> Self {
         Exchange { client_id: None,
                    server_id: None,
                    client_kex_init: None,
                    server_kex_init: None,
-                   server_public_host_key: pubkey.map(|x| x.as_ref().to_vec()),
                    client_ephemeral: None,
                    server_ephemeral: None }
     }
 }
+
 #[derive(Debug)]
-pub enum Session {
-    Init(Exchange),
-    VersionOk(Exchange),
-    KexInit {
+pub struct ServerSession<'a> {
+    public_host_key: &'a PublicKey,
+    secret_host_key: &'a SecretKey,
+    state: Option<ServerState>
+}
+
+#[derive(Debug)]
+pub enum ServerState {
+    VersionOk(Exchange), // Version number received.
+    KexInit { // Version number sent. `algo` and `sent` tell wether kexinit has been received, and sent, respectively.
         algo: Option<Names>,
         exchange: Exchange,
         sent: bool
     },
-    KexDh {
+    KexDh { // Algorithms have been determined, the DH algorithm should run.
         exchange: Exchange,
-        kex:KexAlgorithm,
-        key:KeyAlgorithm,
-        cipher:CipherName,
-        mac:MacName,
-        follows:bool
+        kex: KexAlgorithm,
+        key: KeyAlgorithm,
+        cipher: CipherName,
+        mac: MacName,
+        follows: bool
     },
-}
-
-impl Session {
-    pub fn new<T:AsRef<[u8]>>(pubkey:Option<&T>) -> Session {
-        SODIUM_INIT.call_once(|| { sodiumoxide::init(); });
-        Session::Init(Exchange::new(pubkey))
-    }
+    NewKeys { // The DH is over, we've sent the NEWKEYS packet, and are waiting the NEWKEYS from the other side.
+        kex: KexAlgorithm,
+        key: KeyAlgorithm,
+        cipher: CipherName,
+        mac: MacName,
+        exchange_hash: sodiumoxide::crypto::hash::sha256::Digest
+    },
+    Encrypted { // Session is now encrypted.
+        kex: KexAlgorithm,
+        key: KeyAlgorithm,
+        cipher: CipherName,
+        mac: MacName,
+    },
 }
 
 pub type Names = (KexAlgorithm, KeyAlgorithm, CipherName, MacName, bool);
@@ -239,6 +254,29 @@ fn write_packet<W:Write>(stream:&mut W, buf:&[u8], c:Option<CipherName>) -> Resu
     Ok(())
 }
 
+trait SSHString:Write {
+    fn write_ssh_string(&mut self, s:&[u8]) -> Result<(), std::io::Error> {
+        try!(self.write_u32::<BigEndian>(s.len() as u32));
+        try!(self.write(s));
+        Ok(())
+    }
+    fn write_ssh_mpint(&mut self, s:&[u8]) -> Result<(), std::io::Error> {
+        let mut i = 0;
+        while i < s.len() && s[i] == 0 {
+            i+=1
+        }
+        if s[i] & 0x80 != 0 {
+            try!(self.write_u32::<BigEndian>((s.len() - i + 1) as u32));
+            try!(self.write_u8(0));
+        } else {
+            try!(self.write_u32::<BigEndian>((s.len() - i) as u32));
+        }
+        try!(self.write(&s[i..]));
+        Ok(())
+    }
+}
+impl<T:Write> SSHString for T {}
+
 fn read_kex(buffer:&[u8]) -> Result<Names,Error> {
     if buffer[0] != msg::KEXINIT {
         Err(Error::KexInit)
@@ -293,6 +331,7 @@ fn write_kex(buf:&mut Vec<u8>) {
     sodiumoxide::randombytes::randombytes_into(&mut cookie);
 
     buf.extend(&cookie); // cookie
+    println!("buf len :{:?}", buf.len());
     write_list(buf, KexAlgorithm::preferred()); // kex algo
     write_list(buf, KeyAlgorithm::preferred()); // key algo
     write_list(buf, CipherName::preferred()); // cipher client to server
@@ -322,23 +361,55 @@ fn write_list(buf:&mut Vec<u8>, list:&[&str]) {
     }
     let len = (buf.len() - len0 - 4) as u32;
     BigEndian::write_u32(&mut buf[len0..], len);
+    println!("write_list: {:?}", &buf[len0..len0+4]);
+}
+
+pub fn hexdump(x:&[u8]) {
+    let mut buf = Vec::new();
+    let mut i = 0;
+    while i < x.len() {
+        if i%16 == 0 {
+            print!("{:04}: ", i)
+        }
+        print!("{:02x} ", x[i]);
+        if x[i] >= 0x20 && x[i]<= 0x7e {
+            buf.push(x[i]);
+        } else {
+            buf.push(b'.');
+        }
+        if i % 16 == 15 || i == x.len() -1 {
+            while i%16 != 15 {
+                print!("   ");
+                i += 1
+            }
+            println!(" {}", std::str::from_utf8(&buf).unwrap());
+            buf.clear();
+        }
+        i += 1
+    }
 }
 
 
+impl<'a> ServerSession<'a> {
 
-
-impl Session {
-    pub fn new<T:AsRef<[u8]>>(server_pubkey:Option<&T>) -> Session {
-        Session::Init(Exchange::new(server_pubkey))
+    pub fn new(server_pubkey: &'a PublicKey, server_secret: &'a SecretKey) -> Self {
+        SODIUM_INIT.call_once(|| { sodiumoxide::init(); });
+        ServerSession {
+            public_host_key: server_pubkey,
+            secret_host_key: server_secret,
+            state: None
+        }
     }
-    pub fn read<R:Read>(self, stream:&mut R, buffer:&mut Vec<u8>) -> Result<Session, Error> {
-        match self {
-            Session::Init(mut exchange) => {
+
+    pub fn read<R:Read>(&mut self, stream:&mut R, buffer:&mut Vec<u8>) -> Result<(), Error> {
+        let state = std::mem::replace(&mut self.state, None);
+        match state {
+            None => {
 
                 let mut client_id = [0;255];
                 let read = stream.read(&mut client_id).unwrap();
                 if read < 8 {
-                    Ok(Session::Init(exchange))
+                    Ok(())
                 } else {
                     if &client_id[0..8] == b"SSH-2.0-" {
                         println!("read = {:?}", read);
@@ -350,8 +421,10 @@ impl Session {
                             i += 1
                         }
                         if i < read {
+                            let mut exchange = Exchange::new();
                             exchange.client_id = Some((&client_id[0..i]).to_vec());
-                            Ok(Session::VersionOk(exchange))
+                            self.state = Some(ServerState::VersionOk(exchange));
+                            Ok(())
                         } else {
                             Err(Error::Version)
                         }
@@ -360,15 +433,15 @@ impl Session {
                     }
                 }
             },
-            Session::KexInit { mut exchange, algo, sent } => {
+            Some(ServerState::KexInit { mut exchange, algo, sent }) => {
                 let algo = if algo.is_none() {
 
                     let mut kex_init = Vec::new();
                     let read = read_packet(stream, &mut kex_init).unwrap();
-                    let kex = read_kex(&kex_init[0..read]).unwrap();
                     kex_init.truncate(read);
+                    let kex = read_kex(&kex_init).unwrap();
+                    // println!("kex = {:?}", kex_init);
                     exchange.client_kex_init = Some(kex_init);
-                    println!("kex = {:?}", kex);
                     Some(kex)
 
                 } else {
@@ -376,45 +449,71 @@ impl Session {
                 };
 
                 if !sent {
-                    Ok(Session::KexInit {
+                    self.state = Some(ServerState::KexInit {
                         exchange: exchange,
                         algo:algo,
                         sent:sent
-                    })
+                    });
+                    Ok(())
                 } else {
                     if let Some((kex,key,cipher,mac,follows)) = algo {
-                        Ok(Session::KexDh {
-                            exchange:exchange,
-                            kex:kex, key:key, cipher:cipher, mac:mac, follows:follows
-                        })
+                        self.state = Some(
+                            ServerState::KexDh {
+                                exchange:exchange,
+                                kex:kex, key:key, cipher:cipher, mac:mac, follows:follows
+                            });
+                        Ok(())
                     } else {
                         Err(Error::Kex)
                     }
                 }
             },
-            Session::KexDh { mut exchange, mut kex, key, cipher, mac, follows } => {
+            Some(ServerState::KexDh { mut exchange, mut kex, key, cipher, mac, follows }) => {
 
-                let mut client_ephemeral = Vec::new();
-                let read = try!(read_packet(stream, &mut client_ephemeral));
-                client_ephemeral.truncate(read);
-                try!(kex.dh(&mut exchange, &client_ephemeral));
+                buffer.clear();
+                let read = try!(read_packet(stream, buffer));
+                buffer.truncate(read);
 
-                exchange.client_ephemeral = Some(client_ephemeral);
+                assert!(buffer[0] == msg::KEX_ECDH_INIT);
 
-                Ok(Session::KexDh {
-                    exchange:exchange,
-                    kex:kex, key:key, cipher:cipher, mac:mac, follows:follows
-                })
+                try!(kex.dh(&mut exchange, &buffer));
+
+                exchange.client_ephemeral = Some((&buffer[5..]).to_vec());
+                self.state = Some(
+                    ServerState::KexDh {
+                        exchange:exchange,
+                        kex:kex, key:key, cipher:cipher, mac:mac, follows:follows
+                    });
+                Ok(())
             },
-            session => {
-                Ok(session)
+            Some(ServerState::NewKeys { kex, key, cipher, mac, exchange_hash }) => {
+
+                // We are waiting for the NEWKEYS packet.
+                buffer.clear();
+                let read = try!(read_packet(stream, buffer));
+                if read > 0 && buffer[0] == msg::NEWKEYS {
+                    self.state = Some(
+                        ServerState::Encrypted { kex:kex, key:key,
+                                                 cipher:cipher, mac:mac }
+                    );
+                    Ok(())
+                } else {
+                    Ok(())
+                }
+            },
+            _ => {
+                println!("read: unhandled");
+                Ok(())
             }
         }
     }
 
-    pub fn write<W:Write>(self, stream:&mut W, buffer:&mut Vec<u8>) -> Result<Session, Error> {
-        match self {
-            Session::VersionOk(mut exchange) => {
+    pub fn write<W:Write>(&mut self, stream:&mut W, buffer:&mut Vec<u8>) -> Result<(), Error> {
+
+        let state = std::mem::replace(&mut self.state, None);
+
+        match state {
+            Some(ServerState::VersionOk(mut exchange)) => {
                 debug!("writing");
                 let mut server_id = b"SSH-2.0-SSH.rs_0.1\r\n".to_vec();
                 try!(stream.write_all(&mut server_id));
@@ -423,12 +522,15 @@ impl Session {
                 exchange.server_id = Some(server_id);
 
                 try!(stream.flush());
-                Ok(Session::KexInit {
-                    exchange:exchange,
-                    algo:None, sent:false
-                })
+                self.state = Some(
+                    ServerState::KexInit {
+                        exchange:exchange,
+                        algo:None, sent:false
+                    }
+                );
+                Ok(())
             },
-            Session::KexInit { mut exchange, algo, sent } => {
+            Some(ServerState::KexInit { mut exchange, algo, sent }) => {
                 if !sent {
                     let mut server_kex = Vec::new();
                     write_kex(&mut server_kex);
@@ -437,22 +539,91 @@ impl Session {
                     try!(stream.flush());
                 }
                 if let Some((kex,key,cipher,mac,follows)) = algo {
-                    Ok(Session::KexDh {
+
+                    self.state = Some(
+                        ServerState::KexDh {
                         exchange:exchange,
                         kex:kex, key:key, cipher:cipher, mac:mac, follows:follows
-                    })
+                    });
+                    Ok(())
                 } else {
-                    Ok(Session::KexInit {
-                        exchange:exchange,
-                        algo:algo, sent:true
-                    })
+                    self.state = Some(
+                        ServerState::KexInit {
+                            exchange:exchange,
+                            algo:algo, sent:true
+                        }
+                    );
+                    Ok(())
                 }
             },
-            Session::KexDh { mut exchange, kex, key, cipher, mac, follows } => {
-                try!(kex.exchange_hash(&exchange, buffer));
-                unimplemented!()
+            Some(ServerState::KexDh { exchange, kex, key, cipher, mac, follows }) => {
+
+                let hash = try!(kex.compute_exchange_hash(&self.public_host_key, &exchange, buffer));
+
+                let mut ok = false;
+                if let Some(ref server_ephemeral) = exchange.server_ephemeral {
+
+                    buffer.clear();
+
+                    // ECDH Key exchange.
+                    // http://tools.ietf.org/html/rfc5656#section-4
+
+                    buffer.push(msg::KEX_ECDH_REPLY);
+
+                    try!(buffer.write_u32::<BigEndian>(
+                        (KEY_ED25519.len()
+                         + self.public_host_key.0.len()
+                         + 8) as u32
+                    ));
+                    try!(buffer.write_ssh_string(KEY_ED25519.as_bytes()));
+                    try!(buffer.write_ssh_string(&self.public_host_key.0));
+
+                    // Server ephemeral
+                    try!(buffer.write_ssh_string(server_ephemeral));
+
+                    // Hash signature
+                    let sign = sodiumoxide::crypto::sign::ed25519::sign_detached(&hash.0, self.secret_host_key);
+
+                    try!(buffer.write_u32::<BigEndian>(
+                        (KEY_ED25519.len()
+                         + sign.0.len()
+                         + 8) as u32
+                    ));
+                    try!(buffer.write_ssh_string(KEY_ED25519.as_bytes()));
+                    try!(buffer.write_ssh_string(&sign.0));
+                    //
+                    try!(write_packet(stream, &buffer, None));
+                    
+                    // Sending the NEWKEYS packet.
+                    // https://tools.ietf.org/html/rfc4253#section-7.3
+                    buffer.clear();
+                    buffer.push(msg::NEWKEYS);
+                    try!(write_packet(stream, &buffer, None));
+                    try!(stream.flush());
+
+
+                    // Now computing keys.
+                    buffer.clear();
+                    
+                    let key_a = 
+
+                    //
+                    self.state = Some(
+                        ServerState::NewKeys {
+                            kex:kex, key:key,
+                            cipher:cipher, mac:mac,
+                            exchange_hash: hash
+                        }
+                    );
+                    Ok(())
+                } else {
+                    Ok(()) // Is it ok, really?
+                }
+            },
+            session => {
+                println!("write: unhandled");
+                Ok(())
             }
-            session => Ok(session)
         }
     }
 }
