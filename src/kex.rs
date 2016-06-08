@@ -5,7 +5,7 @@ use super::{SSHString, Named,Preferred,Error};
 use super::msg;
 use std;
 use sodiumoxide::crypto::sign::ed25519::{PublicKey,SecretKey,SIGNATUREBYTES};
-
+use sodiumoxide::crypto::hash::sha256::Digest;
 #[derive(Debug)]
 pub enum KexAlgorithm {
     Curve25519(Option<Kex>) // "curve25519-sha256@libssh.org"
@@ -98,7 +98,7 @@ impl KexAlgorithm {
         }
     }
 
-    pub fn compute_exchange_hash(&self, server_public_host_key:&PublicKey, exchange:&super::Exchange, buffer:&mut Vec<u8>) -> Result<sodiumoxide::crypto::hash::sha256::Digest,Error> {
+    pub fn compute_exchange_hash(&self, server_public_host_key:&PublicKey, exchange:&super::Exchange, buffer:&mut Vec<u8>) -> Result<Digest,Error> {
         // Computing the exchange hash, see page 7 of RFC 5656.
         //println!("exchange: {:?}", exchange);
         match self {
@@ -160,5 +160,82 @@ impl KexAlgorithm {
             },
             _ => Err(Error::Kex)
         }
+    }
+
+    pub fn compute_keys(&self, session_id:&Digest, exchange_hash:&Digest, buffer:&mut Vec<u8>, key:&mut Vec<u8>) -> Option<Keys> {
+        match self {
+            &KexAlgorithm::Curve25519(Some(ref kex)) => {
+
+                // https://tools.ietf.org/html/rfc4253#section-7.2
+                let mut compute_key = |c| {
+
+                    buffer.clear();
+                    key.clear();
+
+                    buffer.write_ssh_mpint(&kex.shared_secret.0);
+                    buffer.extend(&exchange_hash.0);
+                    buffer.push(c);
+                    buffer.extend(&session_id.0);
+                    key.extend(
+                        &sodiumoxide::crypto::hash::sha256::hash(&buffer).0
+                    );
+
+                    while key.len() < sodiumoxide::crypto::stream::chacha20::KEYBYTES {
+                        // extend.
+                        buffer.clear();
+                        buffer.write_ssh_mpint(&kex.shared_secret.0);
+                        buffer.extend(&exchange_hash.0);
+                        buffer.extend(&key[..]);
+                        key.extend(
+                            &sodiumoxide::crypto::hash::sha256::hash(&buffer).0
+                        )
+                    }
+                    sodiumoxide::crypto::stream::chacha20::Key::from_slice(&key)
+                };
+                Some(Keys {
+                    iv_client_to_server: if let Some(k) = compute_key(b'A') { k } else { return None },
+                    iv_server_to_client: if let Some(k) = compute_key(b'B') { k } else { return None },
+                    key_client_to_server: if let Some(k) = compute_key(b'C') { k } else { return None },
+                    key_server_to_client: if let Some(k) = compute_key(b'D') { k } else { return None },
+                    integrity_client_to_server: if let Some(k) = compute_key(b'E') { k } else { return None },
+                    integrity_server_to_client: if let Some(k) = compute_key(b'F') { k } else { return None },
+                })
+            },
+            _ => None
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Keys {
+    pub iv_client_to_server: sodiumoxide::crypto::stream::chacha20::Key,
+    pub iv_server_to_client: sodiumoxide::crypto::stream::chacha20::Key,
+    pub key_client_to_server: sodiumoxide::crypto::stream::chacha20::Key,
+    pub key_server_to_client: sodiumoxide::crypto::stream::chacha20::Key,
+    pub integrity_client_to_server: sodiumoxide::crypto::stream::chacha20::Key,
+    pub integrity_server_to_client: sodiumoxide::crypto::stream::chacha20::Key,
+}
+
+pub fn digest_dump(d:&sodiumoxide::crypto::stream::chacha20::Key) {
+    let dd = &d.0;
+    for i in dd {
+        print!("{:02x} ", i);
+    }
+    println!("");
+}
+impl Keys {
+    pub fn dump(&self) {
+        println!("A");
+        digest_dump(&self.iv_client_to_server);
+        println!("B");
+        digest_dump(&self.iv_server_to_client);
+        println!("C");
+        digest_dump(&self.key_client_to_server);
+        println!("D");
+        digest_dump(&self.key_server_to_client);
+        println!("E");
+        digest_dump(&self.integrity_client_to_server);
+        println!("F");
+        digest_dump(&self.integrity_server_to_client);
     }
 }

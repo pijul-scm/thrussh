@@ -14,6 +14,7 @@ use std::io::{ Read, Write, BufRead };
 use std::sync::{Once, ONCE_INIT};
 
 pub mod config;
+use sodiumoxide::crypto::hash::sha256::Digest;
 
 static SODIUM_INIT: Once = ONCE_INIT;
 #[derive(Debug)]
@@ -68,6 +69,7 @@ pub enum ServerState {
     KexInit { // Version number sent. `algo` and `sent` tell wether kexinit has been received, and sent, respectively.
         algo: Option<Names>,
         exchange: Exchange,
+        session_id: Option<Digest>,
         sent: bool
     },
     KexDh { // Algorithms have been determined, the DH algorithm should run.
@@ -76,6 +78,7 @@ pub enum ServerState {
         key: KeyAlgorithm,
         cipher: CipherName,
         mac: MacName,
+        session_id: Option<Digest>,
         follows: bool
     },
     NewKeys { // The DH is over, we've sent the NEWKEYS packet, and are waiting the NEWKEYS from the other side.
@@ -83,6 +86,7 @@ pub enum ServerState {
         key: KeyAlgorithm,
         cipher: CipherName,
         mac: MacName,
+        session_id: Digest,
         exchange_hash: sodiumoxide::crypto::hash::sha256::Digest
     },
     Encrypted { // Session is now encrypted.
@@ -90,6 +94,7 @@ pub enum ServerState {
         key: KeyAlgorithm,
         cipher: CipherName,
         mac: MacName,
+        session_id: Digest,
     },
 }
 
@@ -401,7 +406,7 @@ impl<'a> ServerSession<'a> {
         }
     }
 
-    pub fn read<R:Read>(&mut self, stream:&mut R, buffer:&mut Vec<u8>) -> Result<(), Error> {
+    pub fn read<R:Read>(&mut self, stream:&mut R, buffer:&mut Vec<u8>, buffer2:&mut Vec<u8>) -> Result<(), Error> {
         let state = std::mem::replace(&mut self.state, None);
         match state {
             None => {
@@ -433,7 +438,7 @@ impl<'a> ServerSession<'a> {
                     }
                 }
             },
-            Some(ServerState::KexInit { mut exchange, algo, sent }) => {
+            Some(ServerState::KexInit { mut exchange, algo, sent, session_id }) => {
                 let algo = if algo.is_none() {
 
                     let mut kex_init = Vec::new();
@@ -452,7 +457,8 @@ impl<'a> ServerSession<'a> {
                     self.state = Some(ServerState::KexInit {
                         exchange: exchange,
                         algo:algo,
-                        sent:sent
+                        sent:sent,
+                        session_id: session_id
                     });
                     Ok(())
                 } else {
@@ -460,7 +466,8 @@ impl<'a> ServerSession<'a> {
                         self.state = Some(
                             ServerState::KexDh {
                                 exchange:exchange,
-                                kex:kex, key:key, cipher:cipher, mac:mac, follows:follows
+                                kex:kex, key:key, cipher:cipher, mac:mac, follows:follows,
+                                session_id: session_id
                             });
                         Ok(())
                     } else {
@@ -468,7 +475,7 @@ impl<'a> ServerSession<'a> {
                     }
                 }
             },
-            Some(ServerState::KexDh { mut exchange, mut kex, key, cipher, mac, follows }) => {
+            Some(ServerState::KexDh { mut exchange, mut kex, key, cipher, mac, follows, session_id }) => {
 
                 buffer.clear();
                 let read = try!(read_packet(stream, buffer));
@@ -482,11 +489,12 @@ impl<'a> ServerSession<'a> {
                 self.state = Some(
                     ServerState::KexDh {
                         exchange:exchange,
-                        kex:kex, key:key, cipher:cipher, mac:mac, follows:follows
+                        kex:kex, key:key, cipher:cipher, mac:mac, follows:follows,
+                        session_id: session_id
                     });
                 Ok(())
             },
-            Some(ServerState::NewKeys { kex, key, cipher, mac, exchange_hash }) => {
+            Some(ServerState::NewKeys { kex, key, cipher, mac, exchange_hash, session_id }) => {
 
                 // We are waiting for the NEWKEYS packet.
                 buffer.clear();
@@ -494,7 +502,9 @@ impl<'a> ServerSession<'a> {
                 if read > 0 && buffer[0] == msg::NEWKEYS {
                     self.state = Some(
                         ServerState::Encrypted { kex:kex, key:key,
-                                                 cipher:cipher, mac:mac }
+                                                 cipher:cipher, mac:mac,
+                                                 session_id: session_id
+                        }
                     );
                     Ok(())
                 } else {
@@ -508,7 +518,7 @@ impl<'a> ServerSession<'a> {
         }
     }
 
-    pub fn write<W:Write>(&mut self, stream:&mut W, buffer:&mut Vec<u8>) -> Result<(), Error> {
+    pub fn write<W:Write>(&mut self, stream:&mut W, buffer:&mut Vec<u8>, buffer2:&mut Vec<u8>) -> Result<(), Error> {
 
         let state = std::mem::replace(&mut self.state, None);
 
@@ -525,12 +535,13 @@ impl<'a> ServerSession<'a> {
                 self.state = Some(
                     ServerState::KexInit {
                         exchange:exchange,
-                        algo:None, sent:false
+                        algo:None, sent:false,
+                        session_id: None
                     }
                 );
                 Ok(())
             },
-            Some(ServerState::KexInit { mut exchange, algo, sent }) => {
+            Some(ServerState::KexInit { mut exchange, algo, sent, session_id }) => {
                 if !sent {
                     let mut server_kex = Vec::new();
                     write_kex(&mut server_kex);
@@ -543,20 +554,22 @@ impl<'a> ServerSession<'a> {
                     self.state = Some(
                         ServerState::KexDh {
                         exchange:exchange,
-                        kex:kex, key:key, cipher:cipher, mac:mac, follows:follows
+                        kex:kex, key:key, cipher:cipher, mac:mac, follows:follows,
+                        session_id: session_id
                     });
                     Ok(())
                 } else {
                     self.state = Some(
                         ServerState::KexInit {
                             exchange:exchange,
-                            algo:algo, sent:true
+                            algo:algo, sent:true,
+                            session_id: session_id
                         }
                     );
                     Ok(())
                 }
             },
-            Some(ServerState::KexDh { exchange, kex, key, cipher, mac, follows }) => {
+            Some(ServerState::KexDh { exchange, kex, key, cipher, mac, follows, session_id }) => {
 
                 let hash = try!(kex.compute_exchange_hash(&self.public_host_key, &exchange, buffer));
 
@@ -601,18 +614,21 @@ impl<'a> ServerSession<'a> {
                     try!(write_packet(stream, &buffer, None));
                     try!(stream.flush());
 
-
+                    let session_id = if let Some(session_id) = session_id {
+                        session_id
+                    } else {
+                        hash.clone()
+                    };
                     // Now computing keys.
-                    buffer.clear();
-                    
-                    let key_a = 
-
+                    let keys = kex.compute_keys(&session_id, &hash, buffer, buffer2).unwrap();
+                    keys.dump(); //println!("keys: {:?}", keys);
                     //
                     self.state = Some(
                         ServerState::NewKeys {
                             kex:kex, key:key,
                             cipher:cipher, mac:mac,
-                            exchange_hash: hash
+                            exchange_hash: hash,
+                            session_id: session_id
                         }
                     );
                     Ok(())

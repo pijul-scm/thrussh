@@ -19,7 +19,9 @@ use ssh::*;
 
 struct Server<'a> { list:TcpListener,
                     server_config: &'a config::Config,
-                    sessions:HashMap<usize, (BufStream<TcpStream>, std::net::SocketAddr, Vec<u8>, ssh::ServerSession<'a>)> }
+                    buffer0:Vec<u8>,
+                    buffer1:Vec<u8>,
+                    sessions:HashMap<usize, (BufStream<TcpStream>, std::net::SocketAddr, ssh::ServerSession<'a>)> }
 
 const SERVER: Token = Token(0);
 impl<'a> Handler for Server<'a> {
@@ -40,8 +42,7 @@ impl<'a> Handler for Server<'a> {
                    
                     event_loop.register(&socket, Token(id), EventSet::all(), PollOpt::edge()).unwrap();
 
-                    let buf = Vec::new();
-                    self.sessions.insert(id, (BufStream::new(socket), addr, buf,
+                    self.sessions.insert(id, (BufStream::new(socket), addr,
                                               ServerSession::new(
                                                   &self.server_config.server_publickey,
                                                   &self.server_config.server_secretkey
@@ -54,7 +55,7 @@ impl<'a> Handler for Server<'a> {
 
                     match self.sessions.entry(id) {
                         Entry::Occupied(e) => {
-                            let (stream,_,_,_) = e.remove();
+                            let (stream,_,_) = e.remove();
                             event_loop.deregister(stream.get_ref()).unwrap();
                         },
                         _ => {}
@@ -67,11 +68,11 @@ impl<'a> Handler for Server<'a> {
                             Entry::Occupied(mut e) => {
 
                                 let result = {
-                                    let &mut (ref mut stream, ref addr, ref mut buf, ref mut session) = e.get_mut();
-                                    session.read(stream, buf)
+                                    let &mut (ref mut stream, _, ref mut session) = e.get_mut();
+                                    session.read(stream, &mut self.buffer0, &mut self.buffer1)
                                 };
                                 if result.is_err() {
-                                    let (stream,_,_,_) = e.remove();
+                                    let (stream,_,_) = e.remove();
                                     event_loop.deregister(stream.get_ref()).unwrap();                            
                                 }
                             },
@@ -84,11 +85,11 @@ impl<'a> Handler for Server<'a> {
                             Entry::Occupied(mut e) => {
 
                                 let result = {
-                                    let &mut (ref mut stream, ref addr, ref mut buf, ref mut session) = e.get_mut();
-                                    session.write(stream, buf)
+                                    let &mut (ref mut stream, _, ref mut session) = e.get_mut();
+                                    session.write(stream, &mut self.buffer0, &mut self.buffer1)
                                 };
                                 if result.is_err() {
-                                    let (stream,_,_,_) = e.remove();
+                                    let (stream,_,_) = e.remove();
                                     event_loop.deregister(stream.get_ref()).unwrap();                            
                                 }
 
@@ -139,6 +140,8 @@ fn main () {
     let mut server = Server {
         list: server,
         server_config: &config,
+        buffer0: Vec::new(),
+        buffer1: Vec::new(),
         sessions:HashMap::new()
     };
     event_loop.run(&mut server).unwrap();
