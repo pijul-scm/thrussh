@@ -10,6 +10,9 @@ bufstream = "*"
 log = "*"
 env_logger = "*"
 byteorder = "*"
-sodiumoxide = "*"
+
+sodiumoxide = "*" # {path="/home/pe/Projets/sodiumoxide"}
+libc = "*"
+
 regex = "*"
 rustc-serialize = "*"

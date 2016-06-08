@@ -41,6 +41,7 @@ impl Preferred for KexAlgorithm {
 }
 
 use sodiumoxide::crypto::scalarmult::curve25519;
+use sodiumoxide::crypto::stream::chacha20::{ Nonce, Key, NONCEBYTES, KEYBYTES };
 
 impl KexAlgorithm {
     
@@ -162,15 +163,15 @@ impl KexAlgorithm {
         }
     }
 
-    pub fn compute_keys(&self, session_id:&Digest, exchange_hash:&Digest, buffer:&mut Vec<u8>, key:&mut Vec<u8>) -> Option<Keys> {
+    pub fn compute_keys(&self, session_id:&Digest, exchange_hash:&Digest, buffer:&mut Vec<u8>, key:&mut Vec<u8>, cipher:&mut super::cipher::Cipher) {
         match self {
             &KexAlgorithm::Curve25519(Some(ref kex)) => {
 
                 // https://tools.ietf.org/html/rfc4253#section-7.2
-                let mut compute_key = |c| {
+                let mut compute_key = |c, len| {
 
                     buffer.clear();
-                    key.clear();
+                    let mut key = Vec::new();
 
                     buffer.write_ssh_mpint(&kex.shared_secret.0);
                     buffer.extend(&exchange_hash.0);
@@ -180,7 +181,7 @@ impl KexAlgorithm {
                         &sodiumoxide::crypto::hash::sha256::hash(&buffer).0
                     );
 
-                    while key.len() < sodiumoxide::crypto::stream::chacha20::KEYBYTES {
+                    while key.len() < 2*len {
                         // extend.
                         buffer.clear();
                         buffer.write_ssh_mpint(&kex.shared_secret.0);
@@ -190,52 +191,53 @@ impl KexAlgorithm {
                             &sodiumoxide::crypto::hash::sha256::hash(&buffer).0
                         )
                     }
-                    sodiumoxide::crypto::stream::chacha20::Key::from_slice(&key)
+                    key
                 };
-                Some(Keys {
-                    iv_client_to_server: if let Some(k) = compute_key(b'A') { k } else { return None },
-                    iv_server_to_client: if let Some(k) = compute_key(b'B') { k } else { return None },
-                    key_client_to_server: if let Some(k) = compute_key(b'C') { k } else { return None },
-                    key_server_to_client: if let Some(k) = compute_key(b'D') { k } else { return None },
-                    integrity_client_to_server: if let Some(k) = compute_key(b'E') { k } else { return None },
-                    integrity_server_to_client: if let Some(k) = compute_key(b'F') { k } else { return None },
-                })
+                match *cipher {
+                    super::cipher::Cipher::Chacha20Poly1305(ref mut cipher) => {
+
+                        if cipher.is_none() {
+                            *cipher = Some(super::cipher::Chacha20Poly1305 {
+                                iv_client_to_server: {
+                                    println!("A");
+                                    println!("{:?}", NONCEBYTES);
+                                    compute_key(b'A', NONCEBYTES)
+                                    //println!("buf {:?} {:?}", key, key.len());
+                                    //Nonce::from_slice(&key[0..NONCEBYTES]).unwrap()
+                                },
+                                iv_server_to_client: {
+                                    println!("B");
+                                    compute_key(b'B', NONCEBYTES)
+                                    //Nonce::from_slice(&key[0..NONCEBYTES]).unwrap()
+                                },
+                                key_client_to_server: {
+                                    println!("C");
+                                    compute_key(b'C', KEYBYTES)
+                                        //Key::from_slice(&key).unwrap()
+                                },
+                                key_server_to_client: {
+                                    println!("D");
+                                    compute_key(b'D', KEYBYTES)
+                                        //Key::from_slice(&key).unwrap()
+                                },
+                                integrity_client_to_server: {
+                                    println!("E");
+                                    compute_key(b'E', KEYBYTES)
+                                        //Key::from_slice(&key).unwrap()
+                                },
+                                integrity_server_to_client: {
+                                    println!("F");
+                                    compute_key(b'F', KEYBYTES)
+                                        //Key::from_slice(&key).unwrap()
+                                }
+                            })
+                        } else {
+                            unimplemented!()
+                        }
+                    }
+                }
             },
-            _ => None
+            _ => {}
         }
-    }
-}
-
-#[derive(Debug)]
-pub struct Keys {
-    pub iv_client_to_server: sodiumoxide::crypto::stream::chacha20::Key,
-    pub iv_server_to_client: sodiumoxide::crypto::stream::chacha20::Key,
-    pub key_client_to_server: sodiumoxide::crypto::stream::chacha20::Key,
-    pub key_server_to_client: sodiumoxide::crypto::stream::chacha20::Key,
-    pub integrity_client_to_server: sodiumoxide::crypto::stream::chacha20::Key,
-    pub integrity_server_to_client: sodiumoxide::crypto::stream::chacha20::Key,
-}
-
-pub fn digest_dump(d:&sodiumoxide::crypto::stream::chacha20::Key) {
-    let dd = &d.0;
-    for i in dd {
-        print!("{:02x} ", i);
-    }
-    println!("");
-}
-impl Keys {
-    pub fn dump(&self) {
-        println!("A");
-        digest_dump(&self.iv_client_to_server);
-        println!("B");
-        digest_dump(&self.iv_server_to_client);
-        println!("C");
-        digest_dump(&self.key_client_to_server);
-        println!("D");
-        digest_dump(&self.key_server_to_client);
-        println!("E");
-        digest_dump(&self.integrity_client_to_server);
-        println!("F");
-        digest_dump(&self.integrity_server_to_client);
     }
 }
