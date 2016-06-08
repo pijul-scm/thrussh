@@ -483,8 +483,8 @@ impl<'a> ServerSession<'a> {
                 match state {
                     Some(ServerState::Encrypted { ref mut cipher, .. }) => {
 
-                        let read = try!(cipher.read_client_packet(&mut self.recv_seqn, stream, buffer));
-                        println!("decrypted {:?} {:?}", read, buffer);
+                        let buf = try!(cipher.read_client_packet(&mut self.recv_seqn, stream, buffer));
+                        println!("decrypted {:?}", buf);
                     },
                     _ => unreachable!()
                 }
