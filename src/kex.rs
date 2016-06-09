@@ -1,21 +1,22 @@
-use sodiumoxide;
 use byteorder::{ByteOrder,BigEndian};
 
-use super::{SSHString, Named,Preferred,Error};
+use super::negociation::{ Named, Preferred };
+use super::{ SSHString, Error };
 use super::msg;
 use std;
 
-use sodiumoxide::crypto::hash::sha256;
-use sodiumoxide::crypto::scalarmult::curve25519;
+use super::sodium::randombytes;
+use super::sodium::sha256;
+use super::sodium::curve25519;
 
 #[derive(Debug,Clone)]
 pub enum Digest {
     Sha256(sha256::Digest)
 }
 impl Digest {
-    pub fn as_slice<'a>(&'a self) -> &'a[u8] {
+    pub fn as_bytes<'a>(&'a self) -> &'a[u8] {
         match self {
-            &Digest::Sha256(ref d) => &d.0
+            &Digest::Sha256(ref d) => d.as_bytes()
         }
     }
 }
@@ -43,10 +44,10 @@ impl Named for Name {
 
 #[derive(Debug)]
 pub struct Curve25519 {
-    client_pubkey: sodiumoxide::crypto::scalarmult::curve25519::GroupElement,
-    server_pubkey: sodiumoxide::crypto::scalarmult::curve25519::GroupElement,
-    server_secret: sodiumoxide::crypto::scalarmult::curve25519::Scalar,
-    shared_secret: sodiumoxide::crypto::scalarmult::curve25519::GroupElement,
+    client_pubkey: curve25519::GroupElement,
+    server_pubkey: curve25519::GroupElement,
+    server_secret: curve25519::Scalar,
+    shared_secret: curve25519::GroupElement,
 }
 
 const KEX_ALGORITHMS: &'static [&'static str;1] = &[
@@ -72,44 +73,36 @@ impl Name {
                     let pubkey_len = BigEndian::read_u32(&payload[1..]) as usize;
                     curve25519::GroupElement::from_slice(&payload[5 .. (5+pubkey_len)])
                 };
-                if let Some(client_pubkey) = client_pubkey {
-                    let server_secret = {
-                        let mut server_secret = [0;curve25519::SCALARBYTES];
-                        sodiumoxide::randombytes::randombytes_into(&mut server_secret);
+                let server_secret = {
+                    let mut server_secret = [0;curve25519::SCALARBYTES];
+                    randombytes::randombytes_into(&mut server_secret);
 
-                        // https://git.libssh.org/projects/libssh.git/tree/doc/curve25519-sha256@libssh.org.txt
-                        //server_secret_[0] &= 248;
-                        //server_secret_[31] &= 127;
-                        //server_secret_[31] |= 64;
-                        curve25519::Scalar::from_slice(&server_secret)
-                    };
-                    if let Some(server_secret) = server_secret {
-                        
-                        let server_pubkey = curve25519::scalarmult_base(&server_secret);
+                    // https://git.libssh.org/projects/libssh.git/tree/doc/curve25519-sha256@libssh.org.txt
+                    //server_secret_[0] &= 248;
+                    //server_secret_[31] &= 127;
+                    //server_secret_[31] |= 64;
+                    curve25519::Scalar::from_slice(&server_secret)
+                };
+                
+                let server_pubkey = curve25519::scalarmult_base(&server_secret);
 
-                        {
-                            // fill exchange.
-                            let server_ephemeral = (&server_pubkey.0).to_vec();
-                            exchange.server_ephemeral = Some(server_ephemeral);
-                        }
-
-                        let shared_secret = curve25519::scalarmult(&server_secret, &client_pubkey);
-
-                        println!("shared secret");
-                        super::hexdump(&shared_secret.0);
-
-                        Ok(Algorithm::Curve25519(Curve25519 {
-                            client_pubkey: client_pubkey,
-                            server_pubkey: server_pubkey,
-                            server_secret: server_secret,
-                            shared_secret: shared_secret
-                        }))
-                    } else {
-                        Err(Error::Kex)
-                    }
-                } else {
-                    Err(Error::Kex)
+                {
+                    // fill exchange.
+                    let server_ephemeral = server_pubkey.as_bytes().to_vec();
+                    exchange.server_ephemeral = Some(server_ephemeral);
                 }
+
+                let shared_secret = curve25519::scalarmult(&server_secret, &client_pubkey);
+
+                println!("shared secret");
+                super::hexdump(shared_secret.as_bytes());
+
+                Ok(Algorithm::Curve25519(Curve25519 {
+                    client_pubkey: client_pubkey,
+                    server_pubkey: server_pubkey,
+                    server_secret: server_secret,
+                    shared_secret: shared_secret
+                }))
             },
             _ => Err(Error::Kex)
         }
@@ -166,11 +159,11 @@ impl Algorithm {
                         //println!("shared: {:?}", kex.shared_secret);
                         //unimplemented!(); // Should be in wire format.
 
-                        try!(buffer.write_ssh_mpint(&kex.shared_secret.0));
+                        try!(buffer.write_ssh_mpint(kex.shared_secret.as_bytes()));
 
                         println!("buffer len = {:?}", buffer.len());
                         super::hexdump(&buffer);
-                        let hash = sodiumoxide::crypto::hash::sha256::hash(&buffer);
+                        let hash = sha256::hash(&buffer);
                         println!("hash: {:?}", hash);
                         Ok(Digest::Sha256(hash))
                     },
@@ -194,22 +187,22 @@ impl Algorithm {
                     buffer.clear();
                     key.clear();
 
-                    buffer.write_ssh_mpint(&kex.shared_secret.0).unwrap();
-                    buffer.extend(exchange_hash.as_slice());
+                    buffer.write_ssh_mpint(kex.shared_secret.as_bytes()).unwrap();
+                    buffer.extend(exchange_hash.as_bytes());
                     buffer.push(c);
-                    buffer.extend(session_id.as_slice());
+                    buffer.extend(session_id.as_bytes());
                     key.extend(
-                        &sodiumoxide::crypto::hash::sha256::hash(&buffer).0
+                        sha256::hash(&buffer).as_bytes()
                     );
 
                     while key.len() < len {
                         // extend.
                         buffer.clear();
-                        buffer.write_ssh_mpint(&kex.shared_secret.0).unwrap();
-                        buffer.extend(exchange_hash.as_slice());
+                        buffer.write_ssh_mpint(kex.shared_secret.as_bytes()).unwrap();
+                        buffer.extend(exchange_hash.as_bytes());
                         buffer.extend(&key[..]);
                         key.extend(
-                            &sodiumoxide::crypto::hash::sha256::hash(&buffer).0
+                            sha256::hash(&buffer).as_bytes()
                         )
                     }
                 };

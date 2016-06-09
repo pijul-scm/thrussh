@@ -1,9 +1,12 @@
-use sodiumoxide;
 use byteorder::{ByteOrder,BigEndian,WriteBytesExt};
 use super::super::Error;
-use sodiumoxide::crypto::stream::chacha20;
-use sodiumoxide::crypto::onetimeauth::poly1305;
 use std::io::{Read,Write};
+
+// use sodiumoxide::crypto::onetimeauth::poly1305;
+use super::super::sodium;
+use sodium::chacha20;
+use sodium::poly1305;
+use sodium::randombytes;
 
 #[derive(Debug)]
 pub struct Cipher {
@@ -21,53 +24,13 @@ pub struct Cipher {
 impl Cipher {
     pub fn init(key:&[u8]) -> Cipher {
         Cipher {
-            k1: chacha20::Key::from_slice(&key[32..64]).unwrap(),
-            k2: chacha20::Key::from_slice(&key[0..32]).unwrap()
+            k1: chacha20::Key::from_slice(&key[32..64]),
+            k2: chacha20::Key::from_slice(&key[0..32])
         }
     }
 }
 
-/*
-pub fn digest_dump(dd:&[u8]) {
-    for i in dd {
-        print!("{:02x} ", i);
-    }
-    println!("");
-}
-impl Chacha20Poly1305 {
-    pub fn dump(&self) {
-        println!("A");
-        digest_dump(&self.iv_client_to_server);
-        println!("B");
-        digest_dump(&self.iv_server_to_client);
-        println!("C");
-        digest_dump(&self.key_client_to_server);
-        println!("D");
-        digest_dump(&self.key_server_to_client);
-        println!("E");
-        digest_dump(&self.integrity_client_to_server);
-        println!("F");
-        digest_dump(&self.integrity_server_to_client);
-    }
-}
-*/
 
-use libc::{c_longlong, c_int};
-extern "C" {
-    fn crypto_stream_chacha20_xor_ic(c:*mut u8, m:*mut u8, mlen:c_longlong, n:*const u8, ic:u64, k:*const u8) -> c_int;
-}
-
-fn chacha20_xor_inplace(x:&mut [u8], nonce:&chacha20::Nonce, ic:u64, key:&chacha20::Key) -> Result<(),c_int> {
-    unsafe {
-        let p = x.as_mut_ptr();
-        let ret =  crypto_stream_chacha20_xor_ic(p, p, x.len() as c_longlong, nonce.0.as_ptr(), ic, key.0.as_ptr());
-        if ret == 0 {
-            Ok(())
-        } else {
-            Err(ret)
-        }
-    }
-}
 
 impl super::CipherT for Cipher {
 
@@ -89,7 +52,7 @@ impl super::CipherT for Cipher {
 
         let mut nonce = [0;8];
         BigEndian::write_u32(&mut nonce[4..], seq as u32);
-        let nonce = chacha20::Nonce::from_slice(&nonce).unwrap();
+        let nonce = chacha20::Nonce::from_slice(&nonce);
 
         chacha20::stream_xor_inplace(
             &mut len,
@@ -108,27 +71,27 @@ impl super::CipherT for Cipher {
             &mut poly_key,
             &nonce,
             &self.k2);
-        let poly_key = poly1305::Key::from_slice(&poly_key).unwrap();
+        let poly_key = poly1305::Key::from_slice(&poly_key);
         let tag = poly1305::authenticate(&buffer[0..4+packet_length], &poly_key);
 
         println!("read buffer before chacha20: {:?}", &buffer);
         // - Constant-time-compare it with the Poly1305 at the end of the packet (right after the 4+length first bytes).
-        if sodiumoxide::utils::memcmp(&tag.0, &buffer[4+packet_length..]) {
+        if sodium::memcmp(tag.as_bytes(), &buffer[4+packet_length..]) {
 
             // - If the auth is correct, chacha20-xor the length bytes after the first 4 ones, with ic 1.
             //   (actually, the above doc says "ic = LE encoding of 1", which is different from the libsodium interface).
 
 
-            chacha20_xor_inplace(&mut buffer[4..(4+packet_length)],
-                                 &nonce,
-                                 1,
-                                 &self.k2).unwrap();
+            chacha20::xor_inplace(&mut buffer[4..(4+packet_length)],
+                                  &nonce,
+                                  1,
+                                  &self.k2);
 
             let padding = buffer[4] as usize;
             Ok(&buffer[5..(5+packet_length - padding - 1)])
 
         } else {
-            println!("should be {:?}, was {:?}", &tag.0, &buffer[4+packet_length..]);
+            println!("should be {:?}, was {:?}", tag.as_bytes(), &buffer[4+packet_length..]);
             Err(Error::PacketAuth)
         }
         
@@ -151,7 +114,7 @@ impl super::CipherT for Cipher {
 
         let mut nonce = [0;8];
         BigEndian::write_u32(&mut nonce[4..], seq as u32);
-        let nonce = chacha20::Nonce::from_slice(&nonce).unwrap();
+        let nonce = chacha20::Nonce::from_slice(&nonce);
 
         chacha20::stream_xor_inplace(
             &mut buffer[0..4],
@@ -166,14 +129,14 @@ impl super::CipherT for Cipher {
         buffer.extend(packet);
 
         let mut padding = [0;256];
-        sodiumoxide::randombytes::randombytes_into(&mut padding[0..padding_len]);
+        randombytes::randombytes_into(&mut padding[0..padding_len]);
         buffer.extend(&padding[0..padding_len]);
 
 
-        chacha20_xor_inplace(&mut buffer[4..],
-                             &nonce,
-                             1,
-                             &self.k2).unwrap();
+        chacha20::xor_inplace(&mut buffer[4..],
+                              &nonce,
+                              1,
+                              &self.k2);
 
         // - Compute the Poly1305 auth on the first (4+length) first bytes of the packet.
 
@@ -182,12 +145,12 @@ impl super::CipherT for Cipher {
             &mut poly_key,
             &nonce,
             &self.k2);
-        let poly_key = poly1305::Key::from_slice(&poly_key).unwrap();
+        let poly_key = poly1305::Key::from_slice(&poly_key);
 
         let tag = poly1305::authenticate(&buffer, &poly_key);
 
         try!(stream.write(&buffer));
-        try!(stream.write(&tag.0));
+        try!(stream.write(tag.as_bytes()));
 
         Ok(())
     }

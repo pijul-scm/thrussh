@@ -11,7 +11,7 @@ log = "*"
 env_logger = "*"
 byteorder = "*"
 
-sodiumoxide = "*" # {path="/home/pe/Projets/sodiumoxide"}
+libsodium-sys = "*"
 libc = "*"
 
 regex = "*"

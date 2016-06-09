@@ -1,5 +1,5 @@
-use super::{Named,Preferred,Error};
-
+use super::negociation::{Named,Preferred};
+use super::Error;
 use std::io::{Read,Write};
 
 pub mod chacha20poly1305;

@@ -1,8 +1,9 @@
 use byteorder::{ByteOrder,BigEndian, ReadBytesExt, WriteBytesExt};
 use std;
-use sodiumoxide::randombytes;
 
-use super::{Named, Preferred, Error};
+use super::sodium::randombytes;
+
+use super::{ Error };
 use super::key;
 use super::kex;
 use super::cipher;
@@ -11,6 +12,14 @@ use super::msg;
 use super::compression;
 
 pub type Names = (super::kex::Name, super::key::Algorithm, super::cipher::Name, super::mac::Mac, bool);
+
+pub trait Named:Sized {
+    fn from_name(&[u8]) -> Option<Self>;
+}
+
+pub trait Preferred:Sized {
+    fn preferred() -> &'static [&'static str];
+}
 
 fn select<A:Named + 'static>(list:&[u8]) -> Option<A> {
     for l in list.split(|&x| x == b',') {

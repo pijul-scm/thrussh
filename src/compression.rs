@@ -1,4 +1,4 @@
-use super::{Named, Preferred};
+use super::negociation::{Named, Preferred};
 
 pub enum CompressionAlgorithm {
     None

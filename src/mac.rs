@@ -1,4 +1,4 @@
-use super::{Named,Preferred};
+use super::negociation::{Named,Preferred};
 // use sodiumoxide::crypto::auth::hmacsha256;
 #[derive(Debug,Clone)]
 pub enum Mac {

@@ -1,18 +1,17 @@
 extern crate libc;
-extern crate sodiumoxide;
+extern crate libsodium_sys;
 #[macro_use]
 extern crate log;
 extern crate byteorder;
 extern crate regex;
 extern crate rustc_serialize;
 
-// use rustc_serialize::hex::ToHex;
-
 use byteorder::{ByteOrder,BigEndian, ReadBytesExt, WriteBytesExt};
-
 use std::io::{ Read, Write, BufRead };
-
 use std::sync::{Once, ONCE_INIT};
+
+
+mod sodium;
 
 pub mod config;
 
@@ -35,41 +34,19 @@ impl From<std::io::Error> for Error {
     }
 }
 
+mod negociation;
+use negociation::*;
 mod msg;
 mod kex;
 
-pub mod key;
 mod cipher;
+pub mod key;
 
 mod mac;
 use mac::*;
 
-mod negociation;
-use negociation::*;
 
 mod compression;
-
-
-#[derive(Debug)]
-pub struct Exchange {
-    client_id:Option<Vec<u8>>,
-    server_id:Option<Vec<u8>>,
-    client_kex_init:Option<Vec<u8>>,
-    server_kex_init:Option<Vec<u8>>,
-    client_ephemeral:Option<Vec<u8>>,
-    server_ephemeral:Option<Vec<u8>>
-}
-
-impl Exchange {
-    fn new() -> Self {
-        Exchange { client_id: None,
-                   server_id: None,
-                   client_kex_init: None,
-                   server_kex_init: None,
-                   client_ephemeral: None,
-                   server_ephemeral: None }
-    }
-}
 
 
 #[derive(Debug)]
@@ -131,13 +108,25 @@ pub enum ServerState {
     },
 }
 
-
-trait Named:Sized {
-    fn from_name(&[u8]) -> Option<Self>;
+#[derive(Debug)]
+pub struct Exchange {
+    client_id:Option<Vec<u8>>,
+    server_id:Option<Vec<u8>>,
+    client_kex_init:Option<Vec<u8>>,
+    server_kex_init:Option<Vec<u8>>,
+    client_ephemeral:Option<Vec<u8>>,
+    server_ephemeral:Option<Vec<u8>>
 }
 
-trait Preferred:Sized {
-    fn preferred() -> &'static [&'static str];
+impl Exchange {
+    fn new() -> Self {
+        Exchange { client_id: None,
+                   server_id: None,
+                   client_kex_init: None,
+                   server_kex_init: None,
+                   client_ephemeral: None,
+                   server_ephemeral: None }
+    }
 }
 
 
@@ -156,7 +145,7 @@ fn complete_packet(buf:&mut Vec<u8>, off:usize) {
     buf[off + 4] = padding_len as u8;
 
     let mut padding = [0;256];
-    sodiumoxide::randombytes::randombytes_into(&mut padding[0..padding_len]);
+    sodium::randombytes::randombytes_into(&mut padding[0..padding_len]);
 
     buf.extend(&padding[0..padding_len]);
 
@@ -217,7 +206,7 @@ pub fn hexdump(x:&[u8]) {
 impl<'a> ServerSession<'a> {
 
     pub fn new(server_id:&'a str, keys: &'a [key::Algorithm]) -> Self {
-        SODIUM_INIT.call_once(|| { sodiumoxide::init(); });
+        SODIUM_INIT.call_once(|| { sodium::init(); });
         ServerSession {
             keys:keys,
             server_id: server_id,
@@ -243,7 +232,6 @@ impl<'a> ServerSession<'a> {
         // This loop consumes something or returns, it cannot loop forever.
         loop {
             println!("loop spinning {:?}/{:?}", self.read_buffer.len(), packet_len);
-            let initial_position = self.read_buffer.len();
             let consumed_len = match stream.fill_buf() {
                 Ok(buf) => {
                     if self.read_buffer.len() + buf.len() < packet_len + 4 {
@@ -302,7 +290,7 @@ impl<'a> ServerSession<'a> {
     }
 
     
-    pub fn read<R:BufRead>(&mut self, stream:&mut R, buffer:&mut Vec<u8>, buffer2:&mut Vec<u8>) -> Result<(), Error> {
+    pub fn read<R:BufRead>(&mut self, stream:&mut R, buffer:&mut Vec<u8>) -> Result<(), Error> {
         let state = std::mem::replace(&mut self.state, None);
         // println!("state: {:?}", state);
         match state {
@@ -345,8 +333,6 @@ impl<'a> ServerSession<'a> {
                     
                     if try!(self.read_clear_packet(stream)) {
                         
-                        // let read = self.read_packet(stream, &mut kex_init).unwrap();
-                        // kex_init.truncate(read);
                         let kex = {
                             let payload = self.get_current_payload();
                             exchange.client_kex_init = Some(payload.to_vec());
@@ -358,7 +344,6 @@ impl<'a> ServerSession<'a> {
 
                     } else {
                         // A complete packet could not be read, we need to read more.
-                        println!("need more bytes");
                         self.state = Some(ServerState::KexInit {
                             exchange: exchange,
                             algo:algo,
@@ -573,7 +558,7 @@ impl<'a> ServerSession<'a> {
                     // Server ephemeral
                     try!(self.write_buffer.write_ssh_string(server_ephemeral));
                     // Hash signature
-                    try!(key.add_signature(&mut self.write_buffer, hash.as_slice()));
+                    try!(key.add_signature(&mut self.write_buffer, hash.as_bytes()));
                     //
                     complete_packet(&mut self.write_buffer, 0);
 

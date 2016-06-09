@@ -5,7 +5,8 @@ use std::path::Path;
 use std::fs::File;
 use std::io::{Read,BufReader,BufRead};
 use std;
-pub use sodiumoxide::crypto::sign::ed25519::{PublicKey,SecretKey};
+
+use super::key::ed25519::{PublicKey,SecretKey};
 
 #[derive(Debug)]
 pub struct Config {
@@ -26,11 +27,7 @@ pub fn read_public_key<P:AsRef<Path>>(p:P) -> Result<PublicKey, super::Error> {
     let mut pos = Position { s:&p,position:0 };
     if pos.read_string() == b"ssh-ed25519" {
         let pubkey = pos.read_string();
-        if let Some(pubkey) = PublicKey::from_slice(pubkey) {
-            Ok(pubkey)
-        } else {
-            Err(super::Error::CouldNotReadKey)
-        }
+        Ok(PublicKey::from_slice(pubkey))
     } else {
         Err(super::Error::CouldNotReadKey)
     }
@@ -76,9 +73,8 @@ pub fn read_secret_key<P:AsRef<Path>>(p:P) -> Result<SecretKey, super::Error> {
             let mut pos = Position { s:public_string, position:0 };
             if pos.read_string() == KEYTYPE_ED25519 {
                 // println!("{:?} {:?}", secret, secret.len());
-                if let Some(public) = PublicKey::from_slice(pos.read_string()) {
-                    info!("public: {:?}", public);
-                }
+                let public = PublicKey::from_slice(pos.read_string());
+                info!("public: {:?}", public);
             }
         }
         info!("there are {} keys in this file", nkeys);
@@ -98,9 +94,8 @@ pub fn read_secret_key<P:AsRef<Path>>(p:P) -> Result<SecretKey, super::Error> {
                     let seckey = position.read_string();
                     let comment = position.read_string();
                     debug!("comment = {:?}", comment);
-                    if let Some(secret) = SecretKey::from_slice(seckey) {
-                        return Ok(secret)
-                    }
+                    let secret = SecretKey::from_slice(seckey);
+                    return Ok(secret)
                 } else {
                     info!("unsupported key type {:?}", std::str::from_utf8(key_type));
                 }

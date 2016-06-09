@@ -69,7 +69,7 @@ impl<'a> Handler for Server<'a> {
 
                                 let result = {
                                     let &mut (ref mut stream, _, ref mut session) = e.get_mut();
-                                    session.read(stream, &mut self.buffer0, &mut self.buffer1)
+                                    session.read(stream, &mut self.buffer0)
                                 };
                                 if result.is_err() {
                                     let (stream,_,_) = e.remove();

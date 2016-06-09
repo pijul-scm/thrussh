@@ -1,10 +1,10 @@
 use byteorder::{ByteOrder,BigEndian, WriteBytesExt};
 
 use std::io::{ Write };
+use super::negociation::{ Named, Preferred };
 
-
-use sodiumoxide::crypto::sign::ed25519;
 use super::SSHString;
+pub use super::sodium::ed25519;
 
 #[derive(Debug,Clone)]
 pub enum Name {
@@ -25,7 +25,7 @@ pub const KEY_ALGORITHMS: &'static [&'static str;1] = &[
     KEY_ED25519
 ];
 
-impl super::Named for Name {
+impl Named for Name {
     fn from_name(name: &[u8]) -> Option<Self> {
         if name == KEY_ED25519.as_bytes() {
             return Some(Name::Ed25519)
@@ -34,7 +34,7 @@ impl super::Named for Name {
     }
 }
 
-impl super::Preferred for Algorithm {
+impl Preferred for Algorithm {
     fn preferred() -> &'static [&'static str] {
         KEY_ALGORITHMS
     }
@@ -55,7 +55,7 @@ impl Algorithm {
                      + 8) as u32
                 ));
                 try!(buffer.write_ssh_string(KEY_ED25519.as_bytes()));
-                try!(buffer.write_ssh_string(&public_host_key.0));
+                try!(buffer.write_ssh_string(public_host_key.as_bytes()));
                 Ok(())
             }
         }
@@ -73,7 +73,7 @@ impl Algorithm {
                      + 8) as u32
                 ));
                 try!(buffer.write_ssh_string(KEY_ED25519.as_bytes()));
-                try!(buffer.write_ssh_string(&sign.0));
+                try!(buffer.write_ssh_string(sign.as_bytes()));
                 Ok(())
             }
         }
