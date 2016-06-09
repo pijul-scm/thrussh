@@ -115,7 +115,6 @@ fn main () {
             }
         )
     };
-    println!("config : {:?}", config);
     let addr = "127.0.0.1:13265".parse().unwrap();
 
     // Setup the server socket

@@ -1,10 +1,5 @@
-use sodiumoxide;
-use byteorder::{ByteOrder,BigEndian,WriteBytesExt};
-
-use super::{SSHString, Named,Preferred,Error};
-use super::msg;
-use std;
-use sodiumoxide::crypto::auth::hmacsha256;
+use super::{Named,Preferred};
+// use sodiumoxide::crypto::auth::hmacsha256;
 #[derive(Debug,Clone)]
 pub enum Mac {
     HmacSha256 // 

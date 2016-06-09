@@ -1,11 +1,12 @@
 use sodiumoxide;
-use byteorder::{ByteOrder,BigEndian,WriteBytesExt};
+use byteorder::{ByteOrder,BigEndian};
 
 use super::{SSHString, Named,Preferred,Error};
 use super::msg;
 use std;
-// use sodiumoxide::crypto::sign::ed25519::{PublicKey,SecretKey,SIGNATUREBYTES};
+
 use sodiumoxide::crypto::hash::sha256;
+use sodiumoxide::crypto::scalarmult::curve25519;
 
 #[derive(Debug,Clone)]
 pub enum Digest {
@@ -58,8 +59,6 @@ impl Preferred for Name {
     }
 }
 
-use sodiumoxide::crypto::scalarmult::curve25519;
-use sodiumoxide::crypto::stream::chacha20::{ Nonce, Key, NONCEBYTES, KEYBYTES };
 
 impl Name {
     
@@ -153,7 +152,7 @@ impl Algorithm {
                         try!(buffer.write_ssh_string(server_kex_init));
 
                         
-                        try!(key_algo.write(buffer));
+                        try!(key_algo.write_pubkey(buffer));
 
                         //println!("client_ephemeral: {:?}", client_ephemeral);
                         //println!("server_ephemeral: {:?}", server_ephemeral);
@@ -167,7 +166,7 @@ impl Algorithm {
                         //println!("shared: {:?}", kex.shared_secret);
                         //unimplemented!(); // Should be in wire format.
 
-                        buffer.write_ssh_mpint(&kex.shared_secret.0);
+                        try!(buffer.write_ssh_mpint(&kex.shared_secret.0));
 
                         println!("buffer len = {:?}", buffer.len());
                         super::hexdump(&buffer);
@@ -195,7 +194,7 @@ impl Algorithm {
                     buffer.clear();
                     key.clear();
 
-                    buffer.write_ssh_mpint(&kex.shared_secret.0);
+                    buffer.write_ssh_mpint(&kex.shared_secret.0).unwrap();
                     buffer.extend(exchange_hash.as_slice());
                     buffer.push(c);
                     buffer.extend(session_id.as_slice());
@@ -206,7 +205,7 @@ impl Algorithm {
                     while key.len() < len {
                         // extend.
                         buffer.clear();
-                        buffer.write_ssh_mpint(&kex.shared_secret.0);
+                        buffer.write_ssh_mpint(&kex.shared_secret.0).unwrap();
                         buffer.extend(exchange_hash.as_slice());
                         buffer.extend(&key[..]);
                         key.extend(

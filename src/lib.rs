@@ -6,7 +6,7 @@ extern crate byteorder;
 extern crate regex;
 extern crate rustc_serialize;
 
-use rustc_serialize::hex::ToHex;
+// use rustc_serialize::hex::ToHex;
 
 use byteorder::{ByteOrder,BigEndian, ReadBytesExt, WriteBytesExt};
 
@@ -15,8 +15,6 @@ use std::io::{ Read, Write, BufRead };
 use std::sync::{Once, ONCE_INIT};
 
 pub mod config;
-// use sodiumoxide::crypto::hash::sha256::Digest;
-use sodiumoxide::crypto::sign::ed25519;
 
 static SODIUM_INIT: Once = ONCE_INIT;
 #[derive(Debug)]
@@ -574,8 +572,6 @@ impl<'a> ServerSession<'a> {
 
                 let hash = try!(kex.compute_exchange_hash(&key, &exchange, buffer));
 
-                let mut ok = false;
-
                 if let Some(ref server_ephemeral) = exchange.server_ephemeral {
 
                     buffer.clear();
@@ -590,7 +586,7 @@ impl<'a> ServerSession<'a> {
                     try!(buffer.write_ssh_string(server_ephemeral));
 
                     // Hash signature
-                    key.sign(buffer, hash.as_slice());
+                    try!(key.add_signature(buffer, hash.as_slice()));
                     //
                     try!(write_packet(stream, &buffer));
                 } else {
