@@ -25,6 +25,7 @@ pub enum Error {
     Kex,
     DH,
     PacketAuth,
+    NewKeys,
     IO(std::io::Error)
 }
 
@@ -42,6 +43,12 @@ mod cipher;
 
 mod mac;
 use mac::*;
+
+mod negociation;
+use negociation::*;
+
+mod compression;
+
 
 #[derive(Debug)]
 pub struct Exchange {
@@ -68,8 +75,14 @@ impl Exchange {
 #[derive(Debug)]
 pub struct ServerSession<'a> {
     keys:&'a[key::Algorithm],
+    server_id: &'a str,
     recv_seqn: usize,
     sent_seqn: usize,
+
+    read_buffer: Vec<u8>,
+    write_buffer: Vec<u8>,
+    write_position: usize,
+
     state: Option<ServerState>
 }
 
@@ -118,7 +131,6 @@ pub enum ServerState {
     },
 }
 
-pub type Names = (kex::Name, key::Algorithm, cipher::Name, Mac, bool);
 
 trait Named:Sized {
     fn from_name(&[u8]) -> Option<Self>;
@@ -128,69 +140,26 @@ trait Preferred:Sized {
     fn preferred() -> &'static [&'static str];
 }
 
-fn select<A:Named + 'static>(list:&[u8]) -> Option<A> {
-    for l in list.split(|&x| x == b',') {
-        if let Some(x) = A::from_name(l) {
-            return Some(x)
-        }
-    }
-    None
-}
-fn select_key(list:&[u8], keys:&[key::Algorithm]) -> Option<key::Algorithm> {
-    for l in list.split(|&x| x == b',') {
-        for k in keys {
-            if l == k.name().as_bytes() {
-                return Some(k.clone())
-            }
-        }
-    }
-    None
-}
 
-
-enum CompressionAlgorithm {
-    None
-}
-const COMPRESSION_NONE:&'static str = "none";
-const COMPRESSIONS: &'static [&'static str;1] = &[
-    COMPRESSION_NONE
-];
-
-impl Named for CompressionAlgorithm {
-    fn from_name(name: &[u8]) -> Option<Self> {
-        if name == COMPRESSION_NONE.as_bytes() {
-            return Some(CompressionAlgorithm::None)
-        }
-        None
-    }
-}
-impl Preferred for CompressionAlgorithm {
-    fn preferred() -> &'static [&'static str] {
-        COMPRESSIONS
-    }
-}
-
-fn write_packet<W:Write>(stream:&mut W, buf:&[u8]) -> Result<(),Error> {
+fn complete_packet(buf:&mut Vec<u8>, off:usize) {
 
     let block_size = 8; // no MAC yet.
     let padding_len = {
-        (block_size - ((5+buf.len()) % block_size))
+        (block_size - ((buf.len() - off) % block_size))
     };
     let padding_len = if padding_len < 4 { padding_len + block_size } else { padding_len };
     let mac_len = 0;
 
-    let packet_len = 1 + buf.len() + padding_len + mac_len;
-    try!(stream.write_u32::<BigEndian>(packet_len as u32));
+    let packet_len = buf.len() - off - 4 + padding_len + mac_len;
+    BigEndian::write_u32(&mut buf[off..], packet_len as u32);
 
-    println!("len {:?}, padding {:?}", buf.len(), padding_len);
-    try!(stream.write_u8(padding_len as u8));
-    try!(stream.write_all(buf));
+    buf[off + 4] = padding_len as u8;
 
     let mut padding = [0;256];
     sodiumoxide::randombytes::randombytes_into(&mut padding[0..padding_len]);
-    try!(stream.write_all(&padding[0..padding_len]));
 
-    Ok(())
+    buf.extend(&padding[0..padding_len]);
+
 }
 
 trait SSHString:Write {
@@ -215,90 +184,6 @@ trait SSHString:Write {
     }
 }
 impl<T:Write> SSHString for T {}
-
-fn read_kex(buffer:&[u8], keys:&[key::Algorithm]) -> Result<Names,Error> {
-    if buffer[0] != msg::KEXINIT {
-        Err(Error::KexInit)
-    } else {
-        const FIELD_KEX_ALGORITHM: usize = 0;
-        const FIELD_KEY_ALGORITHM: usize = 1;
-        const FIELD_CIPHER_CLIENT_TO_SERVER: usize = 2;
-        // const FIELD_CIPHER_SERVER_TO_CLIENT: usize = 3;
-        const FIELD_MAC: usize = 4;
-        const FIELD_FOLLOWS: usize = 9;
-        let mut i = 17;
-        let mut field = 0;
-        let mut kex_algorithm = None;
-        let mut key_algorithm = None;
-        let mut cipher = None;
-        let mut mac = None;
-        let mut follows = None;
-        while field < 10 {
-            assert!(i+3 < buffer.len());
-            let len = BigEndian::read_u32(&buffer[i..]) as usize;
-            if field == FIELD_KEX_ALGORITHM {
-                debug!("kex_algorithms: {:?}", std::str::from_utf8(&buffer[(i+4)..(i+4+len)]));
-                kex_algorithm = select(&buffer[(i+4)..(i+4+len)])
-            } else  if field == FIELD_KEY_ALGORITHM {
-                debug!("key_algorithms: {:?}", std::str::from_utf8(&buffer[(i+4)..(i+4+len)]));
-
-                key_algorithm = select_key(&buffer[(i+4)..(i+4+len)], keys)
-
-            } else  if field == FIELD_CIPHER_CLIENT_TO_SERVER {
-                debug!("ciphers_client_to_server: {:?}", std::str::from_utf8(&buffer[(i+4)..(i+4+len)]));
-                cipher = select(&buffer[(i+4)..(i+4+len)])
-            } else  if field == FIELD_MAC {
-                debug!("mac: {:?}", std::str::from_utf8(&buffer[(i+4)..(i+4+len)]));
-                mac = select(&buffer[(i+4)..(i+4+len)])
-            } else  if field == FIELD_FOLLOWS {
-                debug!("follows: {:?}", buffer[i] != 0);
-                follows = Some(buffer[i] != 0)
-            }
-            i+=4+len;
-            field += 1;
-        }
-        match (kex_algorithm, key_algorithm, cipher, mac, follows) {
-            (Some(a), Some(b), Some(c), Some(d), Some(e)) => Ok((a,b,c,d,e)),
-            _ => Err(Error::KexInit)
-        }
-    }
-}
-
-
-fn write_list(buf:&mut Vec<u8>, list:&[&str]) {
-    let len0 = buf.len();
-    buf.extend(&[0,0,0,0]);
-    let mut first = true;
-    for i in list {
-        if !first {
-            buf.push(b',')
-        } else {
-            first = false;
-        }
-        buf.extend(i.as_bytes())
-    }
-    let len = (buf.len() - len0 - 4) as u32;
-    BigEndian::write_u32(&mut buf[len0..], len);
-    println!("write_list: {:?}", &buf[len0..len0+4]);
-}
-
-fn write_key_list(buf:&mut Vec<u8>, list:&[key::Algorithm]) {
-    let len0 = buf.len();
-    buf.extend(&[0,0,0,0]);
-    let mut first = true;
-    for i in list {
-        if !first {
-            buf.push(b',')
-        } else {
-            first = false;
-        }
-        buf.extend(i.name().as_bytes())
-    }
-    let len = (buf.len() - len0 - 4) as u32;
-    BigEndian::write_u32(&mut buf[len0..], len);
-    println!("write_list: {:?}", &buf[len0..len0+4]);
-}
-
 
 
 
@@ -331,17 +216,78 @@ pub fn hexdump(x:&[u8]) {
 
 impl<'a> ServerSession<'a> {
 
-    pub fn new(keys: &'a [key::Algorithm]) -> Self {
+    pub fn new(server_id:&'a str, keys: &'a [key::Algorithm]) -> Self {
         SODIUM_INIT.call_once(|| { sodiumoxide::init(); });
         ServerSession {
             keys:keys,
+            server_id: server_id,
             recv_seqn: 0,
             sent_seqn: 0,
+            read_buffer: Vec::new(),
+            write_buffer: Vec::new(),
+            write_position: 0,
             state: None
         }
     }
 
+    fn read_clear_packet<R:BufRead>(&mut self, stream:&mut R) -> Result<bool,Error> {
+        println!("read_buffer :{:?}", self.read_buffer);
+        if self.read_buffer.len() == 0 {
+            // Packet lengths are always multiples of 8, so is a StreamBuf.
+            // Therefore, this can never block.
+            self.read_buffer.resize(4,0);
+            try!(stream.read_exact(&mut self.read_buffer[0..4]));
+        }
+        let packet_len = BigEndian::read_u32(&self.read_buffer) as usize;
+
+        // This loop consumes something or returns, it cannot loop forever.
+        loop {
+            println!("loop spinning {:?}/{:?}", self.read_buffer.len(), packet_len);
+            let initial_position = self.read_buffer.len();
+            let consumed_len = match stream.fill_buf() {
+                Ok(buf) => {
+                    if self.read_buffer.len() + buf.len() < packet_len + 4 {
+
+                        self.read_buffer.extend(buf);
+                        buf.len()
+
+                    } else {
+                        let consumed_len = packet_len + 4 - self.read_buffer.len();
+                        self.read_buffer.extend(&buf[0..consumed_len]);
+                        consumed_len
+                    }
+                },
+                Err(e) => {
+                    println!("error :{:?}", e);
+                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                        println!("would block");
+                        return Ok(false)
+                    } else {
+                        return Err(Error::IO(e))
+                    }
+                }
+            };
+            stream.consume(consumed_len);
+            if self.read_buffer.len() >= packet_len {
+                // Done
+                self.recv_seqn += 1;
+                return Ok(true)
+            }
+        }
+
+    }
+    fn get_current_payload<'b>(&'b mut self) -> &'b[u8] {
+        let packet_length = BigEndian::read_u32(&self.read_buffer) as usize;
+        let padding_length = self.read_buffer[4] as usize;
+
+        let payload = &self.read_buffer[ 5 .. (4 + packet_length - padding_length) ];
+        println!("payload : {:?} {:?} {:?}", payload.len(), padding_length, packet_length);
+        payload
+    }
+
     fn read_packet<R:Read>(&mut self, stream:&mut R, buf:&mut Vec<u8>) -> Result<usize,Error> {
+
+        println!("read_packet should be replaced");
 
         let packet_length = try!(stream.read_u32::<BigEndian>()) as usize;
         let padding_length = try!(stream.read_u8()) as usize;
@@ -354,78 +300,73 @@ impl<'a> ServerSession<'a> {
         // return the read length without padding.
         Ok(packet_length - 1 - padding_length)
     }
-    fn write_kex(&self, buf:&mut Vec<u8>) {
-        buf.clear();
-        buf.push(msg::KEXINIT);
-
-        let mut cookie = [0;16];
-        sodiumoxide::randombytes::randombytes_into(&mut cookie);
-
-        buf.extend(&cookie); // cookie
-        println!("buf len :{:?}", buf.len());
-        write_list(buf, kex::Name::preferred()); // kex algo
-
-        write_key_list(buf, self.keys);
-
-        write_list(buf, cipher::Name::preferred()); // cipher client to server
-        write_list(buf, cipher::Name::preferred()); // cipher server to client
-
-        write_list(buf, Mac::preferred()); // mac client to server
-        write_list(buf, Mac::preferred()); // mac server to client
-        write_list(buf, CompressionAlgorithm::preferred()); // compress client to server
-        write_list(buf, CompressionAlgorithm::preferred()); // compress server to client
-        write_list(buf, &[]); // languages client to server
-        write_list(buf, &[]); // languagesserver to client
-
-        buf.push(0); // doesn't follow
-        buf.extend(&[0,0,0,0]); // reserved
-    }
 
     
-    pub fn read<R:Read>(&mut self, stream:&mut R, buffer:&mut Vec<u8>, buffer2:&mut Vec<u8>) -> Result<(), Error> {
+    pub fn read<R:BufRead>(&mut self, stream:&mut R, buffer:&mut Vec<u8>, buffer2:&mut Vec<u8>) -> Result<(), Error> {
         let state = std::mem::replace(&mut self.state, None);
         // println!("state: {:?}", state);
         match state {
             None => {
 
-                let mut client_id = [0;255];
-                let read = stream.read(&mut client_id).unwrap();
-                if read < 8 {
-                    Ok(())
-                } else {
-                    if &client_id[0..8] == b"SSH-2.0-" {
-                        println!("read = {:?}", read);
-                        let mut i = 0;
-                        while i < read {
-                            if client_id[i] == b'\n' || client_id[i] == b'\r' {
-                                break
-                            }
-                            i += 1
+                let (len, result) = {
+                    let buf = try!(stream.fill_buf());
+                    let mut i = 0;
+                    while i < buf.len()-1 {
+                        if &buf[i..i+2] == b"\r\n" {
+                            break
                         }
-                        if i < read {
-                            let mut exchange = Exchange::new();
-                            exchange.client_id = Some((&client_id[0..i]).to_vec());
-                            self.state = Some(ServerState::VersionOk(exchange));
-                            Ok(())
-                        } else {
-                            Err(Error::Version)
-                        }
-                    } else {
-                        Err(Error::Version)
+                        i+=1
                     }
-                }
+
+                    if buf.len() <= 8 || i >= buf.len() - 1 {
+                        // Not enough bytes. Don't consume, wait until we have more bytes. The buffer is larger than 255 anyway.
+                        return Ok(())
+                    }
+
+                    (buf.len(),
+                     if &buf[0..8] == b"SSH-2.0-" {
+
+                         let mut exchange = Exchange::new();
+                         exchange.client_id = Some((&buf[ 0 .. i ]).to_vec());
+                         println!("{:?}", std::str::from_utf8(&buf[ 0 .. i ]));
+                         self.state = Some(ServerState::VersionOk(exchange));
+                         Ok(())
+                     } else {
+                         Err(Error::Version)
+                     })
+                };
+                stream.consume(len);
+                result
+
             },
             Some(ServerState::KexInit { mut exchange, algo, sent, session_id }) => {
+
                 let algo = if algo.is_none() {
+                    
+                    if try!(self.read_clear_packet(stream)) {
+                        
+                        // let read = self.read_packet(stream, &mut kex_init).unwrap();
+                        // kex_init.truncate(read);
+                        let kex = {
+                            let payload = self.get_current_payload();
+                            exchange.client_kex_init = Some(payload.to_vec());
+                            read_kex(payload, self.keys).unwrap()
+                        };
+                        self.read_buffer.clear();
+                        
+                        Some(kex)
 
-                    let mut kex_init = Vec::new();
-                    let read = self.read_packet(stream, &mut kex_init).unwrap();
-                    kex_init.truncate(read);
-                    let kex = read_kex(&kex_init, self.keys).unwrap();
-                    // println!("kex = {:?}", kex_init);
-                    exchange.client_kex_init = Some(kex_init);
-                    Some(kex)
-
+                    } else {
+                        // A complete packet could not be read, we need to read more.
+                        println!("need more bytes");
+                        self.state = Some(ServerState::KexInit {
+                            exchange: exchange,
+                            algo:algo,
+                            sent:sent,
+                            session_id: session_id
+                        });
+                        return Ok(())
+                    }
                 } else {
                     algo
                 };
@@ -455,43 +396,64 @@ impl<'a> ServerSession<'a> {
             },
             Some(ServerState::KexDh { mut exchange, mut kex, key, cipher, mac, follows, session_id }) => {
 
-                buffer.clear();
-                let read = try!(self.read_packet(stream, buffer));
-                buffer.truncate(read);
 
-                assert!(buffer[0] == msg::KEX_ECDH_INIT);
+                if try!(self.read_clear_packet(stream)) {
 
-                let kex = try!(kex.dh(&mut exchange, &buffer));
+                    let kex = {
+                        let payload = self.get_current_payload();
+                        assert!(payload[0] == msg::KEX_ECDH_INIT);
+                        exchange.client_ephemeral = Some((&payload[5..]).to_vec());
+                        try!(kex.dh(&mut exchange, payload))
+                    };
+                    self.state = Some(
+                        ServerState::KexDhDone {
+                            exchange:exchange,
+                            kex:kex,
+                            key:key,
+                            cipher:cipher, mac:mac, follows:follows,
+                            session_id: session_id
+                        });
 
-                exchange.client_ephemeral = Some((&buffer[5..]).to_vec());
-                self.state = Some(
-                    ServerState::KexDhDone {
-                        exchange:exchange,
-                        kex:kex,
-                        key:key,
-                        cipher:cipher, mac:mac, follows:follows,
-                        session_id: session_id
-                    });
-                Ok(())
+                    self.read_buffer.clear();
+                    
+                    Ok(())
+
+                } else {
+                    // not enough bytes.
+                    self.state = Some(
+                        ServerState::KexDh {
+                            exchange:exchange,
+                            kex:kex,
+                            key:key,
+                            cipher:cipher, mac:mac, follows:follows,
+                            session_id: session_id
+                        });
+                    Ok(())
+                }
             },
             Some(ServerState::NewKeys { exchange, kex, key, cipher, mac, session_id }) => {
 
                 // We are waiting for the NEWKEYS packet.
-                buffer.clear();
-                let read = try!(self.read_packet(stream, buffer));
-                if read > 0 && buffer[0] == msg::NEWKEYS {
+                if try!(self.read_clear_packet(stream)) {
+
+                    let payload_is_newkeys = self.get_current_payload()[0] == msg::NEWKEYS;
+                    if payload_is_newkeys {
+                        self.state = Some(
+                            ServerState::Encrypted { exchange: exchange, kex:kex, key:key,
+                                                     cipher:cipher, mac:mac,
+                                                     session_id: session_id,
+                            }
+                        );
+                        Ok(())
+                    } else {
+                        Err(Error::NewKeys)
+                    }
+                } else {
+                    // Not enough bytes
                     self.state = Some(
                         ServerState::Encrypted { exchange: exchange, kex:kex, key:key,
                                                  cipher:cipher, mac:mac,
                                                  session_id: session_id,
-                        }
-                    );
-                    Ok(())
-                } else {
-                    self.state = Some(
-                        ServerState::NewKeys { exchange: exchange, kex:kex, key:key,
-                                               cipher:cipher, mac:mac,
-                                               session_id: session_id,
                         }
                     );
                     Ok(())
@@ -517,20 +479,47 @@ impl<'a> ServerSession<'a> {
         }
     }
 
+    fn write_all<W:Write>(&mut self, stream:&mut W) -> Result<bool, Error> {
+        while self.write_position < self.write_buffer.len() {
+            match stream.write(&self.write_buffer) {
+                Ok(s) => self.write_position += s,
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                        return Ok(false) // need more bytes
+                    } else {
+                        return Err(Error::IO(e))
+                    }
+                }
+            }
+        }
+        try!(stream.flush());
+        Ok(true)
+    }
+    
     pub fn write<W:Write>(&mut self, stream:&mut W, buffer:&mut Vec<u8>, buffer2:&mut Vec<u8>) -> Result<(), Error> {
+
+
+        // Finish pending writes, if any.
+        if ! try!(self.write_all(stream)) {
+            // If we need more bytes
+            return Ok(())
+        }
+        self.write_buffer.clear();
+        self.write_position = 0;
 
         let state = std::mem::replace(&mut self.state, None);
 
         match state {
             Some(ServerState::VersionOk(mut exchange)) => {
-                debug!("writing");
-                let mut server_id = b"SSH-2.0-SSH.rs_0.1\r\n".to_vec();
-                try!(stream.write_all(&mut server_id));
-                let len = server_id.len();
-                server_id.truncate(len - 2); // Drop CRLF.
-                exchange.server_id = Some(server_id);
 
-                try!(stream.flush());
+                self.write_buffer.extend(self.server_id.as_bytes());
+                self.write_buffer.push(b'\r');
+                self.write_buffer.push(b'\n');
+
+                try!(self.write_all(stream));
+
+                exchange.server_id = Some(self.server_id.as_bytes().to_vec());
+
                 self.state = Some(
                     ServerState::KexInit {
                         exchange:exchange,
@@ -542,11 +531,13 @@ impl<'a> ServerSession<'a> {
             },
             Some(ServerState::KexInit { mut exchange, algo, sent, session_id }) => {
                 if !sent {
-                    let mut server_kex = Vec::new();
-                    self.write_kex(&mut server_kex);
-                    try!(write_packet(stream, &server_kex));
-                    exchange.server_kex_init = Some(server_kex);
-                    try!(stream.flush());
+
+                    self.write_buffer.extend(b"\0\0\0\0\0");
+                    write_kex(&self.keys, &mut self.write_buffer);
+                    exchange.server_kex_init = Some((&self.write_buffer [5..]).to_vec());
+                    complete_packet(&mut self.write_buffer, 0);
+                    try!(self.write_all(stream));
+
                 }
                 if let Some((kex,key,cipher,mac,follows)) = algo {
 
@@ -574,30 +565,31 @@ impl<'a> ServerSession<'a> {
 
                 if let Some(ref server_ephemeral) = exchange.server_ephemeral {
 
-                    buffer.clear();
-
                     // ECDH Key exchange.
                     // http://tools.ietf.org/html/rfc5656#section-4
-
-                    buffer.push(msg::KEX_ECDH_REPLY);
-                    
-                    try!(key.write_pubkey(buffer));
+                    self.write_buffer.extend(b"\0\0\0\0\0");
+                    self.write_buffer.push(msg::KEX_ECDH_REPLY);
+                    try!(key.write_pubkey(&mut self.write_buffer));
                     // Server ephemeral
-                    try!(buffer.write_ssh_string(server_ephemeral));
-
+                    try!(self.write_buffer.write_ssh_string(server_ephemeral));
                     // Hash signature
-                    try!(key.add_signature(buffer, hash.as_slice()));
+                    try!(key.add_signature(&mut self.write_buffer, hash.as_slice()));
                     //
-                    try!(write_packet(stream, &buffer));
+                    complete_packet(&mut self.write_buffer, 0);
+
                 } else {
+
                     return Err(Error::DH)
+
                 }
                 // Sending the NEWKEYS packet.
                 // https://tools.ietf.org/html/rfc4253#section-7.3
-                buffer.clear();
-                buffer.push(msg::NEWKEYS);
-                try!(write_packet(stream, &buffer));
-                try!(stream.flush());
+                // buffer.clear();
+                let pos = self.write_buffer.len();
+                self.write_buffer.extend(b"\0\0\0\0\0");
+                self.write_buffer.push(msg::NEWKEYS);
+                complete_packet(&mut self.write_buffer, pos);
+                try!(self.write_all(stream));
 
                 let session_id = if let Some(session_id) = session_id {
                     session_id

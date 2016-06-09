@@ -44,6 +44,7 @@ impl<'a> Handler for Server<'a> {
 
                     self.sessions.insert(id, (BufStream::new(socket), addr,
                                               ServerSession::new(
+                                                  &self.server_config.server_id,
                                                   &self.server_config.keys,
                                               )));
                 }
@@ -108,6 +109,8 @@ fn main () {
     env_logger::init().unwrap();
 
     let config = ssh::config::Config {
+        // Must begin with "SSH-2.0-".
+        server_id: "SSH-2.0-SSH.rs_0.1".to_string(),
         keys:vec!(
             key::Algorithm::Ed25519 {
                 public_host_key: ssh::config::read_public_key("ssh_host_ed25519_key.pub").unwrap(),
