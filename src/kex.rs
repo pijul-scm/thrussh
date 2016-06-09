@@ -4,26 +4,44 @@ use byteorder::{ByteOrder,BigEndian,WriteBytesExt};
 use super::{SSHString, Named,Preferred,Error};
 use super::msg;
 use std;
-use sodiumoxide::crypto::sign::ed25519::{PublicKey,SecretKey,SIGNATUREBYTES};
-use sodiumoxide::crypto::hash::sha256::Digest;
+// use sodiumoxide::crypto::sign::ed25519::{PublicKey,SecretKey,SIGNATUREBYTES};
+use sodiumoxide::crypto::hash::sha256;
+
+#[derive(Debug,Clone)]
+pub enum Digest {
+    Sha256(sha256::Digest)
+}
+impl Digest {
+    pub fn as_slice<'a>(&'a self) -> &'a[u8] {
+        match self {
+            &Digest::Sha256(ref d) => &d.0
+        }
+    }
+}
+
 #[derive(Debug)]
-pub enum KexAlgorithm {
-    Curve25519(Option<Kex>) // "curve25519-sha256@libssh.org"
+pub enum Algorithm {
+    Curve25519(Curve25519) // "curve25519-sha256@libssh.org"
+}
+
+#[derive(Debug)]
+pub enum Name {
+    Curve25519 // "curve25519-sha256@libssh.org"
 }
 
 const KEX_CURVE25519:&'static str = "curve25519-sha256@libssh.org";
 
-impl Named for KexAlgorithm {
+impl Named for Name {
     fn from_name(name: &[u8]) -> Option<Self> {
         if name == KEX_CURVE25519.as_bytes() {
-            return Some(KexAlgorithm::Curve25519(None))
+            return Some(Name::Curve25519)
         }
         None
     }
 }
 
 #[derive(Debug)]
-pub struct Kex {
+pub struct Curve25519 {
     client_pubkey: sodiumoxide::crypto::scalarmult::curve25519::GroupElement,
     server_pubkey: sodiumoxide::crypto::scalarmult::curve25519::GroupElement,
     server_secret: sodiumoxide::crypto::scalarmult::curve25519::Scalar,
@@ -34,7 +52,7 @@ const KEX_ALGORITHMS: &'static [&'static str;1] = &[
     KEX_CURVE25519
 ];
 
-impl Preferred for KexAlgorithm {
+impl Preferred for Name {
     fn preferred() -> &'static [&'static str] {
         KEX_ALGORITHMS
     }
@@ -43,14 +61,14 @@ impl Preferred for KexAlgorithm {
 use sodiumoxide::crypto::scalarmult::curve25519;
 use sodiumoxide::crypto::stream::chacha20::{ Nonce, Key, NONCEBYTES, KEYBYTES };
 
-impl KexAlgorithm {
+impl Name {
     
-    pub fn dh(&mut self, exchange:&mut super::Exchange, payload:&[u8]) -> Result<(),Error> {
+    pub fn dh(&mut self, exchange:&mut super::Exchange, payload:&[u8]) -> Result<Algorithm,Error> {
 
         match self {
 
-            &mut KexAlgorithm::Curve25519(ref mut kex) if payload[0] == msg::KEX_ECDH_INIT => {
-                debug_assert!(kex.is_none());
+            &mut Name::Curve25519 if payload[0] == msg::KEX_ECDH_INIT => {
+
                 let client_pubkey = {
                     let pubkey_len = BigEndian::read_u32(&payload[1..]) as usize;
                     curve25519::GroupElement::from_slice(&payload[5 .. (5+pubkey_len)])
@@ -81,13 +99,12 @@ impl KexAlgorithm {
                         println!("shared secret");
                         super::hexdump(&shared_secret.0);
 
-                        *kex = Some(Kex {
+                        Ok(Algorithm::Curve25519(Curve25519 {
                             client_pubkey: client_pubkey,
                             server_pubkey: server_pubkey,
                             server_secret: server_secret,
                             shared_secret: shared_secret
-                        });
-                        Ok(())
+                        }))
                     } else {
                         Err(Error::Kex)
                     }
@@ -98,12 +115,17 @@ impl KexAlgorithm {
             _ => Err(Error::Kex)
         }
     }
+}
 
-    pub fn compute_exchange_hash(&self, server_public_host_key:&PublicKey, exchange:&super::Exchange, buffer:&mut Vec<u8>) -> Result<Digest,Error> {
+impl Algorithm {
+    pub fn compute_exchange_hash(&self,
+                                 key_algo:&super::key::Algorithm,
+                                 // server_public_host_key:&[u8],
+                                 exchange:&super::Exchange, buffer:&mut Vec<u8>) -> Result<Digest,Error> {
         // Computing the exchange hash, see page 7 of RFC 5656.
         //println!("exchange: {:?}", exchange);
         match self {
-            &KexAlgorithm::Curve25519(Some(ref kex)) => {
+            &Algorithm::Curve25519(ref kex) => {
 
                 match (&exchange.client_id,
                        &exchange.server_id,
@@ -130,12 +152,9 @@ impl KexAlgorithm {
                         try!(buffer.write_ssh_string(client_kex_init));
                         try!(buffer.write_ssh_string(server_kex_init));
 
-                        {
-                            let keylen = server_public_host_key.0.len();
-                            try!(buffer.write_u32::<BigEndian>((keylen + 8 + super::KEY_ED25519.len()) as u32));
-                            try!(buffer.write_ssh_string(super::KEY_ED25519.as_bytes()));
-                            try!(buffer.write_ssh_string(&server_public_host_key.0));
-                        }
+                        
+                        try!(key_algo.write(buffer));
+
                         //println!("client_ephemeral: {:?}", client_ephemeral);
                         //println!("server_ephemeral: {:?}", server_ephemeral);
 
@@ -154,90 +173,101 @@ impl KexAlgorithm {
                         super::hexdump(&buffer);
                         let hash = sodiumoxide::crypto::hash::sha256::hash(&buffer);
                         println!("hash: {:?}", hash);
-                        Ok(hash)
+                        Ok(Digest::Sha256(hash))
                     },
                     _ => Err(Error::Kex)
                 }
             },
-            _ => Err(Error::Kex)
+            // _ => Err(Error::Kex)
         }
     }
 
-    pub fn compute_keys(&self, session_id:&Digest, exchange_hash:&Digest, buffer:&mut Vec<u8>, key:&mut Vec<u8>, cipher:&mut super::cipher::Cipher) {
+    pub fn compute_keys(&self, session_id:&Digest,
+                        exchange_hash:&Digest,
+                        buffer:&mut Vec<u8>, key:&mut Vec<u8>,
+                        cipher:&super::cipher::Name) -> super::cipher::Cipher {
         match self {
-            &KexAlgorithm::Curve25519(Some(ref kex)) => {
+            &Algorithm::Curve25519(ref kex) => {
 
                 // https://tools.ietf.org/html/rfc4253#section-7.2
-                let mut compute_key = |c, len| {
+                let mut compute_key = |c, key:&mut Vec<u8>, len| {
 
                     buffer.clear();
-                    let mut key = Vec::new();
+                    key.clear();
 
                     buffer.write_ssh_mpint(&kex.shared_secret.0);
-                    buffer.extend(&exchange_hash.0);
+                    buffer.extend(exchange_hash.as_slice());
                     buffer.push(c);
-                    buffer.extend(&session_id.0);
+                    buffer.extend(session_id.as_slice());
                     key.extend(
                         &sodiumoxide::crypto::hash::sha256::hash(&buffer).0
                     );
 
-                    while key.len() < 2*len {
+                    while key.len() < len {
                         // extend.
                         buffer.clear();
                         buffer.write_ssh_mpint(&kex.shared_secret.0);
-                        buffer.extend(&exchange_hash.0);
+                        buffer.extend(exchange_hash.as_slice());
                         buffer.extend(&key[..]);
                         key.extend(
                             &sodiumoxide::crypto::hash::sha256::hash(&buffer).0
                         )
                     }
-                    key
                 };
-                match *cipher {
-                    super::cipher::Cipher::Chacha20Poly1305(ref mut cipher) => {
+                
+                match cipher {
+                    &super::cipher::Name::Chacha20Poly1305 => {
 
-                        if cipher.is_none() {
-                            *cipher = Some(super::cipher::Chacha20Poly1305 {
-                                iv_client_to_server: {
-                                    println!("A");
-                                    println!("{:?}", NONCEBYTES);
-                                    compute_key(b'A', NONCEBYTES)
-                                    //println!("buf {:?} {:?}", key, key.len());
-                                    //Nonce::from_slice(&key[0..NONCEBYTES]).unwrap()
-                                },
-                                iv_server_to_client: {
-                                    println!("B");
-                                    compute_key(b'B', NONCEBYTES)
-                                    //Nonce::from_slice(&key[0..NONCEBYTES]).unwrap()
-                                },
-                                key_client_to_server: {
-                                    println!("C");
-                                    compute_key(b'C', KEYBYTES)
-                                        //Key::from_slice(&key).unwrap()
-                                },
-                                key_server_to_client: {
-                                    println!("D");
-                                    compute_key(b'D', KEYBYTES)
-                                        //Key::from_slice(&key).unwrap()
-                                },
-                                integrity_client_to_server: {
-                                    println!("E");
-                                    compute_key(b'E', KEYBYTES)
-                                        //Key::from_slice(&key).unwrap()
-                                },
-                                integrity_server_to_client: {
-                                    println!("F");
-                                    compute_key(b'F', KEYBYTES)
-                                        //Key::from_slice(&key).unwrap()
-                                }
-                            })
-                        } else {
-                            unimplemented!()
+                        super::cipher::Cipher::Chacha20Poly1305 {
+
+                            client_to_server: {
+                                compute_key(b'C', key, cipher.key_size());
+                                super::cipher::chacha20poly1305::Cipher::init(&key[..])
+                            },
+                            server_to_client: {
+                                compute_key(b'D', key, cipher.key_size());
+                                super::cipher::chacha20poly1305::Cipher::init(&key[..])
+                            },
                         }
+                        
+                        /* cipher = Some(super::cipher::chacha20poly1305::Cipher {
+                            iv_client_to_server: {
+                                println!("A");
+                                println!("{:?}", NONCEBYTES);
+                                compute_key(b'A', NONCEBYTES)
+                                //println!("buf {:?} {:?}", key, key.len());
+                                //Nonce::from_slice(&key[0..NONCEBYTES]).unwrap()
+                            },
+                            iv_server_to_client: {
+                                println!("B");
+                                compute_key(b'B', NONCEBYTES)
+                                //Nonce::from_slice(&key[0..NONCEBYTES]).unwrap()
+                            },
+                            key_client_to_server: {
+                                println!("C");
+                                compute_key(b'C', KEYBYTES)
+                                //Key::from_slice(&key).unwrap()
+                            },
+                            key_server_to_client: {
+                                println!("D");
+                                compute_key(b'D', KEYBYTES)
+                                //Key::from_slice(&key).unwrap()
+                            },
+                            integrity_client_to_server: {
+                                println!("E");
+                                compute_key(b'E', KEYBYTES)
+                                //Key::from_slice(&key).unwrap()
+                            },
+                            integrity_server_to_client: {
+                                println!("F");
+                                compute_key(b'F', KEYBYTES)
+                                //Key::from_slice(&key).unwrap()
+                            }
+                    })*/
                     }
                 }
             },
-            _ => {}
+            // _ => unimplemented!()
         }
     }
 }

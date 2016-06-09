@@ -44,8 +44,7 @@ impl<'a> Handler for Server<'a> {
 
                     self.sessions.insert(id, (BufStream::new(socket), addr,
                                               ServerSession::new(
-                                                  &self.server_config.server_publickey,
-                                                  &self.server_config.server_secretkey
+                                                  &self.server_config.keys,
                                               )));
                 }
             },
@@ -109,8 +108,12 @@ fn main () {
     env_logger::init().unwrap();
 
     let config = ssh::config::Config {
-        server_publickey: ssh::config::read_public_key("ssh_host_ed25519_key.pub").unwrap(),
-        server_secretkey: ssh::config::read_secret_key("ssh_host_ed25519_key").unwrap(),
+        keys:vec!(
+            key::Algorithm::Ed25519 {
+                public_host_key: ssh::config::read_public_key("ssh_host_ed25519_key.pub").unwrap(),
+                secret_host_key: ssh::config::read_secret_key("ssh_host_ed25519_key").unwrap(),
+            }
+        )
     };
     println!("config : {:?}", config);
     let addr = "127.0.0.1:13265".parse().unwrap();

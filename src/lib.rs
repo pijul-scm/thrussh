@@ -15,7 +15,8 @@ use std::io::{ Read, Write, BufRead };
 use std::sync::{Once, ONCE_INIT};
 
 pub mod config;
-use sodiumoxide::crypto::hash::sha256::Digest;
+// use sodiumoxide::crypto::hash::sha256::Digest;
+use sodiumoxide::crypto::sign::ed25519;
 
 static SODIUM_INIT: Once = ONCE_INIT;
 #[derive(Debug)]
@@ -35,7 +36,14 @@ impl From<std::io::Error> for Error {
     }
 }
 
-use sodiumoxide::crypto::sign::ed25519::{PublicKey,SecretKey,SIGNATUREBYTES};
+mod msg;
+mod kex;
+
+pub mod key;
+mod cipher;
+
+mod mac;
+use mac::*;
 
 #[derive(Debug)]
 pub struct Exchange {
@@ -58,10 +66,10 @@ impl Exchange {
     }
 }
 
+
 #[derive(Debug)]
 pub struct ServerSession<'a> {
-    public_host_key: &'a PublicKey,
-    secret_host_key: &'a SecretKey,
+    keys:&'a[key::Algorithm],
     recv_seqn: usize,
     sent_seqn: usize,
     state: Option<ServerState>
@@ -73,37 +81,46 @@ pub enum ServerState {
     KexInit { // Version number sent. `algo` and `sent` tell wether kexinit has been received, and sent, respectively.
         algo: Option<Names>,
         exchange: Exchange,
-        session_id: Option<Digest>,
+        session_id: Option<kex::Digest>,
         sent: bool
     },
     KexDh { // Algorithms have been determined, the DH algorithm should run.
         exchange: Exchange,
-        kex: KexAlgorithm,
-        key: KeyAlgorithm,
-        cipher: Cipher,
+        kex: kex::Name,
+        key: key::Algorithm,
+        cipher: cipher::Name,
         mac: Mac,
-        session_id: Option<Digest>,
+        session_id: Option<kex::Digest>,
+        follows: bool
+    },
+    KexDhDone { // The kex has run.
+        exchange: Exchange,
+        kex: kex::Algorithm,
+        key: key::Algorithm,
+        cipher: cipher::Name,
+        mac: Mac,
+        session_id: Option<kex::Digest>,
         follows: bool
     },
     NewKeys { // The DH is over, we've sent the NEWKEYS packet, and are waiting the NEWKEYS from the other side.
         exchange: Exchange,
-        kex: KexAlgorithm,
-        key: KeyAlgorithm,
-        cipher: Cipher,
+        kex: kex::Algorithm,
+        key: key::Algorithm,
+        cipher: cipher::Cipher,
         mac: Mac,
-        session_id: Digest,
+        session_id: kex::Digest,
     },
     Encrypted { // Session is now encrypted.
         exchange: Exchange,
-        kex: KexAlgorithm,
-        key: KeyAlgorithm,
-        cipher: Cipher,
+        kex: kex::Algorithm,
+        key: key::Algorithm,
+        cipher: cipher::Cipher,
         mac: Mac,
-        session_id: Digest,
+        session_id: kex::Digest,
     },
 }
 
-pub type Names = (KexAlgorithm, KeyAlgorithm, Cipher, Mac, bool);
+pub type Names = (kex::Name, key::Algorithm, cipher::Name, Mac, bool);
 
 trait Named:Sized {
     fn from_name(&[u8]) -> Option<Self>;
@@ -121,39 +138,15 @@ fn select<A:Named + 'static>(list:&[u8]) -> Option<A> {
     }
     None
 }
-
-mod msg;
-mod kex;
-use kex::*;
-
-mod cipher;
-use cipher::*;
-
-mod mac;
-use mac::*;
-
-#[derive(Debug,Clone)]
-pub enum KeyAlgorithm {
-    Ed25519 // "ssh-ed25519"
-}
-const KEY_ED25519:&'static str = "ssh-ed25519";
-const KEY_ALGORITHMS: &'static [&'static str;1] = &[
-    KEY_ED25519
-];
-
-impl Named for KeyAlgorithm {
-    fn from_name(name: &[u8]) -> Option<Self> {
-        if name == KEY_ED25519.as_bytes() {
-            return Some(KeyAlgorithm::Ed25519)
+fn select_key(list:&[u8], keys:&[key::Algorithm]) -> Option<key::Algorithm> {
+    for l in list.split(|&x| x == b',') {
+        for k in keys {
+            if l == k.name().as_bytes() {
+                return Some(k.clone())
+            }
         }
-        None
     }
-}
-
-impl Preferred for KeyAlgorithm {
-    fn preferred() -> &'static [&'static str] {
-        KEY_ALGORITHMS
-    }
+    None
 }
 
 
@@ -225,7 +218,7 @@ trait SSHString:Write {
 }
 impl<T:Write> SSHString for T {}
 
-fn read_kex(buffer:&[u8]) -> Result<Names,Error> {
+fn read_kex(buffer:&[u8], keys:&[key::Algorithm]) -> Result<Names,Error> {
     if buffer[0] != msg::KEXINIT {
         Err(Error::KexInit)
     } else {
@@ -250,7 +243,9 @@ fn read_kex(buffer:&[u8]) -> Result<Names,Error> {
                 kex_algorithm = select(&buffer[(i+4)..(i+4+len)])
             } else  if field == FIELD_KEY_ALGORITHM {
                 debug!("key_algorithms: {:?}", std::str::from_utf8(&buffer[(i+4)..(i+4+len)]));
-                key_algorithm = select(&buffer[(i+4)..(i+4+len)])
+
+                key_algorithm = select_key(&buffer[(i+4)..(i+4+len)], keys)
+
             } else  if field == FIELD_CIPHER_CLIENT_TO_SERVER {
                 debug!("ciphers_client_to_server: {:?}", std::str::from_utf8(&buffer[(i+4)..(i+4+len)]));
                 cipher = select(&buffer[(i+4)..(i+4+len)])
@@ -271,29 +266,6 @@ fn read_kex(buffer:&[u8]) -> Result<Names,Error> {
     }
 }
 
-fn write_kex(buf:&mut Vec<u8>) {
-    buf.clear();
-    buf.push(msg::KEXINIT);
-
-    let mut cookie = [0;16];
-    sodiumoxide::randombytes::randombytes_into(&mut cookie);
-
-    buf.extend(&cookie); // cookie
-    println!("buf len :{:?}", buf.len());
-    write_list(buf, KexAlgorithm::preferred()); // kex algo
-    write_list(buf, KeyAlgorithm::preferred()); // key algo
-    write_list(buf, Cipher::preferred()); // cipher client to server
-    write_list(buf, Cipher::preferred()); // cipher server to client
-    write_list(buf, Mac::preferred()); // mac client to server
-    write_list(buf, Mac::preferred()); // mac server to client
-    write_list(buf, CompressionAlgorithm::preferred()); // compress client to server
-    write_list(buf, CompressionAlgorithm::preferred()); // compress server to client
-    write_list(buf, &[]); // languages client to server
-    write_list(buf, &[]); // languagesserver to client
-
-    buf.push(0); // doesn't follow
-    buf.extend(&[0,0,0,0]); // reserved
-}
 
 fn write_list(buf:&mut Vec<u8>, list:&[&str]) {
     let len0 = buf.len();
@@ -311,6 +283,27 @@ fn write_list(buf:&mut Vec<u8>, list:&[&str]) {
     BigEndian::write_u32(&mut buf[len0..], len);
     println!("write_list: {:?}", &buf[len0..len0+4]);
 }
+
+fn write_key_list(buf:&mut Vec<u8>, list:&[key::Algorithm]) {
+    let len0 = buf.len();
+    buf.extend(&[0,0,0,0]);
+    let mut first = true;
+    for i in list {
+        if !first {
+            buf.push(b',')
+        } else {
+            first = false;
+        }
+        buf.extend(i.name().as_bytes())
+    }
+    let len = (buf.len() - len0 - 4) as u32;
+    BigEndian::write_u32(&mut buf[len0..], len);
+    println!("write_list: {:?}", &buf[len0..len0+4]);
+}
+
+
+
+
 
 pub fn hexdump(x:&[u8]) {
     let mut buf = Vec::new();
@@ -340,11 +333,10 @@ pub fn hexdump(x:&[u8]) {
 
 impl<'a> ServerSession<'a> {
 
-    pub fn new(server_pubkey: &'a PublicKey, server_secret: &'a SecretKey) -> Self {
+    pub fn new(keys: &'a [key::Algorithm]) -> Self {
         SODIUM_INIT.call_once(|| { sodiumoxide::init(); });
         ServerSession {
-            public_host_key: server_pubkey,
-            secret_host_key: server_secret,
+            keys:keys,
             recv_seqn: 0,
             sent_seqn: 0,
             state: None
@@ -363,6 +355,32 @@ impl<'a> ServerSession<'a> {
         self.recv_seqn += 1;
         // return the read length without padding.
         Ok(packet_length - 1 - padding_length)
+    }
+    fn write_kex(&self, buf:&mut Vec<u8>) {
+        buf.clear();
+        buf.push(msg::KEXINIT);
+
+        let mut cookie = [0;16];
+        sodiumoxide::randombytes::randombytes_into(&mut cookie);
+
+        buf.extend(&cookie); // cookie
+        println!("buf len :{:?}", buf.len());
+        write_list(buf, kex::Name::preferred()); // kex algo
+
+        write_key_list(buf, self.keys);
+
+        write_list(buf, cipher::Name::preferred()); // cipher client to server
+        write_list(buf, cipher::Name::preferred()); // cipher server to client
+
+        write_list(buf, Mac::preferred()); // mac client to server
+        write_list(buf, Mac::preferred()); // mac server to client
+        write_list(buf, CompressionAlgorithm::preferred()); // compress client to server
+        write_list(buf, CompressionAlgorithm::preferred()); // compress server to client
+        write_list(buf, &[]); // languages client to server
+        write_list(buf, &[]); // languagesserver to client
+
+        buf.push(0); // doesn't follow
+        buf.extend(&[0,0,0,0]); // reserved
     }
 
     
@@ -405,7 +423,7 @@ impl<'a> ServerSession<'a> {
                     let mut kex_init = Vec::new();
                     let read = self.read_packet(stream, &mut kex_init).unwrap();
                     kex_init.truncate(read);
-                    let kex = read_kex(&kex_init).unwrap();
+                    let kex = read_kex(&kex_init, self.keys).unwrap();
                     // println!("kex = {:?}", kex_init);
                     exchange.client_kex_init = Some(kex_init);
                     Some(kex)
@@ -427,7 +445,8 @@ impl<'a> ServerSession<'a> {
                         self.state = Some(
                             ServerState::KexDh {
                                 exchange:exchange,
-                                kex:kex, key:key, cipher:cipher, mac:mac, follows:follows,
+                                kex:kex, key:key,
+                                cipher:cipher, mac:mac, follows:follows,
                                 session_id: session_id
                             });
                         Ok(())
@@ -444,13 +463,15 @@ impl<'a> ServerSession<'a> {
 
                 assert!(buffer[0] == msg::KEX_ECDH_INIT);
 
-                try!(kex.dh(&mut exchange, &buffer));
+                let kex = try!(kex.dh(&mut exchange, &buffer));
 
                 exchange.client_ephemeral = Some((&buffer[5..]).to_vec());
                 self.state = Some(
-                    ServerState::KexDh {
+                    ServerState::KexDhDone {
                         exchange:exchange,
-                        kex:kex, key:key, cipher:cipher, mac:mac, follows:follows,
+                        kex:kex,
+                        key:key,
+                        cipher:cipher, mac:mac, follows:follows,
                         session_id: session_id
                     });
                 Ok(())
@@ -524,7 +545,7 @@ impl<'a> ServerSession<'a> {
             Some(ServerState::KexInit { mut exchange, algo, sent, session_id }) => {
                 if !sent {
                     let mut server_kex = Vec::new();
-                    write_kex(&mut server_kex);
+                    self.write_kex(&mut server_kex);
                     try!(write_packet(stream, &server_kex));
                     exchange.server_kex_init = Some(server_kex);
                     try!(stream.flush());
@@ -533,9 +554,9 @@ impl<'a> ServerSession<'a> {
 
                     self.state = Some(
                         ServerState::KexDh {
-                        exchange:exchange,
-                        kex:kex, key:key, cipher:cipher, mac:mac, follows:follows,
-                        session_id: session_id
+                            exchange:exchange,
+                            kex:kex, key:key, cipher:cipher, mac:mac, follows:follows,
+                            session_id: session_id
                     });
                     Ok(())
                 } else {
@@ -549,9 +570,9 @@ impl<'a> ServerSession<'a> {
                     Ok(())
                 }
             },
-            Some(ServerState::KexDh { exchange, kex, key, mut cipher, mac, follows, session_id }) => {
+            Some(ServerState::KexDhDone { exchange, kex, key, mut cipher, mac, follows, session_id }) => {
 
-                let hash = try!(kex.compute_exchange_hash(&self.public_host_key, &exchange, buffer));
+                let hash = try!(kex.compute_exchange_hash(&key, &exchange, buffer));
 
                 let mut ok = false;
 
@@ -563,28 +584,13 @@ impl<'a> ServerSession<'a> {
                     // http://tools.ietf.org/html/rfc5656#section-4
 
                     buffer.push(msg::KEX_ECDH_REPLY);
-
-                    try!(buffer.write_u32::<BigEndian>(
-                        (KEY_ED25519.len()
-                         + self.public_host_key.0.len()
-                         + 8) as u32
-                    ));
-                    try!(buffer.write_ssh_string(KEY_ED25519.as_bytes()));
-                    try!(buffer.write_ssh_string(&self.public_host_key.0));
-
+                    
+                    try!(key.write_pubkey(buffer));
                     // Server ephemeral
                     try!(buffer.write_ssh_string(server_ephemeral));
 
                     // Hash signature
-                    let sign = sodiumoxide::crypto::sign::ed25519::sign_detached(&hash.0, self.secret_host_key);
-
-                    try!(buffer.write_u32::<BigEndian>(
-                        (KEY_ED25519.len()
-                         + sign.0.len()
-                         + 8) as u32
-                    ));
-                    try!(buffer.write_ssh_string(KEY_ED25519.as_bytes()));
-                    try!(buffer.write_ssh_string(&sign.0));
+                    key.sign(buffer, hash.as_slice());
                     //
                     try!(write_packet(stream, &buffer));
                 } else {
@@ -603,14 +609,15 @@ impl<'a> ServerSession<'a> {
                     hash.clone()
                 };
                 // Now computing keys.
-                kex.compute_keys(&session_id, &hash, buffer, buffer2, &mut cipher);
+                let c = kex.compute_keys(&session_id, &hash, buffer, buffer2, &mut cipher);
                 // keys.dump(); //println!("keys: {:?}", keys);
                 //
                 self.state = Some(
                     ServerState::NewKeys {
                         exchange: exchange,
                         kex:kex, key:key,
-                        cipher:cipher, mac:mac,
+                        cipher: c,
+                        mac:mac,
                         session_id: session_id,
                     }
                 );
