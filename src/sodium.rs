@@ -14,6 +14,15 @@ pub fn memcmp(x: &[u8], y: &[u8]) -> bool {
         libsodium_sys::sodium_memcmp(x.as_ptr(), y.as_ptr(), x.len()) == 0
     }
 }
+pub fn memzero(x: &mut [u8]) {
+    unsafe {
+        libsodium_sys::sodium_memzero(x.as_mut_ptr(), x.len());
+    }
+}
+
+
+
+
 
 macro_rules! newtype_from_slice (($newtype:ident, $len:expr) => {
     pub struct $newtype([u8;$len]);
@@ -23,6 +32,13 @@ macro_rules! newtype_from_slice (($newtype:ident, $len:expr) => {
         }
     }
     from_slice!($newtype,$len);
+});
+macro_rules! new_blank (($newtype:ident, $len:expr) => {
+    impl $newtype {
+        pub fn new_blank() -> Self {
+            $newtype([0;$len])
+        }
+    }
 });
 macro_rules! from_slice (($newtype:ident, $len:expr) => (
     impl $newtype {
@@ -95,20 +111,18 @@ pub mod poly1305 {
     newtype_from_slice!(Key,KEYBYTES);
 
     pub struct Tag([u8;TAGBYTES]);
-    impl Tag {
-        pub fn as_bytes<'a>(&'a self) -> &'a[u8] { &self.0 }
-    }
+    new_blank!(Tag,TAGBYTES);
+    impl Tag { pub fn as_bytes<'a>(&'a self) -> &'a[u8] { &self.0 } }
 
-    pub fn authenticate(m: &[u8],
-                        &Key(ref k): &Key) -> Tag {
+    pub fn authenticate(tag:&mut Tag,
+                        m: &[u8],
+                        k: &Key) {
         unsafe {
-            let mut tag = [0; TAGBYTES];
             libsodium_sys::crypto_onetimeauth_poly1305(
-                &mut tag,
+                &mut tag.0,
                 m.as_ptr(),
                 m.len() as c_ulonglong,
-                k);
-            Tag(tag)
+                &(k.0));
         }
     }
 }
@@ -153,25 +167,23 @@ pub mod curve25519 {
     use std;
     newtype_from_slice!(Scalar, SCALARBYTES);
     newtype_from_slice!(GroupElement, GROUPELEMENTBYTES);
+    new_blank!(GroupElement, GROUPELEMENTBYTES);
     impl GroupElement {
         pub fn as_bytes<'a>(&'a self) -> &'a[u8] { &self.0 }
     }
 
-    pub fn scalarmult(&Scalar(ref n): &Scalar,
-                      &GroupElement(ref p): &GroupElement) -> GroupElement {
-        let mut q = GroupElement([0; GROUPELEMENTBYTES]);
+    pub fn scalarmult(q: &mut GroupElement,
+                      &Scalar(ref n): &Scalar,
+                      &GroupElement(ref p): &GroupElement) {
         unsafe {
             libsodium_sys::crypto_scalarmult_curve25519(&mut q.0, n, p);
         }
-        q
     }
 
-    pub fn scalarmult_base(&Scalar(ref n): &Scalar) -> GroupElement {
-        let mut q = GroupElement([0; GROUPELEMENTBYTES]);
+    pub fn scalarmult_base(q:&mut GroupElement, &Scalar(ref n): &Scalar) {
         unsafe {
             libsodium_sys::crypto_scalarmult_curve25519_base(&mut q.0, n);
         }
-        q
     }
 }
 

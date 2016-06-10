@@ -2,8 +2,7 @@ use byteorder::{ByteOrder,BigEndian, WriteBytesExt};
 
 use std::io::{ Write };
 use super::negociation::{ Named, Preferred };
-
-use super::SSHString;
+use super::CryptoBuf;
 pub use super::sodium::ed25519;
 
 #[derive(Debug,Clone)]
@@ -46,35 +45,34 @@ impl Algorithm {
         }
     }
 
-    pub fn write_pubkey<W:Write>(&self, buffer:&mut W) -> Result<(),super::Error> {
+    pub fn write_pubkey(&self, buffer:&mut CryptoBuf) {
         match self {
             &Algorithm::Ed25519 { ref public_host_key, .. } => {
-                try!(buffer.write_u32::<BigEndian>(
+
+                buffer.push_u32_be(
                     (KEY_ED25519.len()
                      + ed25519::PUBLICKEYBYTES
                      + 8) as u32
-                ));
-                try!(buffer.write_ssh_string(KEY_ED25519.as_bytes()));
-                try!(buffer.write_ssh_string(public_host_key.as_bytes()));
-                Ok(())
+                );
+                buffer.extend_ssh_string(KEY_ED25519.as_bytes());
+                buffer.extend_ssh_string(public_host_key.as_bytes());
             }
         }
     }
     
-    pub fn add_signature(&self, buffer: &mut Vec<u8>, hash:&[u8])->Result<(),super::Error> {
+    pub fn add_signature(&self, buffer: &mut CryptoBuf, hash:&[u8]) {
         match self {
             &Algorithm::Ed25519 { ref secret_host_key, .. } => {
 
                 let sign = ed25519::sign_detached(&hash, secret_host_key);
 
-                try!(buffer.write_u32::<BigEndian>(
+                buffer.push_u32_be(
                     (KEY_ED25519.len()
                      + ed25519::SIGNATUREBYTES
                      + 8) as u32
-                ));
-                try!(buffer.write_ssh_string(KEY_ED25519.as_bytes()));
-                try!(buffer.write_ssh_string(sign.as_bytes()));
-                Ok(())
+                );
+                buffer.extend_ssh_string(KEY_ED25519.as_bytes());
+                buffer.extend_ssh_string(sign.as_bytes());
             }
         }
     }

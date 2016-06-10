@@ -11,7 +11,7 @@ extern crate log;
 extern crate env_logger;
 
 
-use std::io::{ Read, Write, BufReader };
+use std::io::{ Read, Write, BufReader, BufRead };
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
@@ -19,8 +19,8 @@ use ssh::*;
 
 struct Server<'a> { list:TcpListener,
                     server_config: &'a config::Config,
-                    buffer0:Vec<u8>,
-                    buffer1:Vec<u8>,
+                    buffer0:CryptoBuf,
+                    buffer1:CryptoBuf,
                     sessions:HashMap<usize, (BufReader<TcpStream>, std::net::SocketAddr, ssh::ServerSession<'a>)> }
 
 const SERVER: Token = Token(0);
@@ -67,10 +67,27 @@ impl<'a> Handler for Server<'a> {
                         match self.sessions.entry(id) {
                             Entry::Occupied(mut e) => {
 
-                                let result = {
+                                // Read as many packet as are
+                                // available in the buffer.  One issue
+                                // is, session.read reads at most one
+                                // packet, returning true if it read
+                                // one, and false if there were not
+                                // enough bytes.
+                                let mut result = Ok(true);
+                                {
                                     let &mut (ref mut stream, _, ref mut session) = e.get_mut();
-                                    session.read(stream)
-                                };
+                                    while result.is_ok() && stream.fill_buf().is_ok() {
+                                        let r = session.read(stream);
+                                        if let Ok(t) = r {
+                                            if !t {
+                                                //not enough bytes
+                                                break
+                                            }
+                                        } else {
+                                            result = r
+                                        }
+                                    };
+                                }
                                 if result.is_err() {
                                     let (stream,_,_) = e.remove();
                                     event_loop.deregister(stream.get_ref()).unwrap();                            
@@ -145,8 +162,8 @@ fn main () {
     let mut server = Server {
         list: server,
         server_config: &config,
-        buffer0: Vec::new(),
-        buffer1: Vec::new(),
+        buffer0: CryptoBuf::new(),
+        buffer1: CryptoBuf::new(),
         sessions:HashMap::new()
     };
     event_loop.run(&mut server).unwrap();

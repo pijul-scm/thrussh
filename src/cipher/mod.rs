@@ -35,12 +35,14 @@ pub enum Cipher {
     }
 }
 
+use super::CryptoBuf;
+
 pub trait CipherT {
 
     fn read_packet<'a, R:BufRead>(&self, seq:usize, stream:&mut R,
-                                  read_len:&mut usize, read_buffer:&'a mut Vec<u8>) -> Result<Option<&'a[u8]>,Error>;
+                                  read_len:&mut usize, read_buffer:&'a mut CryptoBuf) -> Result<Option<&'a[u8]>,Error>;
 
-    fn write_packet(&self, seq:usize, packet:&[u8], buffer:&mut Vec<u8>);
+    fn write_packet(&self, seq:usize, packet:&[u8], buffer:&mut CryptoBuf);
     
 }
 
@@ -50,7 +52,7 @@ impl Cipher {
         &mut self, seq:usize,
         stream:&mut R,
         read_len:&mut usize,
-        read_buffer:&'a mut Vec<u8>) -> Result<Option<&'a[u8]>,Error> {
+        read_buffer:&'a mut CryptoBuf) -> Result<Option<&'a[u8]>,Error> {
 
         match *self {
             Cipher::Chacha20Poly1305 { ref client_to_server, .. } => {
@@ -62,7 +64,7 @@ impl Cipher {
         }
     }
 
-    pub fn write_server_packet(&mut self, seq:usize, packet:&[u8], buffer:&mut Vec<u8>) {
+    pub fn write_server_packet(&mut self, seq:usize, packet:&[u8], buffer:&mut CryptoBuf) {
 
         match *self {
             Cipher::Chacha20Poly1305 { ref server_to_client, .. } => {

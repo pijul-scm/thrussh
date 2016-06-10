@@ -6,7 +6,7 @@ authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
 [dependencies]
 mio = "*"
 rand = "*"
-bufstream = "*"
+time = "*"
 log = "*"
 env_logger = "*"
 byteorder = "*"

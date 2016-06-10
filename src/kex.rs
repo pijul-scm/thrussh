@@ -1,13 +1,14 @@
 use byteorder::{ByteOrder,BigEndian};
 
 use super::negociation::{ Named, Preferred };
-use super::{ SSHString, Error };
+use super::{ Error };
 use super::msg;
 use std;
 
 use super::sodium::randombytes;
 use super::sodium::sha256;
 use super::sodium::curve25519;
+use super::CryptoBuf;
 
 #[derive(Debug,Clone)]
 pub enum Digest {
@@ -83,8 +84,9 @@ impl Name {
                     //server_secret_[31] |= 64;
                     curve25519::Scalar::from_slice(&server_secret)
                 };
-                
-                let server_pubkey = curve25519::scalarmult_base(&server_secret);
+
+                let mut server_pubkey = curve25519::GroupElement::new_blank();
+                curve25519::scalarmult_base(&mut server_pubkey, &server_secret);
 
                 {
                     // fill exchange.
@@ -92,10 +94,11 @@ impl Name {
                     exchange.server_ephemeral = Some(server_ephemeral);
                 }
 
-                let shared_secret = curve25519::scalarmult(&server_secret, &client_pubkey);
+                let mut shared_secret = curve25519::GroupElement::new_blank();
+                curve25519::scalarmult(&mut shared_secret, &server_secret, &client_pubkey);
 
                 println!("shared secret");
-                super::hexdump(shared_secret.as_bytes());
+                // super::hexdump(shared_secret.as_bytes());
 
                 Ok(Algorithm::Curve25519(Curve25519 {
                     client_pubkey: client_pubkey,
@@ -112,8 +115,8 @@ impl Name {
 impl Algorithm {
     pub fn compute_exchange_hash(&self,
                                  key_algo:&super::key::Algorithm,
-                                 // server_public_host_key:&[u8],
-                                 exchange:&super::Exchange, buffer:&mut Vec<u8>) -> Result<Digest,Error> {
+                                 exchange:&super::Exchange,
+                                 buffer:&mut super::CryptoBuf) -> Result<Digest,Error> {
         // Computing the exchange hash, see page 7 of RFC 5656.
         //println!("exchange: {:?}", exchange);
         match self {
@@ -139,31 +142,33 @@ impl Algorithm {
                                  std::str::from_utf8(server_id)
                         );
                         buffer.clear();
-                        try!(buffer.write_ssh_string(client_id));
-                        try!(buffer.write_ssh_string(server_id));
-                        try!(buffer.write_ssh_string(client_kex_init));
-                        try!(buffer.write_ssh_string(server_kex_init));
+                        buffer.extend_ssh_string(client_id);
+                        buffer.extend_ssh_string(server_id);
+                        buffer.extend_ssh_string(client_kex_init);
+                        buffer.extend_ssh_string(server_kex_init);
 
                         
-                        try!(key_algo.write_pubkey(buffer));
+                        key_algo.write_pubkey(buffer);
 
                         //println!("client_ephemeral: {:?}", client_ephemeral);
                         //println!("server_ephemeral: {:?}", server_ephemeral);
 
                         debug_assert!(client_ephemeral.len() == 32);
-                        try!(buffer.write_ssh_string(client_ephemeral));
+                        buffer.extend_ssh_string(client_ephemeral);
 
                         debug_assert!(server_ephemeral.len() == 32);
-                        try!(buffer.write_ssh_string(server_ephemeral));
+                        buffer.extend_ssh_string(server_ephemeral);
 
                         //println!("shared: {:?}", kex.shared_secret);
                         //unimplemented!(); // Should be in wire format.
 
-                        try!(buffer.write_ssh_mpint(kex.shared_secret.as_bytes()));
+                        buffer.extend_ssh_mpint(kex.shared_secret.as_bytes());
 
                         println!("buffer len = {:?}", buffer.len());
-                        super::hexdump(&buffer);
-                        let hash = sha256::hash(&buffer);
+                        super::hexdump(buffer);
+                        let hash = sha256::hash(unsafe {
+                            buffer.as_slice()
+                        });
                         println!("hash: {:?}", hash);
                         Ok(Digest::Sha256(hash))
                     },
@@ -176,33 +181,40 @@ impl Algorithm {
 
     pub fn compute_keys(&self, session_id:&Digest,
                         exchange_hash:&Digest,
-                        buffer:&mut Vec<u8>, key:&mut Vec<u8>,
+                        buffer:&mut CryptoBuf,
+                        key:&mut CryptoBuf,
                         cipher:&super::cipher::Name) -> super::cipher::Cipher {
         match self {
             &Algorithm::Curve25519(ref kex) => {
 
                 // https://tools.ietf.org/html/rfc4253#section-7.2
-                let mut compute_key = |c, key:&mut Vec<u8>, len| {
+                let mut compute_key = |c, key:&mut CryptoBuf, len| {
 
                     buffer.clear();
                     key.clear();
 
-                    buffer.write_ssh_mpint(kex.shared_secret.as_bytes()).unwrap();
+                    buffer.extend_ssh_mpint(kex.shared_secret.as_bytes());
                     buffer.extend(exchange_hash.as_bytes());
                     buffer.push(c);
                     buffer.extend(session_id.as_bytes());
                     key.extend(
-                        sha256::hash(&buffer).as_bytes()
+                        unsafe {
+                            sha256::hash(buffer.as_slice()).as_bytes()
+                        }
                     );
 
                     while key.len() < len {
                         // extend.
                         buffer.clear();
-                        buffer.write_ssh_mpint(kex.shared_secret.as_bytes()).unwrap();
+                        buffer.extend_ssh_mpint(kex.shared_secret.as_bytes());
                         buffer.extend(exchange_hash.as_bytes());
-                        buffer.extend(&key[..]);
+                        buffer.extend(unsafe {
+                            key.as_slice()
+                        });
                         key.extend(
-                            sha256::hash(&buffer).as_bytes()
+                            unsafe {
+                                sha256::hash(buffer.as_slice()).as_bytes()
+                            }
                         )
                     }
                 };
@@ -214,11 +226,15 @@ impl Algorithm {
 
                             client_to_server: {
                                 compute_key(b'C', key, cipher.key_size());
-                                super::cipher::chacha20poly1305::Cipher::init(&key[..])
+                                unsafe {
+                                    super::cipher::chacha20poly1305::Cipher::init(key.as_slice())
+                                }
                             },
                             server_to_client: {
                                 compute_key(b'D', key, cipher.key_size());
-                                super::cipher::chacha20poly1305::Cipher::init(&key[..])
+                                unsafe {
+                                    super::cipher::chacha20poly1305::Cipher::init(key.as_slice())
+                                }
                             },
                         }
                         

@@ -1,9 +1,10 @@
 // https://tools.ietf.org/html/rfc4253#section-12
 pub const DISCONNECT:u8 = 1;
-pub const UNIMPLEMENTED:u8 = 2;
-pub const DEBUG:u8 = 3;
-pub const SERVICE_REQUEST:u8 = 4;
-pub const SERVICE_ACCEPT:u8 = 5;
+pub const IGNORE:u8 = 2;
+pub const UNIMPLEMENTED:u8 = 3;
+pub const DEBUG:u8 = 4;
+pub const SERVICE_REQUEST:u8 = 5;
+pub const SERVICE_ACCEPT:u8 = 6;
 pub const KEXINIT:u8 = 20;
 pub const NEWKEYS:u8 = 21;
 

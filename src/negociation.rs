@@ -10,6 +10,7 @@ use super::cipher;
 use super::mac;
 use super::msg;
 use super::compression;
+use super::CryptoBuf;
 
 pub type Names = (super::kex::Name, super::key::Algorithm, super::cipher::Name, super::mac::Mac, bool);
 
@@ -90,7 +91,7 @@ pub fn read_kex(buffer:&[u8], keys:&[key::Algorithm]) -> Result<Names,Error> {
 }
 
 
-fn write_list(buf:&mut Vec<u8>, list:&[&str]) {
+fn write_list(buf:&mut CryptoBuf, list:&[&str]) {
     let len0 = buf.len();
     buf.extend(&[0,0,0,0]);
     let mut first = true;
@@ -103,11 +104,14 @@ fn write_list(buf:&mut Vec<u8>, list:&[&str]) {
         buf.extend(i.as_bytes())
     }
     let len = (buf.len() - len0 - 4) as u32;
-    BigEndian::write_u32(&mut buf[len0..], len);
-    println!("write_list: {:?}", &buf[len0..len0+4]);
+    unsafe {
+        let buf = buf.as_mut_slice();
+        BigEndian::write_u32(&mut buf[len0..], len);
+        println!("write_list: {:?}", &buf[len0..]);
+    }
 }
 
-fn write_key_list(buf:&mut Vec<u8>, list:&[key::Algorithm]) {
+fn write_key_list(buf:&mut CryptoBuf, list:&[key::Algorithm]) {
     let len0 = buf.len();
     buf.extend(&[0,0,0,0]);
     let mut first = true;
@@ -120,13 +124,16 @@ fn write_key_list(buf:&mut Vec<u8>, list:&[key::Algorithm]) {
         buf.extend(i.name().as_bytes())
     }
     let len = (buf.len() - len0 - 4) as u32;
-    BigEndian::write_u32(&mut buf[len0..], len);
-    println!("write_list: {:?}", &buf[len0..len0+4]);
+    unsafe {
+        let buf = buf.as_mut_slice();
+        BigEndian::write_u32(&mut buf[len0..], len);
+        println!("write_list: {:?}", &buf[len0..len0+4]);
+    }
 }
 
 
 
-pub fn write_kex(keys:&[key::Algorithm], buf:&mut Vec<u8>) {
+pub fn write_kex(keys:&[key::Algorithm], buf:&mut CryptoBuf) {
     // buf.clear();
     buf.push(msg::KEXINIT);
 
