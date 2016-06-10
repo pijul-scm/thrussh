@@ -80,12 +80,19 @@ impl super::CipherT for Cipher {
                     &poly_key
                 );
             }
+
+            println!("computing tag on {:?} with key {:?}",
+                     &read_buffer_slice[0 .. 4 + *read_len - poly1305::TAGBYTES],
+                     poly_key
+            );
+
+            
             // println!("read buffer before chacha20: {:?}", &read_buffer);
             // - Constant-time-compare it with the Poly1305 at the end of the packet (right after the 4+length first bytes).
             if sodium::memcmp(
                 tag.as_bytes(),
                 &read_buffer_slice[ 4 + *read_len - poly1305::TAGBYTES ..]
-             ) {
+            ) {
 
                 // - If the auth is correct, chacha20-xor the length bytes after the first 4 ones, with ic 1.
                 //   (actually, the above doc says "ic = LE encoding of 1", which is different from the libsodium interface).
@@ -98,6 +105,8 @@ impl super::CipherT for Cipher {
 
                 }
                 let padding = read_buffer_slice[4] as usize;
+                // println!("read packet = {:?}", &read_buffer_slice[5..(5+ *read_len - poly1305::TAGBYTES - padding - 1)]);
+                println!("padding len = {:?}", padding);
                 Ok(Some(&read_buffer_slice[5..(5+ *read_len - poly1305::TAGBYTES - padding - 1)]))
 
             } else {
@@ -109,20 +118,23 @@ impl super::CipherT for Cipher {
         }
     }
 
-    fn write_packet(&self, seq:usize, packet:&[u8], buffer:&mut CryptoBuf) {
+    fn write_packet(&self, seq:usize, packet_content:&[u8], buffer:&mut CryptoBuf) {
 
         // http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD
 
         // - Compute the length, by chacha20-stream-xoring the first 4 bytes with the last 32 bytes of the client key.
         buffer.clear();
-
+        println!("seqnr = {}", seq);
         let block_size = 8;
         let padding_len = {
-            (block_size - ((5+packet.len()) % block_size))
+            (block_size - ((1 + packet_content.len()) % block_size))
         };
+        // println!("padding_len {:?} {:?} {:?}", packet_content.len(), padding_len, poly1305::TAGBYTES);
         let padding_len = if padding_len < 4 { padding_len + block_size } else { padding_len };
+        let padding_len = padding_len + 16;
 
-        buffer.push_u32_be((packet.len() + padding_len + 1) as u32);
+        println!("pushing len: {:?}", packet_content.len() + padding_len + 1);
+        buffer.push_u32_be((packet_content.len() + padding_len + 1) as u32);
 
         let mut nonce = [0;8];
         BigEndian::write_u32(&mut nonce[4..], seq as u32);
@@ -139,13 +151,19 @@ impl super::CipherT for Cipher {
         // - Append the encrypted packet
 
         // Compute the amount of padding.
+        println!("padding_len {:?}", padding_len);
         buffer.push(padding_len as u8);
 
-        buffer.extend(packet);
+        buffer.extend(packet_content);
+
+        println!("buffer before padding: {:?}", buffer.as_slice());
 
         let mut padding = [0;256];
+
         randombytes::into(&mut padding[0..padding_len]);
         buffer.extend(&padding[0..padding_len]);
+
+        println!("buffer before encryption: {:?}", buffer.as_slice());
 
         {
             let buffer = buffer.as_mut_slice();
@@ -154,16 +172,17 @@ impl super::CipherT for Cipher {
                                   1,
                                   &self.k2);
         }
-
+        println!("buffer before tag: {:?}", buffer.as_slice());
         // - Compute the Poly1305 auth on the first (4+length) first bytes of the packet.
 
-        let mut poly_key = [0;32];
+        let mut poly_key = [0;poly1305::KEYBYTES];
         chacha20::stream_xor_inplace(
             &mut poly_key,
             &nonce,
             &self.k2);
         let poly_key = poly1305::Key::from_slice(&poly_key);
 
+        println!("key: {:?}", poly_key);
         let mut tag = poly1305::Tag::new_blank();
         {
             let buffer = buffer.as_slice();
@@ -182,8 +201,7 @@ impl super::CipherT for Cipher {
 #[test]
 fn write_read() {
     use super::CipherT;
-
-    let mut buffer = Vec::new();
+    use super::super::CryptoBuf;
 
     let k1 = chacha20::gen_key();
     let k2 = chacha20::gen_key();
@@ -194,18 +212,20 @@ fn write_read() {
 
     let plaintext = b"some data";
     let seq = 12;
-    let mut stream = Vec::new();
+    let mut stream = CryptoBuf::new();
 
     key.write_packet(seq, plaintext, &mut stream);
 
-    println!("stream {:?}", stream);
+    println!("================ stream {:?}", stream.as_slice());
 
-    let mut stream = &stream[..];
+    let mut stream = stream.as_slice();
 
     let mut read_len = 0;
-    assert_eq!(
-        key.read_packet(seq, &mut stream, &mut read_len, &mut buffer).unwrap().unwrap(),
-        plaintext
-    );
+
+    let mut buffer = CryptoBuf::new();
+    let packet = key.read_packet(seq, &mut stream, &mut read_len, &mut buffer).unwrap().unwrap();
+    println!("{:?}", packet);
+    assert_eq!(packet, plaintext);
+
 }
 

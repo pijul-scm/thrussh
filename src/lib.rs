@@ -79,7 +79,7 @@ pub enum ServerState {
     KexInit(KexInit), // Version number sent. `algo` and `sent` tell wether kexinit has been received, and sent, respectively.
     KexDh(KexDh), // Algorithms have been determined, the DH algorithm should run.
     KexDhDone(KexDhDone), // The kex has run.
-    NewKeys(Encrypted), // The DH is over, we've sent the NEWKEYS packet, and are waiting the NEWKEYS from the other side.
+    NewKeys(NewKeys), // The DH is over, we've sent the NEWKEYS packet, and are waiting the NEWKEYS from the other side.
     Encrypted(Encrypted) // Session is now encrypted.
 }
 
@@ -113,6 +113,15 @@ pub struct KexDhDone {
     follows: bool
 }
 
+#[derive(Debug)]
+pub struct NewKeys {
+    exchange: Exchange,
+    kex: kex::Algorithm,
+    key: key::Algorithm,
+    cipher: cipher::Cipher,
+    mac: Mac,
+    session_id: kex::Digest,
+}
 
 #[derive(Debug)]
 pub struct Encrypted {
@@ -122,6 +131,14 @@ pub struct Encrypted {
     cipher: cipher::Cipher,
     mac: Mac,
     session_id: kex::Digest,
+    state: EncryptedState
+}
+
+#[derive(Debug)]
+pub enum EncryptedState {
+    WaitingServiceRequest,
+    ServiceRequest,
+    WaitingAuthRequest,
 }
 
 
@@ -227,7 +244,7 @@ fn read<R:BufRead>(stream:&mut R, read_buffer:&mut CryptoBuf, read_len:usize) ->
     loop {
         let consumed_len = match stream.fill_buf() {
             Ok(buf) => {
-                println!("read {:?}", buf);
+                // println!("read {:?}", buf);
                 if read_buffer.len() + buf.len() < read_len + 4 {
 
                     read_buffer.extend(buf);
@@ -240,9 +257,9 @@ fn read<R:BufRead>(stream:&mut R, read_buffer:&mut CryptoBuf, read_len:usize) ->
                 }
             },
             Err(e) => {
-                println!("error :{:?}", e);
+                // println!("error :{:?}", e);
                 if e.kind() == std::io::ErrorKind::WouldBlock {
-                    println!("would block");
+                    // println!("would block");
                     return Ok(false)
                 } else {
                     return Err(Error::IO(e))
@@ -287,7 +304,7 @@ impl<'a> ServerSession<'a> {
         try!(self.read_buffer.read(4, stream));
 
         self.read_len = self.read_buffer.read_u32_be(0) as usize;
-        println!("clear_len: {:?}", self.read_len);
+        // println!("clear_len: {:?}", self.read_len);
         Ok(())
     }
     
@@ -299,14 +316,14 @@ impl<'a> ServerSession<'a> {
         let payload = {
             &buf[ 5 .. (4 + packet_length - padding_length) ]
         };
-        println!("payload : {:?} {:?} {:?}", payload.len(), padding_length, packet_length);
+        // println!("payload : {:?} {:?} {:?}", payload.len(), padding_length, packet_length);
         payload
     }
 
     // returns whether a complete packet has been read.
     pub fn read<R:BufRead>(&mut self, stream:&mut R) -> Result<bool, Error> {
         let state = std::mem::replace(&mut self.state, None);
-        println!("state: {:?}", state);
+        // println!("state: {:?}", state);
         match state {
             None => {
 
@@ -330,7 +347,7 @@ impl<'a> ServerSession<'a> {
 
                          let mut exchange = Exchange::new();
                          exchange.client_id = Some((&buf[ 0 .. i ]).to_vec());
-                         println!("{:?}", std::str::from_utf8(&buf[ 0 .. i ]));
+                         // println!("{:?}", std::str::from_utf8(&buf[ 0 .. i ]));
                          self.state = Some(ServerState::VersionOk(exchange));
                          Ok(true)
                      } else {
@@ -371,7 +388,7 @@ impl<'a> ServerSession<'a> {
                 } else {
                     kexinit.algo
                 };
-                println!("sent: {:?}", kexinit.sent);
+                // println!("sent: {:?}", kexinit.sent);
                 if !kexinit.sent {
                     kexinit.algo = algo;
                     self.state = Some(ServerState::KexInit(kexinit));
@@ -426,9 +443,9 @@ impl<'a> ServerSession<'a> {
                     Ok(false)
                 }
             },
-            Some(ServerState::NewKeys(mut newkeys)) => {
+            Some(ServerState::NewKeys(newkeys)) => {
 
-                // We are waiting for the NEWKEYS packet.
+                // We are waiting for the NEWKEYS packet. Is it this one?
                 if self.read_len == 0 {
                     try!(self.set_clear_len(stream));
                 }
@@ -438,6 +455,7 @@ impl<'a> ServerSession<'a> {
 
                     let payload_is_newkeys = self.get_current_payload()[0] == msg::NEWKEYS;
                     if payload_is_newkeys {
+                        // Ok, NEWKEYS received, now encrypted.
                         self.state = Some(
                             ServerState::Encrypted(
                                 Encrypted { exchange: newkeys.exchange,
@@ -446,6 +464,7 @@ impl<'a> ServerSession<'a> {
                                             cipher:newkeys.cipher,
                                             mac:newkeys.mac,
                                             session_id: newkeys.session_id,
+                                            state: EncryptedState::WaitingServiceRequest
                                 }
                             )
                         );
@@ -464,23 +483,36 @@ impl<'a> ServerSession<'a> {
                 }
             },
             Some(ServerState::Encrypted(mut enc)) => {
-                println!("read: encrypted");
+                println!("read: encrypted {:?}", enc.state);
 
                 let mut read_packet = false;
 
                 if let Some(buf) = try!(enc.cipher.read_client_packet(self.recv_seqn, stream,
                                                                       &mut self.read_len,
                                                                       &mut self.read_buffer)) {
+                    
 
-                    if buf[0] == msg::SERVICE_REQUEST {
-                        let len = BigEndian::read_u32(&buf[1..]) as usize;
-                        println!("service request : {:?}", std::str::from_utf8(&buf[5..(5+len)]));
+
+                    match enc.state {
+                        EncryptedState::WaitingServiceRequest if buf[0] == msg::SERVICE_REQUEST => {
+
+                            let len = BigEndian::read_u32(&buf[1..]) as usize;
+                            let request = &buf[5..(5+len)];
+                            println!("request: {:?}", std::str::from_utf8(request));
+                            if request == b"ssh-userauth" {
+                                enc.state = EncryptedState::ServiceRequest
+                            }
+                            read_packet = true;
+                            println!("decrypted {:?}", buf);
+                        },
+                        _ => {
+                            read_packet = true;
+                        }
                     }
-                    read_packet = true;
-                    println!("decrypted {:?}", buf);
+
                 } else {
                     // More bytes needed
-                    println!("more bytes needed");
+                    // println!("more bytes needed");
                 }
 
                 if read_packet {
@@ -493,14 +525,14 @@ impl<'a> ServerSession<'a> {
                 Ok(read_packet)
             },
             _ => {
-                println!("read: unhandled");
+                // println!("read: unhandled");
                 Err(Error::Inconsistent)
             }
         }
     }
 
     fn write_all<W:Write>(&mut self, stream:&mut W) -> Result<bool, Error> {
-        println!("write_all");
+        // println!("write_all");
         while self.write_position < self.write_buffer.len() {
             match self.write_buffer.write_all_from(self.write_position, stream) {
                 Ok(s) => {
@@ -516,13 +548,13 @@ impl<'a> ServerSession<'a> {
                 }
             }
         }
-        println!("flushed");
+        // println!("flushed");
         Ok(true)
     }
     
     pub fn write<W:Write>(&mut self, stream:&mut W, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<(), Error> {
 
-        println!("writing");
+        // println!("writing");
         // Finish pending writes, if any.
         if ! try!(self.write_all(stream)) {
             // If there are still bytes to write.
@@ -555,7 +587,7 @@ impl<'a> ServerSession<'a> {
             Some(ServerState::KexInit(mut kexinit)) => {
 
                 if !kexinit.sent {
-                    println!("kexinit");
+                    // println!("kexinit");
                     self.write_buffer.extend(b"\0\0\0\0\0");
                     write_kex(&self.keys, &mut self.write_buffer);
 
@@ -567,10 +599,10 @@ impl<'a> ServerSession<'a> {
                     };
 
                     complete_packet(&mut self.write_buffer, 0);
+                    self.sent_seqn += 1;
                     try!(self.write_all(stream));
                     try!(stream.flush());
                     kexinit.sent = true;
-                    self.sent_seqn += 1
                 }
                 if let Some((kex,key,cipher,mac,follows)) = kexinit.algo {
 
@@ -582,7 +614,7 @@ impl<'a> ServerSession<'a> {
                         }));
                     Ok(())
                 } else {
-                    println!("write kexinit: packet not yet received");
+                    // println!("write kexinit: packet not yet received");
                     self.state = Some(ServerState::KexInit(kexinit));
                     Ok(())
                 }
@@ -592,7 +624,7 @@ impl<'a> ServerSession<'a> {
                 let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key, &kexdhdone.exchange, buffer));
 
                 if let Some(ref server_ephemeral) = kexdhdone.exchange.server_ephemeral {
-                    println!("doing ECDH");
+                    // println!("doing ECDH");
                     // ECDH Key exchange.
                     // http://tools.ietf.org/html/rfc5656#section-4
                     self.write_buffer.extend(b"\0\0\0\0\0");
@@ -632,7 +664,7 @@ impl<'a> ServerSession<'a> {
                 // keys.dump(); //println!("keys: {:?}", keys);
                 //
                 self.state = Some(ServerState::NewKeys(
-                    Encrypted {
+                    NewKeys {
                         exchange: kexdhdone.exchange,
                         kex:kexdhdone.kex, key:kexdhdone.key,
                         cipher: c,
@@ -642,18 +674,20 @@ impl<'a> ServerSession<'a> {
                 ));
                 Ok(())
             },
-            Some(ServerState::Encrypted(enc)) => {
-                /*match enc {
-                Some(ServerState::Encrypted { ref mut cipher, .. }) => {
+            Some(ServerState::Encrypted(mut enc)) => {
+                println!("read: encrypted {:?}", enc.state);
 
-
-                // cipher.write_server_packet(self.sent_seqn, &buffer, &mut self.write_buffer);
-                // self.sent_seqn += 1;
-                // try!(self.write_all(stream));
-                
-            },
-                _ => unreachable!()
-                }*/
+                match enc.state {
+                    EncryptedState::ServiceRequest => {
+                        buffer.clear();
+                        buffer.push(msg::SERVICE_ACCEPT);
+                        buffer.extend_ssh_string(b"ssh-userauth");
+                        enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
+                        self.sent_seqn += 1;
+                        try!(self.write_all(stream));
+                    },
+                    _ => {}
+                }
                 self.state = Some(ServerState::Encrypted(enc));
                 Ok(())
             },

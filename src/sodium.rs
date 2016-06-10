@@ -110,6 +110,7 @@ pub mod poly1305 {
     use std;
 
     newtype_from_slice!(Key,KEYBYTES);
+    new_blank!(Key,KEYBYTES);
 
     pub struct Tag([u8;TAGBYTES]);
     new_blank!(Tag,TAGBYTES);
