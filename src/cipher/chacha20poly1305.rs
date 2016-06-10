@@ -72,7 +72,7 @@ impl super::CipherT for Cipher {
 
             let mut tag = poly1305::Tag::new_blank();
 
-            let read_buffer_slice = unsafe { read_buffer.as_mut_slice() };
+            let read_buffer_slice = read_buffer.as_mut_slice();
             {
                 poly1305::authenticate(
                     &mut tag,
@@ -129,7 +129,7 @@ impl super::CipherT for Cipher {
         let nonce = chacha20::Nonce::from_slice(&nonce);
 
         {
-            let buffer = unsafe { buffer.as_mut_slice() };
+            let buffer = buffer.as_mut_slice();
             chacha20::stream_xor_inplace(
                 &mut buffer[0..4],
                 &nonce,
@@ -148,7 +148,7 @@ impl super::CipherT for Cipher {
         buffer.extend(&padding[0..padding_len]);
 
         {
-            let buffer = unsafe { buffer.as_mut_slice() };
+            let buffer = buffer.as_mut_slice();
             chacha20::xor_inplace(&mut buffer[4..],
                                   &nonce,
                                   1,
@@ -166,7 +166,7 @@ impl super::CipherT for Cipher {
 
         let mut tag = poly1305::Tag::new_blank();
         {
-            let buffer = unsafe { buffer.as_slice() };
+            let buffer = buffer.as_slice();
             poly1305::authenticate(&mut tag, buffer, &poly_key);
         }
 

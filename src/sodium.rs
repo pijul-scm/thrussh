@@ -14,12 +14,13 @@ pub fn memcmp(x: &[u8], y: &[u8]) -> bool {
         libsodium_sys::sodium_memcmp(x.as_ptr(), y.as_ptr(), x.len()) == 0
     }
 }
+/*
 pub fn memzero(x: &mut [u8]) {
     unsafe {
         libsodium_sys::sodium_memzero(x.as_mut_ptr(), x.len());
     }
 }
-
+*/
 
 
 

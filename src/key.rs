@@ -1,6 +1,3 @@
-use byteorder::{ByteOrder,BigEndian, WriteBytesExt};
-
-use std::io::{ Write };
 use super::negociation::{ Named, Preferred };
 use super::CryptoBuf;
 pub use super::sodium::ed25519;

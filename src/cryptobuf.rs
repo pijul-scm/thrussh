@@ -1,6 +1,6 @@
 use std;
 use libsodium_sys;
-use super::libc::{ malloc, realloc, free, size_t, c_void };
+use super::libc::{ malloc, free, c_void };
 #[derive(Debug)]
 pub struct CryptoBuf {
     p:*mut u8,
@@ -21,12 +21,16 @@ impl std::ops::Index<usize> for CryptoBuf {
 
 impl CryptoBuf {
     pub fn new() -> CryptoBuf {
-        CryptoBuf {
+        let mut buf = CryptoBuf {
             p:std::ptr::null_mut(),
             size:0,
             capacity:0,
             zero:0
-        }
+        };
+        // This avoids potential problems in as_slice().
+        buf.p = &mut buf.zero;
+        //
+        buf
     }
     pub fn len(&self) -> usize {
         self.size
@@ -41,7 +45,7 @@ impl CryptoBuf {
                 let old_ptr = self.p;
                 self.p = malloc(next_capacity) as *mut u8;
 
-                if !old_ptr.is_null() {
+                if self.capacity > 0 {
                     std::ptr::copy_nonoverlapping(old_ptr, self.p, self.size);
                     libsodium_sys::sodium_memzero(old_ptr, self.capacity);
                     free(old_ptr as *mut c_void);
@@ -58,8 +62,8 @@ impl CryptoBuf {
     }
     pub fn clear(&mut self) {
         unsafe {
-            if !self.p.is_null() {
-                libsodium_sys::sodium_memzero(self.p, self.size);
+            if self.capacity > 0 {
+                libsodium_sys::sodium_memzero(self.p, self.capacity);
             }
         }
         self.size = 0;
@@ -99,17 +103,15 @@ impl CryptoBuf {
     }
 
     pub fn write_all_from<W:std::io::Write>(&self, offset:usize, w:&mut W) -> Result<usize, std::io::Error> {
+        assert!(offset < self.size);
+        // if we're past this point, self.p cannot be null.
         unsafe {
-            if !self.p.is_null() {
-                let s = std::slice::from_raw_parts(self.p.offset(offset as isize), self.size - offset);
-                println!("writing {:?}", s);
-                w.write(s)
-            } else {
-                Ok(0)
-            }
+            let s = std::slice::from_raw_parts(self.p.offset(offset as isize), self.size - offset);
+            w.write(s)
         }
     }
 
+    
     pub fn extend(&mut self, s:&[u8]) {
         //println!("extend {:?}", s);
         let size = self.size;
@@ -124,18 +126,14 @@ impl CryptoBuf {
         }
     }
 
-    pub unsafe fn as_slice<'a>(&'a self) -> &'a[u8] {
-        if self.p.is_null() {
-            std::slice::from_raw_parts(&self.zero, self.size)
-        } else {
+    pub fn as_slice<'a>(&'a self) -> &'a[u8] {
+        unsafe {
             std::slice::from_raw_parts(self.p, self.size)
         }
     }
 
-    pub unsafe fn as_mut_slice<'a>(&'a mut self) -> &'a mut [u8] {
-        if self.p.is_null() {
-            std::slice::from_raw_parts_mut(&mut self.zero, self.size)
-        } else {
+    pub fn as_mut_slice<'a>(&'a mut self) -> &'a mut [u8] {
+        unsafe {
             std::slice::from_raw_parts_mut(self.p, self.size)
         }
     }
@@ -143,7 +141,7 @@ impl CryptoBuf {
 
 impl Drop for CryptoBuf {
     fn drop(&mut self) {
-        if !self.p.is_null() {
+        if self.capacity > 0 {
             unsafe {
                 libsodium_sys::sodium_memzero(self.p, self.size);
                 free(self.p as *mut c_void)

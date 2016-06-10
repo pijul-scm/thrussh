@@ -104,11 +104,10 @@ fn write_list(buf:&mut CryptoBuf, list:&[&str]) {
         buf.extend(i.as_bytes())
     }
     let len = (buf.len() - len0 - 4) as u32;
-    unsafe {
-        let buf = buf.as_mut_slice();
-        BigEndian::write_u32(&mut buf[len0..], len);
-        println!("write_list: {:?}", &buf[len0..]);
-    }
+
+    let buf = buf.as_mut_slice();
+    BigEndian::write_u32(&mut buf[len0..], len);
+    println!("write_list: {:?}", &buf[len0..]);
 }
 
 fn write_key_list(buf:&mut CryptoBuf, list:&[key::Algorithm]) {
@@ -124,11 +123,10 @@ fn write_key_list(buf:&mut CryptoBuf, list:&[key::Algorithm]) {
         buf.extend(i.name().as_bytes())
     }
     let len = (buf.len() - len0 - 4) as u32;
-    unsafe {
-        let buf = buf.as_mut_slice();
-        BigEndian::write_u32(&mut buf[len0..], len);
-        println!("write_list: {:?}", &buf[len0..len0+4]);
-    }
+
+    let buf = buf.as_mut_slice();
+    BigEndian::write_u32(&mut buf[len0..], len);
+    println!("write_list: {:?}", &buf[len0..len0+4]);
 }
 
 

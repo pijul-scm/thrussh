@@ -158,7 +158,7 @@ fn complete_packet(buf:&mut CryptoBuf, off:usize) {
 
     let packet_len = buf.len() - off - 4 + padding_len + mac_len;
     {
-        let buf = unsafe { buf.as_mut_slice() };
+        let buf = buf.as_mut_slice();
         BigEndian::write_u32(&mut buf[off..], packet_len as u32);
         buf[off + 4] = padding_len as u8;
     }
@@ -197,7 +197,7 @@ impl CryptoBuf {
 
 
 pub fn hexdump(x:&CryptoBuf) {
-    let x = unsafe { x.as_slice() };
+    let x = x.as_slice();
     let mut buf = Vec::new();
     let mut i = 0;
     while i < x.len() {
@@ -284,7 +284,7 @@ impl<'a> ServerSession<'a> {
         // Packet lengths are always multiples of 8, so is a StreamBuf.
         // Therefore, this can never block.
         self.read_buffer.clear();
-        self.read_buffer.read(4, stream);
+        try!(self.read_buffer.read(4, stream));
 
         self.read_len = self.read_buffer.read_u32_be(0) as usize;
         println!("clear_len: {:?}", self.read_len);
@@ -295,8 +295,8 @@ impl<'a> ServerSession<'a> {
         let packet_length = self.read_buffer.read_u32_be(0) as usize;
         let padding_length = self.read_buffer[4] as usize;
 
-        let buf = unsafe { self.read_buffer.as_slice() };
-        let payload = unsafe {
+        let buf = self.read_buffer.as_slice();
+        let payload = {
             &buf[ 5 .. (4 + packet_length - padding_length) ]
         };
         println!("payload : {:?} {:?} {:?}", payload.len(), padding_length, packet_length);
@@ -559,7 +559,7 @@ impl<'a> ServerSession<'a> {
                     self.write_buffer.extend(b"\0\0\0\0\0");
                     write_kex(&self.keys, &mut self.write_buffer);
 
-                    kexinit.exchange.server_kex_init = unsafe {
+                    kexinit.exchange.server_kex_init = {
 
                         let buf = self.write_buffer.as_slice();
                         Some((&buf [5..]).to_vec())

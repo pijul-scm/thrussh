@@ -166,9 +166,7 @@ impl Algorithm {
 
                         println!("buffer len = {:?}", buffer.len());
                         super::hexdump(buffer);
-                        let hash = sha256::hash(unsafe {
-                            buffer.as_slice()
-                        });
+                        let hash = sha256::hash(buffer.as_slice());
                         println!("hash: {:?}", hash);
                         Ok(Digest::Sha256(hash))
                     },
@@ -198,9 +196,7 @@ impl Algorithm {
                     buffer.push(c);
                     buffer.extend(session_id.as_bytes());
                     key.extend(
-                        unsafe {
-                            sha256::hash(buffer.as_slice()).as_bytes()
-                        }
+                        sha256::hash(buffer.as_slice()).as_bytes()
                     );
 
                     while key.len() < len {
@@ -208,13 +204,11 @@ impl Algorithm {
                         buffer.clear();
                         buffer.extend_ssh_mpint(kex.shared_secret.as_bytes());
                         buffer.extend(exchange_hash.as_bytes());
-                        buffer.extend(unsafe {
+                        buffer.extend(
                             key.as_slice()
-                        });
+                        );
                         key.extend(
-                            unsafe {
-                                sha256::hash(buffer.as_slice()).as_bytes()
-                            }
+                            sha256::hash(buffer.as_slice()).as_bytes()
                         )
                     }
                 };
@@ -226,15 +220,11 @@ impl Algorithm {
 
                             client_to_server: {
                                 compute_key(b'C', key, cipher.key_size());
-                                unsafe {
-                                    super::cipher::chacha20poly1305::Cipher::init(key.as_slice())
-                                }
+                                super::cipher::chacha20poly1305::Cipher::init(key.as_slice())
                             },
                             server_to_client: {
                                 compute_key(b'D', key, cipher.key_size());
-                                unsafe {
-                                    super::cipher::chacha20poly1305::Cipher::init(key.as_slice())
-                                }
+                                super::cipher::chacha20poly1305::Cipher::init(key.as_slice())
                             },
                         }
                         

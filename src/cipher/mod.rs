@@ -15,7 +15,7 @@ impl Name {
             &Name::Chacha20Poly1305 => 64
         }
     }
-    pub fn init(&self, client_to_server:&[u8], server_to_client: &[u8]) -> Cipher {
+    /*pub fn init(&self, client_to_server:&[u8], server_to_client: &[u8]) -> Cipher {
         match self {
             &Name::Chacha20Poly1305 => {
                 Cipher::Chacha20Poly1305 {
@@ -24,7 +24,7 @@ impl Name {
                 }
             }
         }
-    }
+    }*/
 }
 
 #[derive(Debug)]
