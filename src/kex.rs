@@ -75,7 +75,7 @@ impl Name {
                 };
                 let server_secret = {
                     let mut server_secret = [0;curve25519::SCALARBYTES];
-                    randombytes::randombytes_into(&mut server_secret);
+                    randombytes::into(&mut server_secret);
 
                     // https://git.libssh.org/projects/libssh.git/tree/doc/curve25519-sha256@libssh.org.txt
                     //server_secret_[0] &= 248;

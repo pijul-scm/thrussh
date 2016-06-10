@@ -1,6 +1,6 @@
 use super::negociation::{Named,Preferred};
 use super::Error;
-use std::io::{Read,Write};
+use std::io::{ BufRead };
 
 pub mod chacha20poly1305;
 
@@ -37,38 +37,37 @@ pub enum Cipher {
 
 pub trait CipherT {
 
-    fn read_packet<'a, R:Read>(&self, seq:usize, stream:&mut R, buffer:&'a mut Vec<u8>) -> Result<&'a[u8],Error>;
+    fn read_packet<'a, R:BufRead>(&self, seq:usize, stream:&mut R,
+                                  read_len:&mut usize, read_buffer:&'a mut Vec<u8>) -> Result<Option<&'a[u8]>,Error>;
 
-    fn write_packet<W:Write>(&self, seq:usize, stream:&mut W, packet:&[u8], buffer:&mut Vec<u8>) -> Result<(),Error>;
+    fn write_packet(&self, seq:usize, packet:&[u8], buffer:&mut Vec<u8>);
     
 }
 
 impl Cipher {
 
-    pub fn read_client_packet<'a, R:Read>(&mut self, seq:&mut usize, stream:&mut R, buffer:&'a mut Vec<u8>) -> Result<&'a[u8],Error> {
+    pub fn read_client_packet<'a, R:BufRead>(
+        &mut self, seq:usize,
+        stream:&mut R,
+        read_len:&mut usize,
+        read_buffer:&'a mut Vec<u8>) -> Result<Option<&'a[u8]>,Error> {
 
         match *self {
             Cipher::Chacha20Poly1305 { ref client_to_server, .. } => {
 
-                let result = client_to_server.read_packet(*seq, stream, buffer);
-                *seq += 1;
-                result
+                client_to_server.read_packet(seq, stream, read_len, read_buffer)
 
             },
             //_ => unimplemented!()
         }
     }
 
-    pub fn write_server_packet<W:Write>(&mut self, seq:&mut usize, stream:&mut W, packet:&[u8], buffer:&mut Vec<u8>) -> Result<(),Error> {
+    pub fn write_server_packet(&mut self, seq:usize, packet:&[u8], buffer:&mut Vec<u8>) {
 
         match *self {
             Cipher::Chacha20Poly1305 { ref server_to_client, .. } => {
 
-                let result = server_to_client.write_packet(
-                    *seq, stream, packet, buffer
-                );
-                *seq += 1;
-                result
+                server_to_client.write_packet(seq, packet, buffer)
             },
             //_ => unimplemented!()
         }

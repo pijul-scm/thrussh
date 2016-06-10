@@ -2,8 +2,8 @@ extern crate mio;
 extern crate ssh;
 use mio::*;
 use mio::tcp::{TcpListener, TcpStream};
-extern crate bufstream;
-use bufstream::BufStream;
+//extern crate bufstream;
+//use bufstream::BufStream;
 extern crate rand;
 use rand::{Rng};
 #[macro_use]
@@ -11,7 +11,7 @@ extern crate log;
 extern crate env_logger;
 
 
-use std::io::{ Read, Write };
+use std::io::{ Read, Write, BufReader };
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
@@ -21,7 +21,7 @@ struct Server<'a> { list:TcpListener,
                     server_config: &'a config::Config,
                     buffer0:Vec<u8>,
                     buffer1:Vec<u8>,
-                    sessions:HashMap<usize, (BufStream<TcpStream>, std::net::SocketAddr, ssh::ServerSession<'a>)> }
+                    sessions:HashMap<usize, (BufReader<TcpStream>, std::net::SocketAddr, ssh::ServerSession<'a>)> }
 
 const SERVER: Token = Token(0);
 impl<'a> Handler for Server<'a> {
@@ -42,7 +42,7 @@ impl<'a> Handler for Server<'a> {
                    
                     event_loop.register(&socket, Token(id), EventSet::all(), PollOpt::edge()).unwrap();
 
-                    self.sessions.insert(id, (BufStream::new(socket), addr,
+                    self.sessions.insert(id, (BufReader::new(socket), addr,
                                               ServerSession::new(
                                                   &self.server_config.server_id,
                                                   &self.server_config.keys,
@@ -69,7 +69,7 @@ impl<'a> Handler for Server<'a> {
 
                                 let result = {
                                     let &mut (ref mut stream, _, ref mut session) = e.get_mut();
-                                    session.read(stream, &mut self.buffer0)
+                                    session.read(stream)
                                 };
                                 if result.is_err() {
                                     let (stream,_,_) = e.remove();
@@ -86,7 +86,7 @@ impl<'a> Handler for Server<'a> {
 
                                 let result = {
                                     let &mut (ref mut stream, _, ref mut session) = e.get_mut();
-                                    session.write(stream, &mut self.buffer0, &mut self.buffer1)
+                                    session.write(stream.get_mut(), &mut self.buffer0, &mut self.buffer1)
                                 };
                                 if result.is_err() {
                                     let (stream,_,_) = e.remove();

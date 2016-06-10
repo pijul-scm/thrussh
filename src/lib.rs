@@ -57,8 +57,9 @@ pub struct ServerSession<'a> {
     sent_seqn: usize,
 
     read_buffer: Vec<u8>,
+    read_len: usize, // next packet length.
     write_buffer: Vec<u8>,
-    write_position: usize,
+    write_position: usize, // first position of non-written suffix.
 
     state: Option<ServerState>
 }
@@ -145,7 +146,7 @@ fn complete_packet(buf:&mut Vec<u8>, off:usize) {
     buf[off + 4] = padding_len as u8;
 
     let mut padding = [0;256];
-    sodium::randombytes::randombytes_into(&mut padding[0..padding_len]);
+    sodium::randombytes::into(&mut padding[0..padding_len]);
 
     buf.extend(&padding[0..padding_len]);
 
@@ -202,6 +203,40 @@ pub fn hexdump(x:&[u8]) {
     }
 }
 
+fn read<R:BufRead>(stream:&mut R, read_buffer:&mut Vec<u8>, read_len:usize) -> Result<bool, Error> {
+    // This loop consumes something or returns, it cannot loop forever.
+    loop {
+        let consumed_len = match stream.fill_buf() {
+            Ok(buf) => {
+                println!("read {:?}", buf);
+                if read_buffer.len() + buf.len() < read_len + 4 {
+
+                    read_buffer.extend(buf);
+                    buf.len()
+
+                } else {
+                    let consumed_len = read_len + 4 - read_buffer.len();
+                    read_buffer.extend(&buf[0..consumed_len]);
+                    consumed_len
+                }
+            },
+            Err(e) => {
+                println!("error :{:?}", e);
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    println!("would block");
+                    return Ok(false)
+                } else {
+                    return Err(Error::IO(e))
+                }
+            }
+        };
+        stream.consume(consumed_len);
+        if read_buffer.len() >= 4 + read_len {
+            return Ok(true)
+        }
+    }
+}
+
 
 impl<'a> ServerSession<'a> {
 
@@ -212,6 +247,7 @@ impl<'a> ServerSession<'a> {
             server_id: server_id,
             recv_seqn: 0,
             sent_seqn: 0,
+            read_len: 0,
             read_buffer: Vec::new(),
             write_buffer: Vec::new(),
             write_position: 0,
@@ -219,51 +255,16 @@ impl<'a> ServerSession<'a> {
         }
     }
 
-    fn read_clear_packet<R:BufRead>(&mut self, stream:&mut R) -> Result<bool,Error> {
-        println!("read_buffer :{:?}", self.read_buffer);
-        if self.read_buffer.len() == 0 {
-            // Packet lengths are always multiples of 8, so is a StreamBuf.
-            // Therefore, this can never block.
-            self.read_buffer.resize(4,0);
-            try!(stream.read_exact(&mut self.read_buffer[0..4]));
-        }
-        let packet_len = BigEndian::read_u32(&self.read_buffer) as usize;
-
-        // This loop consumes something or returns, it cannot loop forever.
-        loop {
-            println!("loop spinning {:?}/{:?}", self.read_buffer.len(), packet_len);
-            let consumed_len = match stream.fill_buf() {
-                Ok(buf) => {
-                    if self.read_buffer.len() + buf.len() < packet_len + 4 {
-
-                        self.read_buffer.extend(buf);
-                        buf.len()
-
-                    } else {
-                        let consumed_len = packet_len + 4 - self.read_buffer.len();
-                        self.read_buffer.extend(&buf[0..consumed_len]);
-                        consumed_len
-                    }
-                },
-                Err(e) => {
-                    println!("error :{:?}", e);
-                    if e.kind() == std::io::ErrorKind::WouldBlock {
-                        println!("would block");
-                        return Ok(false)
-                    } else {
-                        return Err(Error::IO(e))
-                    }
-                }
-            };
-            stream.consume(consumed_len);
-            if self.read_buffer.len() >= packet_len {
-                // Done
-                self.recv_seqn += 1;
-                return Ok(true)
-            }
-        }
-
+    fn set_clear_len<R:BufRead>(&mut self, stream:&mut R) -> Result<(),Error> {
+        debug_assert!(self.read_len == 0);
+        // Packet lengths are always multiples of 8, so is a StreamBuf.
+        // Therefore, this can never block.
+        self.read_buffer.resize(4,0);
+        try!(stream.read_exact(&mut self.read_buffer[0..4]));
+        self.read_len = BigEndian::read_u32(&self.read_buffer) as usize;
+        Ok(())
     }
+    
     fn get_current_payload<'b>(&'b mut self) -> &'b[u8] {
         let packet_length = BigEndian::read_u32(&self.read_buffer) as usize;
         let padding_length = self.read_buffer[4] as usize;
@@ -273,24 +274,8 @@ impl<'a> ServerSession<'a> {
         payload
     }
 
-    fn read_packet<R:Read>(&mut self, stream:&mut R, buf:&mut Vec<u8>) -> Result<usize,Error> {
-
-        println!("read_packet should be replaced");
-
-        let packet_length = try!(stream.read_u32::<BigEndian>()) as usize;
-        let padding_length = try!(stream.read_u8()) as usize;
-
-        println!("packet_length {:?}", packet_length);
-        buf.resize(packet_length - 1, 0);
-        try!(stream.read_exact(&mut buf[0..(packet_length - 1)]));
-
-        self.recv_seqn += 1;
-        // return the read length without padding.
-        Ok(packet_length - 1 - padding_length)
-    }
-
     
-    pub fn read<R:BufRead>(&mut self, stream:&mut R, buffer:&mut Vec<u8>) -> Result<(), Error> {
+    pub fn read<R:BufRead>(&mut self, stream:&mut R) -> Result<(), Error> {
         let state = std::mem::replace(&mut self.state, None);
         // println!("state: {:?}", state);
         match state {
@@ -331,7 +316,13 @@ impl<'a> ServerSession<'a> {
 
                 let algo = if algo.is_none() {
                     
-                    if try!(self.read_clear_packet(stream)) {
+                    if self.read_len == 0 {
+                        try!(self.set_clear_len(stream));
+                    }
+
+                    if try!(read(stream, &mut self.read_buffer, self.read_len)) {
+
+                        self.recv_seqn += 1;
                         
                         let kex = {
                             let payload = self.get_current_payload();
@@ -339,6 +330,7 @@ impl<'a> ServerSession<'a> {
                             read_kex(payload, self.keys).unwrap()
                         };
                         self.read_buffer.clear();
+                        self.read_len = 0;
                         
                         Some(kex)
 
@@ -382,8 +374,13 @@ impl<'a> ServerSession<'a> {
             Some(ServerState::KexDh { mut exchange, mut kex, key, cipher, mac, follows, session_id }) => {
 
 
-                if try!(self.read_clear_packet(stream)) {
+                if self.read_len == 0 {
+                    try!(self.set_clear_len(stream));
+                }
 
+                if try!(read(stream, &mut self.read_buffer, self.read_len)) {
+
+                    self.recv_seqn += 1;
                     let kex = {
                         let payload = self.get_current_payload();
                         assert!(payload[0] == msg::KEX_ECDH_INIT);
@@ -400,6 +397,7 @@ impl<'a> ServerSession<'a> {
                         });
 
                     self.read_buffer.clear();
+                    self.read_len = 0;
                     
                     Ok(())
 
@@ -419,7 +417,12 @@ impl<'a> ServerSession<'a> {
             Some(ServerState::NewKeys { exchange, kex, key, cipher, mac, session_id }) => {
 
                 // We are waiting for the NEWKEYS packet.
-                if try!(self.read_clear_packet(stream)) {
+                if self.read_len == 0 {
+                    try!(self.set_clear_len(stream));
+                }
+                if try!(read(stream, &mut self.read_buffer, self.read_len)) {
+
+                    self.recv_seqn += 1;
 
                     let payload_is_newkeys = self.get_current_payload()[0] == msg::NEWKEYS;
                     if payload_is_newkeys {
@@ -429,6 +432,10 @@ impl<'a> ServerSession<'a> {
                                                      session_id: session_id,
                             }
                         );
+
+                        self.read_buffer.clear();
+                        self.read_len = 0;
+
                         Ok(())
                     } else {
                         Err(Error::NewKeys)
@@ -449,8 +456,15 @@ impl<'a> ServerSession<'a> {
                 match state {
                     Some(ServerState::Encrypted { ref mut cipher, .. }) => {
 
-                        let buf = try!(cipher.read_client_packet(&mut self.recv_seqn, stream, buffer));
-                        println!("decrypted {:?}", buf);
+                        if let Some(buf) = try!(cipher.read_client_packet(self.recv_seqn, stream,
+                                                                          &mut self.read_len,
+                                                                          &mut self.read_buffer)) {
+
+                            println!("decrypted {:?}", buf);
+                            self.recv_seqn += 1;
+                        } else {
+                            // More bytes needed
+                        }
                     },
                     _ => unreachable!()
                 }
@@ -522,7 +536,7 @@ impl<'a> ServerSession<'a> {
                     exchange.server_kex_init = Some((&self.write_buffer [5..]).to_vec());
                     complete_packet(&mut self.write_buffer, 0);
                     try!(self.write_all(stream));
-
+                    self.sent_seqn += 1
                 }
                 if let Some((kex,key,cipher,mac,follows)) = algo {
 
@@ -561,6 +575,7 @@ impl<'a> ServerSession<'a> {
                     try!(key.add_signature(&mut self.write_buffer, hash.as_bytes()));
                     //
                     complete_packet(&mut self.write_buffer, 0);
+                    self.sent_seqn += 1
 
                 } else {
 
@@ -574,6 +589,8 @@ impl<'a> ServerSession<'a> {
                 self.write_buffer.extend(b"\0\0\0\0\0");
                 self.write_buffer.push(msg::NEWKEYS);
                 complete_packet(&mut self.write_buffer, pos);
+                self.sent_seqn += 1;
+
                 try!(self.write_all(stream));
 
                 let session_id = if let Some(session_id) = session_id {
@@ -599,7 +616,11 @@ impl<'a> ServerSession<'a> {
             mut enc @ Some(ServerState::Encrypted { .. }) => {
                 match enc {
                     Some(ServerState::Encrypted { ref mut cipher, .. }) => {
-                        // unimplemented!()
+
+                        cipher.write_server_packet(self.sent_seqn, b"blabla blibli", &mut self.write_buffer);
+                        self.sent_seqn += 1;
+                        try!(self.write_all(stream));
+
                     },
                     _ => unreachable!()
                 }

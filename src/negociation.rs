@@ -131,7 +131,7 @@ pub fn write_kex(keys:&[key::Algorithm], buf:&mut Vec<u8>) {
     buf.push(msg::KEXINIT);
 
     let mut cookie = [0;16];
-    randombytes::randombytes_into(&mut cookie);
+    randombytes::into(&mut cookie);
 
     buf.extend(&cookie); // cookie
     println!("buf len :{:?}", buf.len());

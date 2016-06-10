@@ -45,6 +45,7 @@ macro_rules! as_bytes (($newtype:ident) => (
 
 
 
+
 pub mod chacha20 {
     use super::super::libc::{c_ulonglong,c_int};
     use super::super::libsodium_sys;
@@ -54,6 +55,12 @@ pub mod chacha20 {
     newtype_from_slice!(Key,KEYBYTES);
     newtype_from_slice!(Nonce,NONCEBYTES);
 
+    #[cfg(test)]
+    pub fn gen_key() -> Key {
+        let mut key = Key([0; KEYBYTES]);
+        super::randombytes::into(&mut key.0);
+        key
+    }
     pub fn stream_xor_inplace(m: &mut [u8],
                               &Nonce(ref n): &Nonce,
                               &Key(ref k): &Key) {
@@ -109,7 +116,7 @@ pub mod poly1305 {
 pub mod randombytes {
     use super::super::libsodium_sys;
 
-    pub fn randombytes_into(buf: &mut [u8]) {
+    pub fn into(buf: &mut [u8]) {
         unsafe {
             libsodium_sys::randombytes_buf(buf.as_mut_ptr(), buf.len());
         }
@@ -139,7 +146,6 @@ pub mod sha256 {
 
 pub mod curve25519 {
     use super::super::libsodium_sys;
-    use super::super::libc::c_ulonglong;
 
     pub const GROUPELEMENTBYTES: usize = libsodium_sys::crypto_scalarmult_curve25519_BYTES;
     pub const SCALARBYTES: usize = libsodium_sys::crypto_scalarmult_curve25519_SCALARBYTES;
