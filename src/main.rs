@@ -17,11 +17,20 @@ use std::collections::hash_map::Entry;
 
 use ssh::*;
 
+struct Auth;
+impl Authenticate for Auth {
+    fn auth(&self, user:&str, method:&str) -> bool {
+        println!("user {:?}, method {:?}", user, method);
+        method != "none"
+    }
+}
+
 struct Server<'a> { list:TcpListener,
                     server_config: &'a config::Config,
+                    auth:&'a Auth,
                     buffer0:CryptoBuf,
                     buffer1:CryptoBuf,
-                    sessions:HashMap<usize, (BufReader<TcpStream>, std::net::SocketAddr, ssh::ServerSession<'a>)> }
+                    sessions:HashMap<usize, (BufReader<TcpStream>, std::net::SocketAddr, ssh::ServerSession<'a, Auth>)> }
 
 const SERVER: Token = Token(0);
 impl<'a> Handler for Server<'a> {
@@ -46,6 +55,7 @@ impl<'a> Handler for Server<'a> {
                                               ServerSession::new(
                                                   &self.server_config.server_id,
                                                   &self.server_config.keys,
+                                                  &self.auth,
                                               )));
                 }
             },
@@ -125,6 +135,7 @@ fn main () {
     // for which socket.
     env_logger::init().unwrap();
 
+    let auth = Auth;
     let config = ssh::config::Config {
         // Must begin with "SSH-2.0-".
         server_id: "SSH-2.0-SSH.rs_0.1".to_string(),
@@ -161,6 +172,7 @@ fn main () {
     // Start handling events;
     let mut server = Server {
         list: server,
+        auth: &auth,
         server_config: &config,
         buffer0: CryptoBuf::new(),
         buffer1: CryptoBuf::new(),

@@ -53,11 +53,16 @@ use mac::*;
 
 mod compression;
 
+pub trait Authenticate {
+    fn auth(&self, user:&str, method:&str) -> bool;
+}
 
 #[derive(Debug)]
-pub struct ServerSession<'a> {
+pub struct ServerSession<'a, A:Authenticate+'a> {
     keys:&'a[key::Algorithm],
     server_id: &'a str,
+    authenticator: &'a A,
+
     recv_seqn: usize,
     sent_seqn: usize,
 
@@ -139,6 +144,7 @@ pub enum EncryptedState {
     WaitingServiceRequest,
     ServiceRequest,
     WaitingAuthRequest,
+    RejectAuthRequest
 }
 
 
@@ -274,13 +280,15 @@ fn read<R:BufRead>(stream:&mut R, read_buffer:&mut CryptoBuf, read_len:usize) ->
 }
 
 
-impl<'a> ServerSession<'a> {
+impl<'a, A:Authenticate> ServerSession<'a, A> {
 
-    pub fn new(server_id:&'a str, keys: &'a [key::Algorithm]) -> Self {
+    pub fn new(server_id:&'a str, keys: &'a [key::Algorithm], authenticator:&'a A) -> Self {
         SODIUM_INIT.call_once(|| { sodium::init(); });
         ServerSession {
             keys:keys,
             server_id: server_id,
+            authenticator: authenticator,
+
             recv_seqn: 0,
             sent_seqn: 0,
             read_len: 0,
@@ -505,6 +513,38 @@ impl<'a> ServerSession<'a> {
                             read_packet = true;
                             println!("decrypted {:?}", buf);
                         },
+                        EncryptedState::WaitingAuthRequest if buf[0] == msg::USERAUTH_REQUEST => {
+
+                            // https://tools.ietf.org/html/rfc4252#section-5
+                            let mut pos = 1;
+                            let mut next = || {
+                                let name_len = BigEndian::read_u32(&buf[pos..]) as usize;
+                                pos += 4;
+                                let name = &buf[pos..(pos+name_len)];
+                                pos += name_len;
+                                name
+                            };
+
+                            let name = next();
+                            let service_name = next();
+                            let method = next();
+
+                            read_packet = true;
+                            match (std::str::from_utf8(name), service_name, std::str::from_utf8(method)) {
+                                (Ok(name), serv, Ok(method)) if service_name == b"ssh-connection" => {
+
+                                    if self.authenticator.auth(name, method) {
+                                        unimplemented!()
+                                    } else {
+                                        enc.state = EncryptedState::RejectAuthRequest
+                                    }
+                                },
+                                _ => {
+                                    // protocol error.
+                                    unimplemented!()
+                                }
+                            }
+                        },
                         _ => {
                             read_packet = true;
                         }
@@ -676,17 +716,30 @@ impl<'a> ServerSession<'a> {
             },
             Some(ServerState::Encrypted(mut enc)) => {
                 println!("read: encrypted {:?}", enc.state);
-
                 match enc.state {
+                    EncryptedState::WaitingServiceRequest => {},
                     EncryptedState::ServiceRequest => {
                         buffer.clear();
                         buffer.push(msg::SERVICE_ACCEPT);
                         buffer.extend_ssh_string(b"ssh-userauth");
                         enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
                         self.sent_seqn += 1;
+                        enc.state = EncryptedState::WaitingAuthRequest;
                         try!(self.write_all(stream));
                     },
-                    _ => {}
+                    EncryptedState::WaitingAuthRequest => {},
+
+                    EncryptedState::RejectAuthRequest => {
+                        buffer.clear();
+                        buffer.push(msg::USERAUTH_FAILURE);
+
+                        buffer.extend_ssh_string(b"ssh-userauth");
+
+                        enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
+                        self.sent_seqn += 1;
+                        enc.state = EncryptedState::WaitingAuthRequest;
+                        try!(self.write_all(stream));
+                    }
                 }
                 self.state = Some(ServerState::Encrypted(enc));
                 Ok(())
