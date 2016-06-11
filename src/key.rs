@@ -61,7 +61,8 @@ impl Algorithm {
         match self {
             &Algorithm::Ed25519 { ref secret_host_key, .. } => {
 
-                let sign = ed25519::sign_detached(&hash, secret_host_key);
+                let mut sign = ed25519::Signature::new_blank();
+                ed25519::sign_detached(&mut sign, &hash, secret_host_key);
 
                 buffer.push_u32_be(
                     (KEY_ED25519.len()

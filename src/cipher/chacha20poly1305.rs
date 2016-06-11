@@ -24,8 +24,8 @@ pub struct Cipher {
 impl Cipher {
     pub fn init(key:&[u8]) -> Cipher {
         Cipher {
-            k1: chacha20::Key::from_slice(&key[32..64]),
-            k2: chacha20::Key::from_slice(&key[0..32])
+            k1: chacha20::Key::copy_from_slice(&key[32..64]),
+            k2: chacha20::Key::copy_from_slice(&key[0..32])
         }
     }
 }
@@ -40,7 +40,7 @@ impl super::CipherT for Cipher {
         // http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD
         let mut nonce = [0;8];
         BigEndian::write_u32(&mut nonce[4..], seq as u32);
-        let nonce = chacha20::Nonce::from_slice(&nonce);
+        let nonce = chacha20::Nonce::copy_from_slice(&nonce);
 
 
         // - Compute the length, by chacha20-stream-xoring the first 4 bytes with the last 32 bytes of the client key.
@@ -68,7 +68,7 @@ impl super::CipherT for Cipher {
                 &mut poly_key,
                 &nonce,
                 &self.k2);
-            let poly_key = poly1305::Key::from_slice(&poly_key);
+            let poly_key = poly1305::Key::copy_from_slice(&poly_key);
 
             let mut tag = poly1305::Tag::new_blank();
 
@@ -138,7 +138,7 @@ impl super::CipherT for Cipher {
 
         let mut nonce = [0;8];
         BigEndian::write_u32(&mut nonce[4..], seq as u32);
-        let nonce = chacha20::Nonce::from_slice(&nonce);
+        let nonce = chacha20::Nonce::copy_from_slice(&nonce);
 
         {
             let buffer = buffer.as_mut_slice();
@@ -180,7 +180,7 @@ impl super::CipherT for Cipher {
             &mut poly_key,
             &nonce,
             &self.k2);
-        let poly_key = poly1305::Key::from_slice(&poly_key);
+        let poly_key = poly1305::Key::copy_from_slice(&poly_key);
 
         println!("key: {:?}", poly_key);
         let mut tag = poly1305::Tag::new_blank();

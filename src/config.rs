@@ -27,7 +27,7 @@ pub fn read_public_key<P:AsRef<Path>>(p:P) -> Result<PublicKey, super::Error> {
     let mut pos = Position { s:&p,position:0 };
     if pos.read_string() == b"ssh-ed25519" {
         let pubkey = pos.read_string();
-        Ok(PublicKey::from_slice(pubkey))
+        Ok(PublicKey::copy_from_slice(pubkey))
     } else {
         Err(super::Error::CouldNotReadKey)
     }
@@ -73,7 +73,7 @@ pub fn read_secret_key<P:AsRef<Path>>(p:P) -> Result<SecretKey, super::Error> {
             let mut pos = Position { s:public_string, position:0 };
             if pos.read_string() == KEYTYPE_ED25519 {
                 // println!("{:?} {:?}", secret, secret.len());
-                let public = PublicKey::from_slice(pos.read_string());
+                let public = PublicKey::copy_from_slice(pos.read_string());
                 info!("public: {:?}", public);
             }
         }
@@ -94,7 +94,7 @@ pub fn read_secret_key<P:AsRef<Path>>(p:P) -> Result<SecretKey, super::Error> {
                     let seckey = position.read_string();
                     let comment = position.read_string();
                     debug!("comment = {:?}", comment);
-                    let secret = SecretKey::from_slice(seckey);
+                    let secret = SecretKey::copy_from_slice(seckey);
                     return Ok(secret)
                 } else {
                     info!("unsupported key type {:?}", std::str::from_utf8(key_type));

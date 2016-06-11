@@ -25,14 +25,13 @@ pub fn memzero(x: &mut [u8]) {
 
 
 
-macro_rules! newtype_from_slice (($newtype:ident, $len:expr) => {
+macro_rules! newtype (($newtype:ident, $len:expr) => {
     pub struct $newtype([u8;$len]);
     impl std::fmt::Debug for $newtype {
         fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             write!(f, "{}({:?})", stringify!($newtype), &self.0[..])
         }
     }
-    from_slice!($newtype,$len);
 });
 macro_rules! new_blank (($newtype:ident, $len:expr) => {
     impl $newtype {
@@ -43,7 +42,7 @@ macro_rules! new_blank (($newtype:ident, $len:expr) => {
 });
 macro_rules! from_slice (($newtype:ident, $len:expr) => (
     impl $newtype {
-        pub fn from_slice(s: &[u8]) -> Self {
+        pub fn copy_from_slice(s: &[u8]) -> Self {
             debug_assert!(s.len() == $len);
             let mut x = $newtype([0;$len]);
             (&mut x.0).clone_from_slice(s);
@@ -53,14 +52,19 @@ macro_rules! from_slice (($newtype:ident, $len:expr) => (
 ));
 macro_rules! as_bytes (($newtype:ident) => (
     impl $newtype {
-        pub fn as_bytes(self) -> Self {
+        pub fn as_bytes<'a>(&'a self) -> &'a[u8] {
             &self.0
         }
     }
 ));
 
-
-
+macro_rules! clone (($newtype:ident) => (
+    impl Clone for $newtype {
+        fn clone(&self) -> Self {
+            Self::copy_from_slice(self.as_bytes())
+        }
+    }
+));
 
 
 pub mod chacha20 {
@@ -69,8 +73,10 @@ pub mod chacha20 {
     pub const KEYBYTES:usize = libsodium_sys::crypto_stream_chacha20_KEYBYTES;
     pub const NONCEBYTES:usize = libsodium_sys::crypto_stream_chacha20_NONCEBYTES;
     use std;
-    newtype_from_slice!(Key,KEYBYTES);
-    newtype_from_slice!(Nonce,NONCEBYTES);
+    newtype!(Key,KEYBYTES);
+    from_slice!(Key,KEYBYTES);
+    newtype!(Nonce,NONCEBYTES);
+    from_slice!(Nonce,NONCEBYTES);
 
     #[cfg(test)]
     pub fn gen_key() -> Key {
@@ -109,12 +115,14 @@ pub mod poly1305 {
     pub const TAGBYTES:usize = libsodium_sys::crypto_onetimeauth_poly1305_BYTES;
     use std;
 
-    newtype_from_slice!(Key,KEYBYTES);
+    newtype!(Key,KEYBYTES);
+    from_slice!(Key,KEYBYTES);
     new_blank!(Key,KEYBYTES);
 
     pub struct Tag([u8;TAGBYTES]);
     new_blank!(Tag,TAGBYTES);
-    impl Tag { pub fn as_bytes<'a>(&'a self) -> &'a[u8] { &self.0 } }
+    from_slice!(Tag,TAGBYTES);
+    as_bytes!(Tag);
 
     pub fn authenticate(tag:&mut Tag,
                         m: &[u8],
@@ -143,19 +151,18 @@ pub mod randombytes {
 pub mod sha256 {
     use super::super::libsodium_sys;
     use super::super::libc::c_ulonglong;
-
+    use std;
     pub const DIGESTBYTES:usize = libsodium_sys::crypto_hash_sha256_BYTES;
 
-    #[derive(Clone, Debug)]
-    pub struct Digest([u8;DIGESTBYTES]);
-    impl Digest {
-        pub fn as_bytes<'a>(&'a self) -> &'a[u8] { &self.0 }
-    }
-    pub fn hash(m: &[u8]) -> Digest {
+    newtype!(Digest, DIGESTBYTES);
+    as_bytes!(Digest);
+    from_slice!(Digest, DIGESTBYTES);
+    clone!(Digest);
+    new_blank!(Digest, DIGESTBYTES);
+
+    pub fn hash(digest:&mut Digest, m: &[u8]) {
         unsafe {
-            let mut h = [0; DIGESTBYTES];
-            libsodium_sys::crypto_hash_sha256(&mut h, m.as_ptr(), m.len() as c_ulonglong);
-            Digest(h)
+            libsodium_sys::crypto_hash_sha256(&mut digest.0, m.as_ptr(), m.len() as c_ulonglong);
         }
     }
 }
@@ -167,8 +174,10 @@ pub mod curve25519 {
     pub const SCALARBYTES: usize = libsodium_sys::crypto_scalarmult_curve25519_SCALARBYTES;
 
     use std;
-    newtype_from_slice!(Scalar, SCALARBYTES);
-    newtype_from_slice!(GroupElement, GROUPELEMENTBYTES);
+    newtype!(Scalar, SCALARBYTES);
+    from_slice!(Scalar, SCALARBYTES);
+    newtype!(GroupElement, GROUPELEMENTBYTES);
+    from_slice!(GroupElement, GROUPELEMENTBYTES);
     new_blank!(GroupElement, GROUPELEMENTBYTES);
     impl GroupElement {
         pub fn as_bytes<'a>(&'a self) -> &'a[u8] { &self.0 }
@@ -199,50 +208,32 @@ pub mod ed25519 {
     pub const SIGNATUREBYTES: usize = libsodium_sys::crypto_sign_ed25519_BYTES;
 
 
-    newtype_from_slice!(PublicKey, PUBLICKEYBYTES);
-    impl PublicKey {
-        pub fn as_bytes<'a>(&'a self) -> &'a[u8] { &self.0 }
-    }
-    impl Clone for PublicKey {
-        fn clone(&self) -> Self {
-            Self::from_slice(self.as_bytes())
-        }
-    }
+    newtype!(PublicKey, PUBLICKEYBYTES);
+    as_bytes!(PublicKey);
+    from_slice!(PublicKey, PUBLICKEYBYTES);
+    clone!(PublicKey);
 
-    pub struct Signature([u8;SIGNATUREBYTES]);
-    impl Signature {
-        pub fn as_bytes<'a>(&'a self) -> &'a[u8] {
-            &self.0
-        }
-    }
-    impl Clone for Signature {
-        fn clone(&self) -> Self {
-            let mut t = [0;SIGNATUREBYTES];
-            t.clone_from_slice(&self.0);
-            Signature(t)
-        }
-    }
+    newtype!(Signature, SIGNATUREBYTES);
+    as_bytes!(Signature);
+    from_slice!(Signature, SIGNATUREBYTES);
+    clone!(Signature);
+    new_blank!(Signature, SIGNATUREBYTES);
 
-    newtype_from_slice!(SecretKey, SECRETKEYBYTES);
-    impl Clone for SecretKey {
-        fn clone(&self) -> Self {
-            let mut t = [0;SECRETKEYBYTES];
-            t.clone_from_slice(&self.0);
-            SecretKey(t)
-        }
-    }
+    newtype!(SecretKey, SECRETKEYBYTES);
+    as_bytes!(SecretKey);
+    from_slice!(SecretKey, SECRETKEYBYTES);
+    clone!(SecretKey);
+
     
-    pub fn sign_detached(m: &[u8], &SecretKey(ref sk): &SecretKey) -> Signature {
+    pub fn sign_detached(signature:&mut Signature, m: &[u8], &SecretKey(ref sk): &SecretKey) {
         unsafe {
-            let mut sig = [0u8; SIGNATUREBYTES];
             let mut siglen: c_ulonglong = 0;
-            libsodium_sys::crypto_sign_ed25519_detached(&mut sig,
+            libsodium_sys::crypto_sign_ed25519_detached(&mut signature.0,
                                                         &mut siglen,
                                                         m.as_ptr(),
                                                         m.len() as c_ulonglong,
                                                         sk);
             assert_eq!(siglen, SIGNATUREBYTES as c_ulonglong);
-            Signature(sig)
         }
     }
 

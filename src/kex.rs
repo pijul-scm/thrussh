@@ -72,7 +72,7 @@ impl Name {
 
                 let client_pubkey = {
                     let pubkey_len = BigEndian::read_u32(&payload[1..]) as usize;
-                    curve25519::GroupElement::from_slice(&payload[5 .. (5+pubkey_len)])
+                    curve25519::GroupElement::copy_from_slice(&payload[5 .. (5+pubkey_len)])
                 };
                 let server_secret = {
                     let mut server_secret = [0;curve25519::SCALARBYTES];
@@ -82,7 +82,7 @@ impl Name {
                     //server_secret_[0] &= 248;
                     //server_secret_[31] &= 127;
                     //server_secret_[31] |= 64;
-                    curve25519::Scalar::from_slice(&server_secret)
+                    curve25519::Scalar::copy_from_slice(&server_secret)
                 };
 
                 let mut server_pubkey = curve25519::GroupElement::new_blank();
@@ -166,7 +166,8 @@ impl Algorithm {
 
                         println!("buffer len = {:?}", buffer.len());
                         super::hexdump(buffer);
-                        let hash = sha256::hash(buffer.as_slice());
+                        let mut hash = sha256::Digest::new_blank();
+                        sha256::hash(&mut hash, buffer.as_slice());
                         println!("hash: {:?}", hash);
                         Ok(Digest::Sha256(hash))
                     },
@@ -195,9 +196,9 @@ impl Algorithm {
                     buffer.extend(exchange_hash.as_bytes());
                     buffer.push(c);
                     buffer.extend(session_id.as_bytes());
-                    key.extend(
-                        sha256::hash(buffer.as_slice()).as_bytes()
-                    );
+                    let mut hash = sha256::Digest::new_blank();
+                    sha256::hash(&mut hash, buffer.as_slice());
+                    key.extend(hash.as_bytes());
 
                     while key.len() < len {
                         // extend.
@@ -207,9 +208,9 @@ impl Algorithm {
                         buffer.extend(
                             key.as_slice()
                         );
-                        key.extend(
-                            sha256::hash(buffer.as_slice()).as_bytes()
-                        )
+                        let mut hash = sha256::Digest::new_blank();
+                        sha256::hash(&mut hash, buffer.as_slice());
+                        key.extend(hash.as_bytes())
                     }
                 };
                 
