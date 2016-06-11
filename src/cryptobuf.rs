@@ -47,7 +47,7 @@ impl CryptoBuf {
 
                 if self.capacity > 0 {
                     std::ptr::copy_nonoverlapping(old_ptr, self.p, self.size);
-                    libsodium_sys::sodium_memzero(old_ptr, self.capacity);
+                    libsodium_sys::sodium_memzero(old_ptr, self.size);
                     free(old_ptr as *mut c_void);
                 }
 
@@ -63,7 +63,7 @@ impl CryptoBuf {
     pub fn clear(&mut self) {
         unsafe {
             if self.capacity > 0 {
-                libsodium_sys::sodium_memzero(self.p, self.capacity);
+                libsodium_sys::sodium_memzero(self.p, self.size);
             }
         }
         self.size = 0;
