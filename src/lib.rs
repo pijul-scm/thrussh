@@ -8,6 +8,8 @@ extern crate bitflags;
 extern crate log;
 extern crate byteorder;
 
+mod tweetnacl;
+
 // extern crate language_tags;
 
 extern crate rustc_serialize; // config: read base 64.
