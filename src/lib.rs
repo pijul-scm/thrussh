@@ -279,11 +279,15 @@ impl CryptoBuf {
 
 
 pub trait Authenticate {
-    fn auth(&self, methods:auth::Methods, method:&auth::Method) -> auth::AuthResult;
+    fn auth(&self, methods:auth::Methods, method:&auth::Method) -> auth::Auth {
+        auth::Auth::Reject { remaining_methods: methods - method, partial_success: false }
+    }
 }
 pub trait Serve {
     fn init(&self, channel:&Channel) -> Self;
-    fn data(&mut self, data:&[u8], reply:&mut CryptoBuf) -> Result<(),Error>;
+    fn data(&mut self, data:&[u8], reply:&mut CryptoBuf) -> Result<(),Error> {
+        Ok(())
+    }
 }
 
 pub fn hexdump(x:&CryptoBuf) {
@@ -621,10 +625,10 @@ impl<S:Serve> ServerSession<S> {
                                             password: password
                                         };
                                         match config.auth.auth(auth_request.methods, &method) {
-                                            auth::AuthResult::Success => {
+                                            auth::Auth::Success => {
                                                 enc.state = Some(EncryptedState::AuthRequestSuccess)
                                             },
-                                            auth::AuthResult::Reject { remaining_methods, partial_success } => {
+                                            auth::Auth::Reject { remaining_methods, partial_success } => {
                                                 auth_request.methods = remaining_methods;
                                                 auth_request.partial_success = partial_success;
                                                 enc.state = Some(EncryptedState::RejectAuthRequest(auth_request))
@@ -655,7 +659,7 @@ impl<S:Serve> ServerSession<S> {
                                         };
 
                                         match config.auth.auth(auth_request.methods, &method) {
-                                            auth::AuthResult::Success => {
+                                            auth::Auth::Success => {
                                                 
 
                                                 // Public key ?
@@ -664,7 +668,7 @@ impl<S:Serve> ServerSession<S> {
                                                 enc.state = Some(EncryptedState::WaitingSignature(auth_request));
                                                     
                                             },
-                                            auth::AuthResult::Reject { remaining_methods, partial_success } => {
+                                            auth::Auth::Reject { remaining_methods, partial_success } => {
 
                                                 auth_request.methods = remaining_methods;
                                                 auth_request.partial_success = partial_success;

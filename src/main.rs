@@ -19,7 +19,7 @@ use russht::*;
 struct Auth;
 
 impl Authenticate for Auth {
-    fn auth<'a>(&self, methods:auth::Methods, method:&auth::Method) -> auth::AuthResult {
+    fn auth<'a>(&self, methods:auth::Methods, method:&auth::Method) -> auth::Auth {
         println!("methods {:?}, method {:?}", methods, method);
         match method {
             &auth::Method::Pubkey { user, algo, ref pubkey } if user == "pe" && algo == "ssh-ed25519" => {
@@ -31,15 +31,15 @@ impl Authenticate for Auth {
                 );
 
                 if *pubkey == pe_pubkey {
-                    return auth::AuthResult::Success
+                    return auth::Auth::Success
                 }
             },
             &auth::Method::Password { user, password } if user == "pe" && password == "blabla" => {
-                return auth::AuthResult::Success
+                return auth::Auth::Success
             }
             _ => {}
         }
-        auth::AuthResult::Reject {
+        auth::Auth::Reject {
             remaining_methods: methods - method,
             partial_success: false
         }
