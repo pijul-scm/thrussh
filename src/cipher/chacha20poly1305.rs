@@ -54,14 +54,14 @@ impl super::CipherT for Cipher {
                 &nonce,
                 &self.k1);
 
-            println!("chacha20: packet length: {:?}", &len[..]);
+            //println!("chacha20: packet length: {:?}", &len[..]);
 
             *read_len = BigEndian::read_u32(&len) as usize + poly1305::TAGBYTES;
         }
         // - Compute the Poly1305 auth on the first (4+length) first bytes of the packet.
         if try!(super::super::read(stream, read_buffer, *read_len)) {
 
-            println!("read_buffer {:?}", read_buffer);
+            // println!("read_buffer {:?}", read_buffer);
             // try!(stream.read_exact(&mut buffer[4..]));
             let mut poly_key = [0;32];
             chacha20::stream_xor_inplace(
@@ -80,12 +80,12 @@ impl super::CipherT for Cipher {
                     &poly_key
                 );
             }
-
+            /*
             println!("computing tag on {:?} with key {:?}",
                      &read_buffer_slice[0 .. 4 + *read_len - poly1305::TAGBYTES],
                      poly_key
             );
-
+            */
             
             // println!("read buffer before chacha20: {:?}", &read_buffer);
             // - Constant-time-compare it with the Poly1305 at the end of the packet (right after the 4+length first bytes).
@@ -106,11 +106,12 @@ impl super::CipherT for Cipher {
                 }
                 let padding = read_buffer_slice[4] as usize;
                 // println!("read packet = {:?}", &read_buffer_slice[5..(5+ *read_len - poly1305::TAGBYTES - padding - 1)]);
-                println!("padding len = {:?}", padding);
+                //println!("chacha20: packet({:?}): {:?}", read_buffer_slice.len(), read_buffer_slice);
+                //println!("padding len = {:?}", padding);
                 Ok(Some(&read_buffer_slice[5..(5+ *read_len - poly1305::TAGBYTES - padding - 1)]))
 
             } else {
-                println!("should be {:?}, was {:?}", tag.as_bytes(), &read_buffer_slice[4 + *read_len - poly1305::TAGBYTES..]);
+                //println!("should be {:?}, was {:?}", tag.as_bytes(), &read_buffer_slice[4 + *read_len - poly1305::TAGBYTES..]);
                 Err(Error::PacketAuth)
             }
         } else {
@@ -121,10 +122,10 @@ impl super::CipherT for Cipher {
     fn write_packet(&self, seq:usize, packet_content:&[u8], buffer:&mut CryptoBuf) {
 
         // http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD
-
+        let offset = buffer.len();
         // - Compute the length, by chacha20-stream-xoring the first 4 bytes with the last 32 bytes of the client key.
-        buffer.clear();
-        println!("seqnr = {}", seq);
+
+        // println!("seqnr = {}", seq);
         let block_size = 8;
         let padding_len = {
             (block_size - ((1 + packet_content.len()) % block_size))
@@ -133,7 +134,7 @@ impl super::CipherT for Cipher {
         let padding_len = if padding_len < 4 { padding_len + block_size } else { padding_len };
         let padding_len = padding_len + 16;
 
-        println!("pushing len: {:?}", packet_content.len() + padding_len + 1);
+        // println!("pushing len: {:?}", packet_content.len() + padding_len + 1);
         buffer.push_u32_be((packet_content.len() + padding_len + 1) as u32);
 
         let mut nonce = [0;8];
@@ -143,7 +144,7 @@ impl super::CipherT for Cipher {
         {
             let buffer = buffer.as_mut_slice();
             chacha20::stream_xor_inplace(
-                &mut buffer[0..4],
+                &mut buffer[offset..(offset+4)],
                 &nonce,
                 &self.k1);
         }
@@ -151,28 +152,28 @@ impl super::CipherT for Cipher {
         // - Append the encrypted packet
 
         // Compute the amount of padding.
-        println!("padding_len {:?}", padding_len);
+        //println!("padding_len {:?}", padding_len);
         buffer.push(padding_len as u8);
 
         buffer.extend(packet_content);
 
-        println!("buffer before padding: {:?}", buffer.as_slice());
+        //println!("buffer before padding: {:?}", &(buffer.as_slice())[offset..]);
 
         let mut padding = [0;256];
 
         randombytes::into(&mut padding[0..padding_len]);
         buffer.extend(&padding[0..padding_len]);
 
-        println!("buffer before encryption: {:?}", buffer.as_slice());
+        //println!("buffer before encryption: {:?}", &(buffer.as_slice())[offset..]);
 
         {
             let buffer = buffer.as_mut_slice();
-            chacha20::xor_inplace(&mut buffer[4..],
+            chacha20::xor_inplace(&mut buffer[offset+4 ..],
                                   &nonce,
                                   1,
                                   &self.k2);
         }
-        println!("buffer before tag: {:?}", buffer.as_slice());
+        //println!("buffer before tag: {:?}", &(buffer.as_slice())[offset..]);
         // - Compute the Poly1305 auth on the first (4+length) first bytes of the packet.
 
         let mut poly_key = [0;poly1305::KEYBYTES];
@@ -182,18 +183,18 @@ impl super::CipherT for Cipher {
             &self.k2);
         let poly_key = poly1305::Key::copy_from_slice(&poly_key);
 
-        println!("key: {:?}", poly_key);
+        // println!("key: {:?}", poly_key);
         let mut tag = poly1305::Tag::new_blank();
         {
             let buffer = buffer.as_slice();
-            poly1305::authenticate(&mut tag, buffer, &poly_key);
+            poly1305::authenticate(&mut tag, &buffer[offset..], &poly_key);
         }
-
+        // println!("== Final buffer(len = {:?}): {:?}", buffer.len()-offset, &(buffer.as_slice())[offset..]);
         // try!(stream.write(&buffer));
         // try!(stream.write(tag.as_bytes()));
 
         buffer.extend(tag.as_bytes());
-
+        
     }
 }
 

@@ -1,7 +1,8 @@
 [package]
-name = "ssh"
+name = "russht"
 version = "0.1.0"
 authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
+# build = "build.rs"
 
 [dependencies]
 mio = "*"
@@ -11,8 +12,13 @@ log = "*"
 env_logger = "*"
 byteorder = "*"
 
-libsodium-sys = "*"
 libc = "*"
+bitflags = "*"
 
 regex = "*"
 rustc-serialize = "*"
+
+libsodium-sys = "*"
+
+# [build-dependencies]
+# gcc = "0.3"

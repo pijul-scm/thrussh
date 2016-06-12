@@ -14,41 +14,26 @@ pub const KEX_ECDH_INIT:u8 = 30;
 pub const KEX_ECDH_REPLY:u8 = 31;
 
 
+// https://tools.ietf.org/html/rfc4250#section-4.1.2
 pub const USERAUTH_REQUEST:u8 = 50;
 pub const USERAUTH_FAILURE:u8 = 51;
 pub const USERAUTH_SUCCESS:u8 = 52;
 pub const USERAUTH_BANNER:u8 = 53;
+pub const USERAUTH_PK_OK:u8 = 60;
 
+// https://tools.ietf.org/html/rfc4254#section-9
+pub const GLOBAL_REQUEST:u8 = 80;
+pub const REQUEST_SUCCESS:u8 = 81;
+pub const REQUEST_FAILURE:u8 = 82;
 
-
-// https://tools.ietf.org/html/rfc4250#section-4.1.2
-/*
-         SSH_MSG_DISCONNECT                       1     [SSH-TRANS]
-         SSH_MSG_IGNORE                           2     [SSH-TRANS]
-         SSH_MSG_UNIMPLEMENTED                    3     [SSH-TRANS]
-         SSH_MSG_DEBUG                            4     [SSH-TRANS]
-         SSH_MSG_SERVICE_REQUEST                  5     [SSH-TRANS]
-         SSH_MSG_SERVICE_ACCEPT                   6     [SSH-TRANS]
-         SSH_MSG_KEXINIT                         20     [SSH-TRANS]
-         SSH_MSG_NEWKEYS                         21     [SSH-TRANS]
-
-         SSH_MSG_USERAUTH_REQUEST                50     [SSH-USERAUTH]
-         SSH_MSG_USERAUTH_FAILURE                51     [SSH-USERAUTH]
-         SSH_MSG_USERAUTH_SUCCESS                52     [SSH-USERAUTH]
-         SSH_MSG_USERAUTH_BANNER                 53     [SSH-USERAUTH]
-
-         SSH_MSG_GLOBAL_REQUEST                  80     [SSH-CONNECT]
-         SSH_MSG_REQUEST_SUCCESS                 81     [SSH-CONNECT]
-         SSH_MSG_REQUEST_FAILURE                 82     [SSH-CONNECT]
-         SSH_MSG_CHANNEL_OPEN                    90     [SSH-CONNECT]
-         SSH_MSG_CHANNEL_OPEN_CONFIRMATION       91     [SSH-CONNECT]
-         SSH_MSG_CHANNEL_OPEN_FAILURE            92     [SSH-CONNECT]
-         SSH_MSG_CHANNEL_WINDOW_ADJUST           93     [SSH-CONNECT]
-         SSH_MSG_CHANNEL_DATA                    94     [SSH-CONNECT]
-         SSH_MSG_CHANNEL_EXTENDED_DATA           95     [SSH-CONNECT]
-         SSH_MSG_CHANNEL_EOF                     96     [SSH-CONNECT]
-         SSH_MSG_CHANNEL_CLOSE                   97     [SSH-CONNECT]
-         SSH_MSG_CHANNEL_REQUEST                 98     [SSH-CONNECT]
-         SSH_MSG_CHANNEL_SUCCESS                 99     [SSH-CONNECT]
-         SSH_MSG_CHANNEL_FAILURE                100     [SSH-CONNECT]
-*/
+pub const CHANNEL_OPEN:u8 = 90;
+pub const CHANNEL_OPEN_CONFIRMATION:u8 = 91;
+pub const CHANNEL_OPEN_FAILURE:u8 = 92;
+pub const CHANNEL_WINDOW_ADJUST:u8 = 93;
+pub const CHANNEL_DATA:u8 = 94;
+pub const CHANNEL_EXTENDED_DATA:u8 = 95;
+pub const CHANNEL_EOF:u8 = 96;
+pub const CHANNEL_CLOSE:u8 = 97;
+pub const CHANNEL_REQUEST:u8 = 98;
+pub const CHANNEL_SUCCESS:u8 = 99;
+pub const CHANNEL_FAILURE:u8 = 100;

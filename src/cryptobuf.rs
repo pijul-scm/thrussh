@@ -1,5 +1,6 @@
 use std;
-use libsodium_sys;
+
+use super::sodium;
 use super::libc::{ malloc, free, c_void };
 #[derive(Debug)]
 pub struct CryptoBuf {
@@ -44,10 +45,11 @@ impl CryptoBuf {
                 let next_capacity = size.next_power_of_two();
                 let old_ptr = self.p;
                 self.p = malloc(next_capacity) as *mut u8;
+                sodium::sodium_mlock(self.p as *mut c_void, next_capacity);
 
                 if self.capacity > 0 {
                     std::ptr::copy_nonoverlapping(old_ptr, self.p, self.size);
-                    libsodium_sys::sodium_memzero(old_ptr, self.size);
+                    sodium::sodium_munlock(old_ptr as *mut c_void, self.size);
                     free(old_ptr as *mut c_void);
                 }
 
@@ -63,7 +65,11 @@ impl CryptoBuf {
     pub fn clear(&mut self) {
         unsafe {
             if self.capacity > 0 {
-                libsodium_sys::sodium_memzero(self.p, self.size);
+                let mut i = 0;
+                while i < (self.size >> 3) {
+                    *((self.p as *mut u64).offset(i as isize)) = 0;
+                    i += 1
+                }
             }
         }
         self.size = 0;
@@ -143,7 +149,7 @@ impl Drop for CryptoBuf {
     fn drop(&mut self) {
         if self.capacity > 0 {
             unsafe {
-                libsodium_sys::sodium_memzero(self.p, self.size);
+                sodium::sodium_munlock(self.p as *mut c_void, self.size);
                 free(self.p as *mut c_void)
             }
         }

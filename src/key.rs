@@ -7,6 +7,11 @@ pub enum Name {
     Ed25519 // "ssh-ed25519"
 }
 
+#[derive(Debug,Clone, PartialEq, Eq)]
+pub enum PublicKey {
+    Ed25519(ed25519::PublicKey)
+}
+
 #[derive(Debug,Clone)]
 pub enum Algorithm {
     Ed25519 {

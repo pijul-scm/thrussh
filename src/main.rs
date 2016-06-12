@@ -1,5 +1,5 @@
 extern crate mio;
-extern crate ssh;
+extern crate russht;
 use mio::*;
 use mio::tcp::{TcpListener, TcpStream};
 //extern crate bufstream;
@@ -15,22 +15,46 @@ use std::io::{ Read, Write, BufReader, BufRead };
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
-use ssh::*;
-
+use russht::*;
 struct Auth;
-impl Authenticate for Auth {
-    fn auth(&self, user:&str, method:&str) -> bool {
-        println!("user {:?}, method {:?}", user, method);
-        method != "none"
+
+impl auth::Authenticate for Auth {
+    fn auth<'a>(&self, methods:auth::Methods, method:&auth::Method) -> auth::AuthResult {
+        println!("methods {:?}, method {:?}", methods, method);
+        match method {
+            &auth::Method::Pubkey { user, algo, ref pubkey, is_probe } if is_probe && user == "pe" && algo == "ssh-ed25519" => {
+
+                let pe_pubkey = key::PublicKey::Ed25519(
+                    sodium::ed25519::PublicKey::copy_from_slice(
+                        &[182, 160, 56, 145, 96, 193, 163, 13, 132, 21, 144, 32, 216, 167,
+                          40, 229, 230, 169, 46, 6, 135, 147, 96, 198, 10, 226, 95, 7, 78, 160, 131, 73])
+                );
+
+                if *pubkey == pe_pubkey {
+                    return auth::AuthResult::PublicKey
+                }
+            },
+            &auth::Method::Password { user, password } if user == "pe" && password == "blabla" => {
+                return auth::AuthResult::Success
+            }
+            _ => {}
+        }
+        auth::AuthResult::Reject {
+            remaining_methods: methods - method,
+            partial_success: false
+        }
+
     }
 }
 
 struct Server<'a> { list:TcpListener,
                     server_config: &'a config::Config,
                     auth:&'a Auth,
+                    auth_banner:Option<&'a str>,
+                    methods:auth::Methods,
                     buffer0:CryptoBuf,
                     buffer1:CryptoBuf,
-                    sessions:HashMap<usize, (BufReader<TcpStream>, std::net::SocketAddr, ssh::ServerSession<'a, Auth>)> }
+                    sessions:HashMap<usize, (BufReader<TcpStream>, std::net::SocketAddr, ServerSession<'a, Auth>)> }
 
 const SERVER: Token = Token(0);
 impl<'a> Handler for Server<'a> {
@@ -55,6 +79,8 @@ impl<'a> Handler for Server<'a> {
                                               ServerSession::new(
                                                   &self.server_config.server_id,
                                                   &self.server_config.keys,
+                                                  self.auth_banner,
+                                                  self.methods,
                                                   &self.auth,
                                               )));
                 }
@@ -87,7 +113,7 @@ impl<'a> Handler for Server<'a> {
                                 {
                                     let &mut (ref mut stream, _, ref mut session) = e.get_mut();
                                     while result.is_ok() && stream.fill_buf().is_ok() {
-                                        let r = session.read(stream);
+                                        let r = session.read(stream, &mut self.buffer0);
                                         if let Ok(t) = r {
                                             if !t {
                                                 //not enough bytes
@@ -136,13 +162,13 @@ fn main () {
     env_logger::init().unwrap();
 
     let auth = Auth;
-    let config = ssh::config::Config {
+    let config = config::Config {
         // Must begin with "SSH-2.0-".
         server_id: "SSH-2.0-SSH.rs_0.1".to_string(),
         keys:vec!(
             key::Algorithm::Ed25519 {
-                public_host_key: ssh::config::read_public_key("ssh_host_ed25519_key.pub").unwrap(),
-                secret_host_key: ssh::config::read_secret_key("ssh_host_ed25519_key").unwrap(),
+                public_host_key: config::read_public_key("ssh_host_ed25519_key.pub").unwrap(),
+                secret_host_key: config::read_secret_key("ssh_host_ed25519_key").unwrap(),
             }
         )
     };
@@ -173,6 +199,8 @@ fn main () {
     let mut server = Server {
         list: server,
         auth: &auth,
+        methods: auth::Methods::all(),
+        auth_banner: Some("You're about to authenticate\r\n"), // CRLF separated lines.
         server_config: &config,
         buffer0: CryptoBuf::new(),
         buffer1: CryptoBuf::new(),

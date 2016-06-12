@@ -91,46 +91,6 @@ pub fn read_kex(buffer:&[u8], keys:&[key::Algorithm]) -> Result<Names,Error> {
 }
 
 
-fn write_list(buf:&mut CryptoBuf, list:&[&str]) {
-    let len0 = buf.len();
-    buf.extend(&[0,0,0,0]);
-    let mut first = true;
-    for i in list {
-        if !first {
-            buf.push(b',')
-        } else {
-            first = false;
-        }
-        buf.extend(i.as_bytes())
-    }
-    let len = (buf.len() - len0 - 4) as u32;
-
-    let buf = buf.as_mut_slice();
-    BigEndian::write_u32(&mut buf[len0..], len);
-    println!("write_list: {:?}", &buf[len0..]);
-}
-
-fn write_key_list(buf:&mut CryptoBuf, list:&[key::Algorithm]) {
-    let len0 = buf.len();
-    buf.extend(&[0,0,0,0]);
-    let mut first = true;
-    for i in list {
-        if !first {
-            buf.push(b',')
-        } else {
-            first = false;
-        }
-        buf.extend(i.name().as_bytes())
-    }
-    let len = (buf.len() - len0 - 4) as u32;
-
-    let buf = buf.as_mut_slice();
-    BigEndian::write_u32(&mut buf[len0..], len);
-    println!("write_list: {:?}", &buf[len0..len0+4]);
-}
-
-
-
 pub fn write_kex(keys:&[key::Algorithm], buf:&mut CryptoBuf) {
     // buf.clear();
     buf.push(msg::KEXINIT);
@@ -140,19 +100,22 @@ pub fn write_kex(keys:&[key::Algorithm], buf:&mut CryptoBuf) {
 
     buf.extend(&cookie); // cookie
     println!("buf len :{:?}", buf.len());
-    write_list(buf, kex::Name::preferred()); // kex algo
+    buf.extend_list(kex::Name::preferred().iter()); // kex algo
 
-    write_key_list(buf, keys);
+    buf.extend_list(keys.iter());
+    println!("writing empty lists");
 
-    write_list(buf, cipher::Name::preferred()); // cipher client to server
-    write_list(buf, cipher::Name::preferred()); // cipher server to client
+    buf.extend_list(cipher::Name::preferred().iter()); // cipher client to server
+    buf.extend_list(cipher::Name::preferred().iter()); // cipher server to client
 
-    write_list(buf, mac::Mac::preferred()); // mac client to server
-    write_list(buf, mac::Mac::preferred()); // mac server to client
-    write_list(buf, compression::CompressionAlgorithm::preferred()); // compress client to server
-    write_list(buf, compression::CompressionAlgorithm::preferred()); // compress server to client
-    write_list(buf, &[]); // languages client to server
-    write_list(buf, &[]); // languagesserver to client
+    buf.extend_list(mac::Mac::preferred().iter()); // mac client to server
+    buf.extend_list(mac::Mac::preferred().iter()); // mac server to client
+    buf.extend_list(compression::CompressionAlgorithm::preferred().iter()); // compress client to server
+    buf.extend_list(compression::CompressionAlgorithm::preferred().iter()); // compress server to client
+
+    println!("writing empty lists");
+    buf.write_empty_list(); // languages client to server
+    buf.write_empty_list(); // languagesserver to client
 
     buf.push(0); // doesn't follow
     buf.extend(&[0,0,0,0]); // reserved

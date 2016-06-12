@@ -1,8 +1,14 @@
 extern crate libc;
 extern crate libsodium_sys;
+
+#[macro_use]
+extern crate bitflags;
+
 #[macro_use]
 extern crate log;
 extern crate byteorder;
+
+// extern crate language_tags;
 
 extern crate rustc_serialize; // config: read base 64.
 extern crate regex; // for config.
@@ -13,7 +19,7 @@ use std::io::{ Read, Write, BufRead };
 use std::sync::{Once, ONCE_INIT};
 
 
-mod sodium;
+pub mod sodium;
 mod cryptobuf;
 pub use cryptobuf::CryptoBuf;
 
@@ -52,15 +58,15 @@ use mac::*;
 
 
 mod compression;
+pub mod auth;
 
-pub trait Authenticate {
-    fn auth(&self, user:&str, method:&str) -> bool;
-}
 
 #[derive(Debug)]
-pub struct ServerSession<'a, A:Authenticate+'a> {
+pub struct ServerSession<'a, A:auth::Authenticate+'a> {
     keys:&'a[key::Algorithm],
     server_id: &'a str,
+    auth_methods: auth::Methods,
+    auth_banner: Option<&'a str>,
     authenticator: &'a A,
 
     recv_seqn: usize,
@@ -136,15 +142,27 @@ pub struct Encrypted {
     cipher: cipher::Cipher,
     mac: Mac,
     session_id: kex::Digest,
-    state: EncryptedState
+    state: Option<EncryptedState>
 }
 
 #[derive(Debug)]
 pub enum EncryptedState {
     WaitingServiceRequest,
     ServiceRequest,
-    WaitingAuthRequest,
-    RejectAuthRequest
+    WaitingAuthRequest(AuthRequest),
+    RejectAuthRequest(AuthRequest),
+    WaitingSignature(AuthRequest),
+    AuthRequestSuccess,
+    Authenticated
+}
+
+#[derive(Debug)]
+pub struct AuthRequest {
+    methods: auth::Methods,
+    partial_success: bool,
+    public_key: CryptoBuf,
+    public_key_algorithm: CryptoBuf,
+    sent_pk_ok: bool
 }
 
 
@@ -194,6 +212,18 @@ fn complete_packet(buf:&mut CryptoBuf, off:usize) {
 
 }
 
+pub trait Bytes {
+    fn bytes<'a>(&'a self) -> &'a[u8];
+}
+impl<'b> Bytes for &'b[u8] {
+    fn bytes<'a>(&'a self) -> &'a[u8] { self }
+}
+impl<'b> Bytes for &'b &'b str {
+    fn bytes<'a>(&'a self) -> &'a[u8] { self.as_bytes() }
+}
+impl<'b> Bytes for &'b key::Algorithm {
+    fn bytes<'a>(&'a self) -> &'a[u8] { self.name().as_bytes() }
+}
 impl CryptoBuf {
     fn extend_ssh_string(&mut self, s:&[u8]) {
         self.push_u32_be(s.len() as u32);
@@ -216,6 +246,30 @@ impl CryptoBuf {
         }
         self.extend(&s[i..]);
     }
+
+
+    fn extend_list<A:Bytes, I:Iterator<Item = A>>(&mut self, list:I) {
+        let len0 = self.len();
+        self.extend(&[0,0,0,0]);
+        let mut first = true;
+        for i in list {
+            if !first {
+                self.push(b',')
+            } else {
+                first = false;
+            }
+            self.extend(i.bytes())
+        }
+        let len = (self.len() - len0 - 4) as u32;
+
+        let buf = self.as_mut_slice();
+        BigEndian::write_u32(&mut buf[len0..], len);
+        println!("write_list: {:?}", &buf[len0..]);
+    }
+    fn write_empty_list(&mut self) {
+        self.extend(&[0,0,0,0]);
+    }
+
 }
 
 
@@ -280,15 +334,18 @@ fn read<R:BufRead>(stream:&mut R, read_buffer:&mut CryptoBuf, read_len:usize) ->
 }
 
 
-impl<'a, A:Authenticate> ServerSession<'a, A> {
+impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
 
-    pub fn new(server_id:&'a str, keys: &'a [key::Algorithm], authenticator:&'a A) -> Self {
+    pub fn new(server_id:&'a str, keys: &'a [key::Algorithm], auth_banner:Option<&'a str>,
+               methods:auth::Methods, authenticator:&'a A) -> Self {
         SODIUM_INIT.call_once(|| { sodium::init(); });
         ServerSession {
             keys:keys,
             server_id: server_id,
             authenticator: authenticator,
-
+            auth_methods: methods,
+            auth_banner:auth_banner,
+            
             recv_seqn: 0,
             sent_seqn: 0,
             read_len: 0,
@@ -329,7 +386,7 @@ impl<'a, A:Authenticate> ServerSession<'a, A> {
     }
 
     // returns whether a complete packet has been read.
-    pub fn read<R:BufRead>(&mut self, stream:&mut R) -> Result<bool, Error> {
+    pub fn read<R:BufRead>(&mut self, stream:&mut R, buffer:&mut CryptoBuf) -> Result<bool, Error> {
         let state = std::mem::replace(&mut self.state, None);
         // println!("state: {:?}", state);
         match state {
@@ -472,7 +529,7 @@ impl<'a, A:Authenticate> ServerSession<'a, A> {
                                             cipher:newkeys.cipher,
                                             mac:newkeys.mac,
                                             session_id: newkeys.session_id,
-                                            state: EncryptedState::WaitingServiceRequest
+                                            state: Some(EncryptedState::WaitingServiceRequest)
                                 }
                             )
                         );
@@ -500,52 +557,210 @@ impl<'a, A:Authenticate> ServerSession<'a, A> {
                                                                       &mut self.read_buffer)) {
                     
 
-
-                    match enc.state {
-                        EncryptedState::WaitingServiceRequest if buf[0] == msg::SERVICE_REQUEST => {
+                    let state = std::mem::replace(&mut enc.state, None);
+                    match state {
+                        Some(EncryptedState::WaitingServiceRequest) if buf[0] == msg::SERVICE_REQUEST => {
 
                             let len = BigEndian::read_u32(&buf[1..]) as usize;
                             let request = &buf[5..(5+len)];
                             println!("request: {:?}", std::str::from_utf8(request));
                             if request == b"ssh-userauth" {
-                                enc.state = EncryptedState::ServiceRequest
+                                enc.state = Some(EncryptedState::ServiceRequest)
+                            } else {
+                                enc.state = Some(EncryptedState::WaitingServiceRequest)
                             }
                             read_packet = true;
                             println!("decrypted {:?}", buf);
                         },
-                        EncryptedState::WaitingAuthRequest if buf[0] == msg::USERAUTH_REQUEST => {
+                        Some(EncryptedState::WaitingAuthRequest(mut auth_request)) => {
+                            if buf[0] == msg::USERAUTH_REQUEST {
 
-                            // https://tools.ietf.org/html/rfc4252#section-5
-                            let mut pos = 1;
-                            let mut next = || {
-                                let name_len = BigEndian::read_u32(&buf[pos..]) as usize;
-                                pos += 4;
-                                let name = &buf[pos..(pos+name_len)];
-                                pos += name_len;
-                                name
-                            };
+                                // https://tools.ietf.org/html/rfc4252#section-5
+                                let mut pos = 1;
+                                let next = |pos:&mut usize| {
+                                    let name_len = BigEndian::read_u32(&buf[*pos..]) as usize;
+                                    *pos += 4;
+                                    let name = &buf[*pos..(*pos+name_len)];
+                                    *pos += name_len;
+                                    name
+                                };
 
-                            let name = next();
-                            let service_name = next();
-                            let method = next();
+                                let name = next(&mut pos);
+                                let name = std::str::from_utf8(name).unwrap();
+                                let service_name = next(&mut pos);
+                                let method = next(&mut pos);
+                                println!("name: {:?} {:?} {:?}",
+                                         name, std::str::from_utf8(service_name),
+                                         std::str::from_utf8(method));
+                                read_packet = true;
+                                if service_name == b"ssh-connection" {
 
-                            read_packet = true;
-                            match (std::str::from_utf8(name), service_name, std::str::from_utf8(method)) {
-                                (Ok(name), serv, Ok(method)) if service_name == b"ssh-connection" => {
+                                    if method == b"password" {
 
-                                    if self.authenticator.auth(name, method) {
-                                        unimplemented!()
+                                        // let x = buf[pos];
+                                        // println!("is false? {:?}", x);
+                                        pos+=1;
+                                        let password = next(&mut pos);
+                                        let password = std::str::from_utf8(password).unwrap();
+                                        let method = auth::Method::Password {
+                                            user: name,
+                                            password: password
+                                        };
+                                        match self.authenticator.auth(auth_request.methods, &method) {
+                                            auth::AuthResult::Success => {
+                                                enc.state = Some(EncryptedState::AuthRequestSuccess)
+                                            },
+                                            auth::AuthResult::Reject { remaining_methods, partial_success } => {
+                                                auth_request.methods = remaining_methods;
+                                                auth_request.partial_success = partial_success;
+                                                enc.state = Some(EncryptedState::RejectAuthRequest(auth_request))
+                                            },
+                                            _ => {
+                                                // Public key ?
+                                                enc.state = Some(EncryptedState::RejectAuthRequest(auth_request))
+                                            }
+                                        }
+
+                                    } else if method == b"publickey" {
+
+                                        let is_not_probe = buf[pos];
+                                        pos+=1;
+                                        let pubkey_algo = next(&mut pos);
+                                        let pubkey = next(&mut pos);
+
+                                        let pubkey_ = match pubkey_algo {
+                                            b"ssh-ed25519" => {
+                                                let len = BigEndian::read_u32(pubkey) as usize;
+                                                let publen = BigEndian::read_u32(&pubkey[len+4 .. ]) as usize;
+                                                key::PublicKey::Ed25519(
+                                                    sodium::ed25519::PublicKey::copy_from_slice(&pubkey[len + 8 .. ])
+                                                )
+                                            },
+                                            _ => unimplemented!()
+                                        };
+                                        let method = auth::Method::Pubkey {
+                                            user: name,
+                                            algo: std::str::from_utf8(pubkey_algo).unwrap(),
+                                            pubkey: pubkey_,
+                                            is_probe: is_not_probe == 0
+                                        };
+
+                                        match self.authenticator.auth(auth_request.methods, &method) {
+                                            auth::AuthResult::Success => {
+
+                                                enc.state = Some(EncryptedState::AuthRequestSuccess)
+                                                    
+                                            },
+                                            auth::AuthResult::Reject { remaining_methods, partial_success } => {
+
+                                                auth_request.methods = remaining_methods;
+                                                auth_request.partial_success = partial_success;
+                                                enc.state = Some(EncryptedState::RejectAuthRequest(auth_request))
+                                                    
+                                            },
+                                            auth::AuthResult::PublicKey => {
+                                                // Public key ?
+                                                auth_request.public_key.extend(pubkey);
+                                                auth_request.public_key_algorithm.extend(pubkey_algo);
+                                                enc.state = Some(EncryptedState::WaitingSignature(auth_request));
+                                            }
+                                        }
                                     } else {
-                                        enc.state = EncryptedState::RejectAuthRequest
+                                        // Other methods of the base specification are insecure or optional.
+                                        enc.state = Some(EncryptedState::RejectAuthRequest(auth_request))
                                     }
-                                },
-                                _ => {
-                                    // protocol error.
+                                } else {
+                                    // Unknown service
                                     unimplemented!()
                                 }
+                            } else {
+                                // Wrong request
+                                enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+                                read_packet = true;
                             }
                         },
-                        _ => {
+
+                        Some(EncryptedState::WaitingSignature(mut auth_request)) => {
+                            println!("receiving signature, {:?}", buf);
+                            if buf[0] == msg::USERAUTH_REQUEST {
+
+                                // https://tools.ietf.org/html/rfc4252#section-5
+                                let mut pos = 1;
+                                let next = |pos:&mut usize| {
+                                    let name_len = BigEndian::read_u32(&buf[*pos..]) as usize;
+                                    *pos += 4;
+                                    let name = &buf[*pos..(*pos+name_len)];
+                                    *pos += name_len;
+                                    name
+                                };
+
+                                let name = next(&mut pos);
+                                let name = std::str::from_utf8(name).unwrap();
+                                let service_name = next(&mut pos);
+                                let method = next(&mut pos);
+                                let is_probe = buf[pos] == 0;
+                                pos += 1;
+                                // TODO: check that the user is the same (maybe?)
+                                if service_name == b"ssh-connection" && method == b"publickey" && !is_probe {
+
+                                    let algo = next(&mut pos);
+                                    let key = next(&mut pos);
+                                    println!("key: {:?}", key);
+                                    let pos0 = pos;
+                                    if algo == b"ssh-ed25519" {
+                                        let signature = next(&mut pos);
+                                        let algo_len = BigEndian::read_u32(signature) as usize;
+                                        let algo_ = &signature[4..4+algo_len];
+                                        let sig_len = BigEndian::read_u32(&signature[4+algo_len..]) as usize;
+                                        let sig = &signature[8+algo_len .. 8+algo_len+sig_len];
+                                        // println!("sig: {:?}", sig);
+                                        let sig = sodium::ed25519::Signature::copy_from_slice(
+                                            sig
+                                        );
+                                        
+                                        let key = {
+                                            let algo_len = BigEndian::read_u32(key) as usize;
+                                            let algo_ = &key[4..4+algo_len];
+                                            let key_len = BigEndian::read_u32(&key[4+algo_len..]) as usize;
+                                            &key[8+algo_len .. 8+algo_len + key_len]
+                                        };
+                                        
+                                        let key = sodium::ed25519::PublicKey::copy_from_slice(
+                                            key
+                                        );
+                                        buffer.clear();
+                                        buffer.extend_ssh_string(enc.session_id.as_bytes());
+                                        buffer.extend(&buf[0..pos0]);
+                                        // println!("message: {:?}", buffer.as_slice());
+                                        // println!("verify:{:?}", sodium::ed25519::verify_detached(&sig, buffer.as_slice(), &key));
+                                        assert!(algo == algo_);
+                                            
+                                            
+                                        // Verify signature.
+                                        if sodium::ed25519::verify_detached(&sig, buffer.as_slice(), &key) {
+                                            enc.state = Some(EncryptedState::AuthRequestSuccess)
+                                        } else {
+                                            enc.state = Some(EncryptedState::RejectAuthRequest(auth_request));
+                                        }
+                                    } else {
+                                        enc.state = Some(EncryptedState::RejectAuthRequest(auth_request));
+                                    }
+                                } else {
+                                    enc.state = Some(EncryptedState::RejectAuthRequest(auth_request));
+                                }
+                                read_packet = true;
+                            } else {
+                                enc.state = Some(EncryptedState::RejectAuthRequest(auth_request));
+                            }
+                        },
+                        Some(EncryptedState::Authenticated) => {
+                            println!("auth! received packet: {:?}", buf);
+                            enc.state = Some(EncryptedState::Authenticated);
+                            read_packet = true;
+                        },
+                        state => {
+                            println!("replacing state: {:?}", state);
+                            enc.state = state;
                             read_packet = true;
                         }
                     }
@@ -716,29 +931,96 @@ impl<'a, A:Authenticate> ServerSession<'a, A> {
             },
             Some(ServerState::Encrypted(mut enc)) => {
                 println!("read: encrypted {:?}", enc.state);
-                match enc.state {
-                    EncryptedState::WaitingServiceRequest => {},
-                    EncryptedState::ServiceRequest => {
+                let state = std::mem::replace(&mut enc.state, None);
+                match state {
+                    Some(EncryptedState::ServiceRequest) => {
                         buffer.clear();
+
                         buffer.push(msg::SERVICE_ACCEPT);
                         buffer.extend_ssh_string(b"ssh-userauth");
                         enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
                         self.sent_seqn += 1;
-                        enc.state = EncryptedState::WaitingAuthRequest;
-                        try!(self.write_all(stream));
-                    },
-                    EncryptedState::WaitingAuthRequest => {},
 
-                    EncryptedState::RejectAuthRequest => {
+
+                        if let Some(ref banner) = self.auth_banner {
+
+                            buffer.clear();
+                            buffer.push(msg::USERAUTH_BANNER);
+                            buffer.extend_ssh_string(banner.as_bytes());
+                            buffer.extend_ssh_string(b"");
+
+                            enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
+                            self.sent_seqn += 1;
+                        }
+
+                        try!(self.write_all(stream));
+                        
+                        enc.state = Some(EncryptedState::WaitingAuthRequest(AuthRequest {
+                            methods: self.auth_methods,
+                            partial_success: false, // not used immediately anway.
+                            public_key: CryptoBuf::new(),
+                            public_key_algorithm: CryptoBuf::new(),
+                            sent_pk_ok: false
+                        }));
+                    },
+
+                    Some(EncryptedState::RejectAuthRequest(auth_request)) => {
                         buffer.clear();
                         buffer.push(msg::USERAUTH_FAILURE);
 
-                        buffer.extend_ssh_string(b"ssh-userauth");
+                        buffer.extend_list(auth_request.methods);
+                        buffer.push(if auth_request.partial_success { 1 } else { 0 });
 
                         enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
+
                         self.sent_seqn += 1;
-                        enc.state = EncryptedState::WaitingAuthRequest;
+                        enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
                         try!(self.write_all(stream));
+                    },
+
+                    Some(EncryptedState::WaitingSignature(mut auth_request)) => {
+
+                        if !auth_request.sent_pk_ok {
+                            buffer.clear();
+                            buffer.push(msg::USERAUTH_PK_OK);
+                            buffer.extend_ssh_string(auth_request.public_key_algorithm.as_slice());
+                            buffer.extend_ssh_string(auth_request.public_key.as_slice());
+                            enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
+
+                            self.sent_seqn += 1;
+
+                            auth_request.sent_pk_ok = true;
+                            enc.state = Some(EncryptedState::WaitingSignature(auth_request));
+                            try!(self.write_all(stream));
+                        } else {
+                            enc.state = Some(EncryptedState::WaitingSignature(auth_request));
+                        }
+                    },
+
+                    Some(EncryptedState::AuthRequestSuccess) => {
+                        buffer.clear();
+                        buffer.push(msg::USERAUTH_SUCCESS);
+
+                        enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
+
+                        self.sent_seqn += 1;
+                        enc.state = Some(EncryptedState::Authenticated);
+                        try!(self.write_all(stream));
+                    },
+
+                    Some(EncryptedState::Authenticated) => {
+                        /*buffer.clear();
+                        buffer.push(msg::USERAUTH_SUCCESS);
+
+                        enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
+
+                        self.sent_seqn += 1;
+                        enc.state = EncryptedState::Authenticated;
+                        try!(self.write_all(stream));*/
+                        enc.state = Some(EncryptedState::Authenticated);
+                    },
+                    state => {
+                        enc.state = state
                     }
                 }
                 self.state = Some(ServerState::Encrypted(enc));

@@ -14,15 +14,12 @@ pub fn memcmp(x: &[u8], y: &[u8]) -> bool {
         libsodium_sys::sodium_memcmp(x.as_ptr(), y.as_ptr(), x.len()) == 0
     }
 }
-/*
-pub fn memzero(x: &mut [u8]) {
-    unsafe {
-        libsodium_sys::sodium_memzero(x.as_mut_ptr(), x.len());
-    }
+use super::libc::{size_t,c_void};
+
+extern "C" {
+    pub fn sodium_mlock(p:*mut c_void, len:size_t);
+    pub fn sodium_munlock(p:*mut c_void, len:size_t);
 }
-*/
-
-
 
 
 macro_rules! newtype (($newtype:ident, $len:expr) => {
@@ -207,8 +204,9 @@ pub mod ed25519 {
     pub const SECRETKEYBYTES: usize = libsodium_sys::crypto_sign_ed25519_SECRETKEYBYTES;
     pub const SIGNATUREBYTES: usize = libsodium_sys::crypto_sign_ed25519_BYTES;
 
-
-    newtype!(PublicKey, PUBLICKEYBYTES);
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct PublicKey([u8;PUBLICKEYBYTES]);
+    // newtype!(PublicKey, PUBLICKEYBYTES);
     as_bytes!(PublicKey);
     from_slice!(PublicKey, PUBLICKEYBYTES);
     clone!(PublicKey);
@@ -234,6 +232,17 @@ pub mod ed25519 {
                                                         m.len() as c_ulonglong,
                                                         sk);
             assert_eq!(siglen, SIGNATUREBYTES as c_ulonglong);
+        }
+    }
+
+    pub fn verify_detached(signature:&Signature, m: &[u8], &PublicKey(ref pk): &PublicKey) -> bool {
+        unsafe {
+            let ret = libsodium_sys::crypto_sign_ed25519_verify_detached(
+                &signature.0,
+                m.as_ptr(),
+                m.len() as c_ulonglong,
+                pk);
+            ret == 0
         }
     }
 
