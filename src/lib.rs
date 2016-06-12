@@ -137,7 +137,7 @@ pub struct Encrypted<S:Serve> {
     mac: Mac,
     session_id: kex::Digest,
     state: Option<EncryptedState>,
-    channels: HashMap<u32, (Channel, CryptoBuf, S)>
+    channels: HashMap<u32, (Channel, CryptoBuf, CryptoBuf, S)>
 }
 
 #[derive(Debug)]
@@ -284,7 +284,7 @@ pub trait Authenticate {
 }
 pub trait Serve {
     fn init(&self, channel:&Channel) -> Self;
-    fn data(&mut self, data:&[u8], reply:&mut CryptoBuf) -> Result<(),Error> {
+    fn data(&mut self, _:&[u8], _:&mut CryptoBuf, _:&mut CryptoBuf) -> Result<(),Error> {
         Ok(())
     }
 }
@@ -795,13 +795,16 @@ impl<S:Serve> ServerSession<S> {
                                 debug!("buf: {:?}", buf);
 
                                 let channel_num = BigEndian::read_u32(&buf[1..]);
-                                if let Some(&mut (_, ref mut buffer, ref mut server)) = enc.channels.get_mut(&channel_num) {
+                                if let Some(&mut (_,
+                                                  ref mut buffer_stdout,
+                                                  ref mut buffer_stderr,
+                                                  ref mut server)) = enc.channels.get_mut(&channel_num) {
 
                                     let len = BigEndian::read_u32(&buf[5..]) as usize;
                                     let data = &buf[9 .. 9+len];
                                     buffer.clear();
-                                    if let Ok(()) = server.data(&data, buffer) {
-                                        if buffer.len() > 0 {
+                                    if let Ok(()) = server.data(&data, buffer_stdout, buffer_stderr) {
+                                        if buffer_stdout.len() > 0 || buffer_stderr.len() > 0 {
                                             channels.insert(channel_num);
                                         }
                                     } else {
@@ -1085,8 +1088,9 @@ impl<S:Serve> ServerSession<S> {
 
                         self.sent_seqn += 1;
                         let server = server.init(&channel);
-                        let buf = CryptoBuf::new();
-                        enc.channels.insert(channel.sender_channel, (channel, buf, server));
+                        let buf_stdout = CryptoBuf::new();
+                        let buf_stderr = CryptoBuf::new();
+                        enc.channels.insert(channel.sender_channel, (channel, buf_stdout, buf_stderr, server));
 
                         enc.state = Some(EncryptedState::ChannelOpened(HashSet::new()));
                         try!(self.write_all(stream));
@@ -1096,19 +1100,33 @@ impl<S:Serve> ServerSession<S> {
                         for recip_channel in channels.drain() {
 
                             if let Some(&mut (ref channel,
-                                              ref mut channel_buffer,
+                                              ref mut buffer_stdout,
+                                              ref mut buffer_stderr,
                                               _)) = enc.channels.get_mut(&recip_channel) {
 
-                                buffer.clear();
-                                buffer.push(msg::CHANNEL_DATA);
-                                buffer.push_u32_be(channel.recipient_channel);
-                                buffer.extend_ssh_string(channel_buffer.as_slice());
-                                channel_buffer.clear();
+                                if buffer_stdout.len() > 0 {
+                                    buffer.clear();
+                                    buffer.push(msg::CHANNEL_DATA);
+                                    buffer.push_u32_be(channel.recipient_channel);
+                                    buffer.extend_ssh_string(buffer_stdout.as_slice());
+                                    buffer_stdout.clear();
 
-                                enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
+                                    enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
 
-                                self.sent_seqn += 1;
+                                    self.sent_seqn += 1;
+                                }
+                                if buffer_stderr.len() > 0 {
+                                    buffer.clear();
+                                    buffer.push(msg::CHANNEL_EXTENDED_DATA);
+                                    buffer.push_u32_be(channel.recipient_channel);
+                                    buffer.push_u32_be(SSH_EXTENDED_DATA_STDERR);
+                                    buffer.extend_ssh_string(buffer_stderr.as_slice());
+                                    buffer_stderr.clear();
 
+                                    enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
+
+                                    self.sent_seqn += 1;
+                                }
                                 try!(self.write_all(stream));
                             }
                         }
@@ -1129,7 +1147,7 @@ impl<S:Serve> ServerSession<S> {
         }
     }
 }
-
+const SSH_EXTENDED_DATA_STDERR: u32 = 1;
 
 #[cfg(test)]
 mod tests {

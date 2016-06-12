@@ -58,10 +58,11 @@ impl<'a> Serve for S<'a> {
         s.channel = c.recipient_channel;
         s
     }
-    fn data(&mut self, data:&[u8], reply:&mut CryptoBuf) -> Result<(),Error> {
+    fn data(&mut self, data:&[u8], reply_stdout:&mut CryptoBuf, reply_stderr:&mut CryptoBuf) -> Result<(),Error> {
         println!("data: {:?}", std::str::from_utf8(data));
         let c = self.counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        write!(reply, "blabla blibli {:?}\r\n", c).unwrap();
+        write!(reply_stdout, "blabla blibli\r\n").unwrap();
+        write!(reply_stderr, "{:?}\r\n", c).unwrap();
         Ok(())
     }
 }
