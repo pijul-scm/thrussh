@@ -1,4 +1,4 @@
-use byteorder::{ByteOrder,BigEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{ByteOrder,BigEndian, ReadBytesExt};
 use std;
 
 use super::sodium::randombytes;
