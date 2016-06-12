@@ -97,7 +97,7 @@ impl Name {
                 let mut shared_secret = curve25519::GroupElement::new_blank();
                 curve25519::scalarmult(&mut shared_secret, &server_secret, &client_pubkey);
 
-                println!("shared secret");
+                // debug!("shared secret");
                 // super::hexdump(shared_secret.as_bytes());
 
                 Ok(Algorithm::Curve25519(Curve25519 {
@@ -137,7 +137,7 @@ impl Algorithm {
                      // &Some(ref server_public_host_key),
                      &Some(ref client_ephemeral),
                      &Some(ref server_ephemeral)) => {
-                        println!("{:?} {:?}",
+                        debug!("{:?} {:?}",
                                  std::str::from_utf8(client_id),
                                  std::str::from_utf8(server_id)
                         );
@@ -164,11 +164,11 @@ impl Algorithm {
 
                         buffer.extend_ssh_mpint(kex.shared_secret.as_bytes());
 
-                        println!("buffer len = {:?}", buffer.len());
-                        super::hexdump(buffer);
+                        debug!("buffer len = {:?}", buffer.len());
+                        // super::hexdump(buffer);
                         let mut hash = sha256::Digest::new_blank();
                         sha256::hash(&mut hash, buffer.as_slice());
-                        println!("hash: {:?}", hash);
+                        debug!("hash: {:?}", hash);
                         Ok(Digest::Sha256(hash))
                     },
                     _ => Err(Error::Kex)

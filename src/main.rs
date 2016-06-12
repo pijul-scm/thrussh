@@ -20,7 +20,7 @@ struct Auth;
 
 impl Authenticate for Auth {
     fn auth<'a>(&self, methods:auth::Methods, method:&auth::Method) -> auth::Auth {
-        println!("methods {:?}, method {:?}", methods, method);
+        debug!("methods {:?}, method {:?}", methods, method);
         match method {
             &auth::Method::Pubkey { user, algo, ref pubkey } if user == "pe" && algo == "ssh-ed25519" => {
 
@@ -84,10 +84,10 @@ impl<A:Authenticate,S:Serve> Handler for Server<A, S> {
     fn ready(&mut self, event_loop: &mut EventLoop<Server<A,S>>, token: Token, events: EventSet) {
         match token {
             SERVER => {
-                println!("server token");
+                debug!("server token");
                 let socket = self.list.accept().unwrap();
                 if let Some((socket, addr)) = socket {
-                    println!("socket!");
+                    debug!("socket!");
                     let mut id = 0;
                     while self.sessions.contains_key(&id) || id == 0 {
                         id = rand::thread_rng().gen()
@@ -100,7 +100,7 @@ impl<A:Authenticate,S:Serve> Handler for Server<A, S> {
                 }
             },
             Token(id) => {
-                println!("registered {:?}, events={:?}", id, events);
+                debug!("registered {:?}, events={:?}", id, events);
                 if events.is_error() || events.is_hup() {
 
                     match self.sessions.entry(id) {
@@ -113,7 +113,7 @@ impl<A:Authenticate,S:Serve> Handler for Server<A, S> {
 
                 } else {
                     if events.is_readable() {
-                        println!("readable");
+                        debug!("readable");
                         match self.sessions.entry(id) {
                             Entry::Occupied(mut e) => {
 
@@ -147,7 +147,7 @@ impl<A:Authenticate,S:Serve> Handler for Server<A, S> {
                         };
                     }
                     if events.is_writable() {
-                        println!("writable");
+                        debug!("writable");
                         match self.sessions.entry(id) {
                             Entry::Occupied(mut e) => {
 

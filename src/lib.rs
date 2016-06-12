@@ -269,7 +269,6 @@ impl CryptoBuf {
 
         let buf = self.as_mut_slice();
         BigEndian::write_u32(&mut buf[len0..], len);
-        println!("write_list: {:?}", &buf[len0..]);
     }
     fn write_empty_list(&mut self) {
         self.extend(&[0,0,0,0]);
@@ -566,7 +565,7 @@ impl<S:Serve> ServerSession<S> {
                 }
             },
             Some(ServerState::Encrypted(mut enc)) => {
-                println!("read: encrypted {:?}", enc.state);
+                debug!("read: encrypted {:?}", enc.state);
 
                 let mut read_packet = false;
 
@@ -581,14 +580,14 @@ impl<S:Serve> ServerSession<S> {
 
                             let len = BigEndian::read_u32(&buf[1..]) as usize;
                             let request = &buf[5..(5+len)];
-                            println!("request: {:?}", std::str::from_utf8(request));
+                            debug!("request: {:?}", std::str::from_utf8(request));
                             if request == b"ssh-userauth" {
                                 enc.state = Some(EncryptedState::ServiceRequest)
                             } else {
                                 enc.state = Some(EncryptedState::WaitingServiceRequest)
                             }
                             read_packet = true;
-                            println!("decrypted {:?}", buf);
+                            debug!("decrypted {:?}", buf);
                         },
                         Some(EncryptedState::WaitingAuthRequest(mut auth_request)) => {
                             if buf[0] == msg::USERAUTH_REQUEST {
@@ -607,7 +606,7 @@ impl<S:Serve> ServerSession<S> {
                                 let name = std::str::from_utf8(name).unwrap();
                                 let service_name = next(&mut pos);
                                 let method = next(&mut pos);
-                                println!("name: {:?} {:?} {:?}",
+                                debug!("name: {:?} {:?} {:?}",
                                          name, std::str::from_utf8(service_name),
                                          std::str::from_utf8(method));
                                 read_packet = true;
@@ -692,7 +691,7 @@ impl<S:Serve> ServerSession<S> {
                         },
 
                         Some(EncryptedState::WaitingSignature(auth_request)) => {
-                            println!("receiving signature, {:?}", buf);
+                            debug!("receiving signature, {:?}", buf);
                             if buf[0] == msg::USERAUTH_REQUEST {
 
                                 // https://tools.ietf.org/html/rfc4252#section-5
@@ -715,7 +714,7 @@ impl<S:Serve> ServerSession<S> {
 
                                     let algo = next(&mut pos);
                                     let key = next(&mut pos);
-                                    println!("key: {:?}", key);
+                                    debug!("key: {:?}", key);
                                     let pos0 = pos;
                                     if algo == b"ssh-ed25519" {
                                         let signature = next(&mut pos);
@@ -764,7 +763,7 @@ impl<S:Serve> ServerSession<S> {
                             }
                         },
                         Some(EncryptedState::WaitingChannelOpen) if buf[0] == msg::CHANNEL_OPEN => {
-                            println!("auth! received packet: {:?}", buf);
+                            debug!("auth! received packet: {:?}", buf);
 
                             let typ_len = BigEndian::read_u32(&buf[1 ..]) as usize;
                             let typ = &buf[5 .. 5+typ_len];
@@ -773,7 +772,7 @@ impl<S:Serve> ServerSession<S> {
                             let maxpacket = BigEndian::read_u32(&buf[13+typ_len ..]);
 
 
-                            println!("typ = {:?} {:?} {:?} {:?}",
+                            debug!("typ = {:?} {:?} {:?} {:?}",
                                      std::str::from_utf8(typ), sender, window, maxpacket);
 
                             let mut sender_channel:u32 = 1;
@@ -793,7 +792,7 @@ impl<S:Serve> ServerSession<S> {
                         },
                         Some(EncryptedState::ChannelOpened(mut channels)) => {
                             if buf[0] == msg::CHANNEL_DATA {
-                                println!("buf: {:?}", buf);
+                                debug!("buf: {:?}", buf);
 
                                 let channel_num = BigEndian::read_u32(&buf[1..]);
                                 if let Some(&mut (_, ref mut buffer, ref mut server)) = enc.channels.get_mut(&channel_num) {
@@ -814,8 +813,8 @@ impl<S:Serve> ServerSession<S> {
                             read_packet = true;
                         },
                         state => {
-                            println!("buf: {:?}", buf);
-                            println!("replacing state: {:?}", state);
+                            debug!("buf: {:?}", buf);
+                            debug!("replacing state: {:?}", state);
                             enc.state = state;
                             read_packet = true;
                         }
@@ -996,7 +995,7 @@ impl<S:Serve> ServerSession<S> {
                 Ok(true)
             },
             Some(ServerState::Encrypted(mut enc)) => {
-                println!("read: encrypted {:?}", enc.state);
+                debug!("read: encrypted {:?}", enc.state);
                 let state = std::mem::replace(&mut enc.state, None);
                 match state {
                     Some(EncryptedState::ServiceRequest) => {

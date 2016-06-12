@@ -99,11 +99,9 @@ pub fn write_kex(keys:&[key::Algorithm], buf:&mut CryptoBuf) {
     randombytes::into(&mut cookie);
 
     buf.extend(&cookie); // cookie
-    println!("buf len :{:?}", buf.len());
     buf.extend_list(kex::Name::preferred().iter()); // kex algo
 
     buf.extend_list(keys.iter());
-    println!("writing empty lists");
 
     buf.extend_list(cipher::Name::preferred().iter()); // cipher client to server
     buf.extend_list(cipher::Name::preferred().iter()); // cipher server to client
@@ -113,7 +111,6 @@ pub fn write_kex(keys:&[key::Algorithm], buf:&mut CryptoBuf) {
     buf.extend_list(compression::CompressionAlgorithm::preferred().iter()); // compress client to server
     buf.extend_list(compression::CompressionAlgorithm::preferred().iter()); // compress server to client
 
-    println!("writing empty lists");
     buf.write_empty_list(); // languages client to server
     buf.write_empty_list(); // languagesserver to client
 
