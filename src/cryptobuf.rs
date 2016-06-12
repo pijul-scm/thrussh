@@ -20,6 +20,18 @@ impl std::ops::Index<usize> for CryptoBuf {
     }
 }
 
+impl std::io::Write for CryptoBuf {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
+        self.extend(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> Result<(), std::io::Error> { Ok(()) }
+}
+
+
+
+
+
 impl CryptoBuf {
     pub fn new() -> CryptoBuf {
         let mut buf = CryptoBuf {

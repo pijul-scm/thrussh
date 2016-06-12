@@ -9,9 +9,12 @@ use std;
 use super::key::ed25519::{PublicKey,SecretKey};
 
 #[derive(Debug)]
-pub struct Config {
+pub struct Config<Auth> {
     pub server_id: String,
-    pub keys: Vec<super::key::Algorithm>
+    pub methods: super::auth::Methods,
+    pub auth_banner: Option<&'static str>,
+    pub keys: Vec<super::key::Algorithm>,
+    pub auth: Auth,
 }
 
 const KEYTYPE_ED25519:&'static [u8] = b"ssh-ed25519";

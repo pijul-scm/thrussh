@@ -1,5 +1,6 @@
 extern crate libc;
 extern crate libsodium_sys;
+extern crate rand;
 
 #[macro_use]
 extern crate bitflags;
@@ -15,7 +16,8 @@ extern crate time;
 use byteorder::{ByteOrder,BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{ Read, Write, BufRead };
 use std::sync::{Once, ONCE_INIT};
-
+use std::collections::{ HashSet, HashMap };
+use rand::Rng;
 
 pub mod sodium;
 mod cryptobuf;
@@ -60,13 +62,7 @@ pub mod auth;
 
 
 #[derive(Debug)]
-pub struct ServerSession<'a, A:auth::Authenticate+'a> {
-    keys:&'a[key::Algorithm],
-    server_id: &'a str,
-    auth_methods: auth::Methods,
-    auth_banner: Option<&'a str>,
-    authenticator: &'a A,
-
+pub struct ServerSession<S:Serve> {
     recv_seqn: usize,
     sent_seqn: usize,
 
@@ -79,17 +75,17 @@ pub struct ServerSession<'a, A:auth::Authenticate+'a> {
     written_bytes:usize,
     last_kex_time:u64,
     
-    state: Option<ServerState>
+    state: Option<ServerState<S>>
 }
 
 #[derive(Debug)]
-pub enum ServerState {
+pub enum ServerState<S:Serve> {
     VersionOk(Exchange), // Version number received.
     KexInit(KexInit), // Version number sent. `algo` and `sent` tell wether kexinit has been received, and sent, respectively.
     KexDh(KexDh), // Algorithms have been determined, the DH algorithm should run.
     KexDhDone(KexDhDone), // The kex has run.
     NewKeys(NewKeys), // The DH is over, we've sent the NEWKEYS packet, and are waiting the NEWKEYS from the other side.
-    Encrypted(Encrypted) // Session is now encrypted.
+    Encrypted(Encrypted<S>) // Session is now encrypted.
 }
 
 #[derive(Debug)]
@@ -133,14 +129,15 @@ pub struct NewKeys {
 }
 
 #[derive(Debug)]
-pub struct Encrypted {
+pub struct Encrypted<S:Serve> {
     exchange: Exchange,
     kex: kex::Algorithm,
     key: key::Algorithm,
     cipher: cipher::Cipher,
     mac: Mac,
     session_id: kex::Digest,
-    state: Option<EncryptedState>
+    state: Option<EncryptedState>,
+    channels: HashMap<u32, (Channel, CryptoBuf, S)>
 }
 
 #[derive(Debug)]
@@ -151,7 +148,9 @@ pub enum EncryptedState {
     RejectAuthRequest(AuthRequest),
     WaitingSignature(AuthRequest),
     AuthRequestSuccess,
-    Authenticated
+    WaitingChannelOpen,
+    ChannelOpenConfirmation(Channel),
+    ChannelOpened(HashSet<u32>)
 }
 
 #[derive(Debug)]
@@ -161,6 +160,14 @@ pub struct AuthRequest {
     public_key: CryptoBuf,
     public_key_algorithm: CryptoBuf,
     sent_pk_ok: bool
+}
+
+#[derive(Debug)]
+pub struct Channel {
+    pub recipient_channel:u32,
+    pub sender_channel:u32,
+    pub initial_window_size:u32,
+    pub maximum_packet_size:u32
 }
 
 
@@ -271,6 +278,14 @@ impl CryptoBuf {
 }
 
 
+pub trait Authenticate {
+    fn auth(&self, methods:auth::Methods, method:&auth::Method) -> auth::AuthResult;
+}
+pub trait Serve {
+    fn init(&self, channel:&Channel) -> Self;
+    fn data(&mut self, data:&[u8], reply:&mut CryptoBuf) -> Result<(),Error>;
+}
+
 pub fn hexdump(x:&CryptoBuf) {
     let x = x.as_slice();
     let mut buf = Vec::new();
@@ -332,18 +347,12 @@ fn read<R:BufRead>(stream:&mut R, read_buffer:&mut CryptoBuf, read_len:usize) ->
 }
 
 
-impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
+impl<S:Serve> ServerSession<S> {
 
-    pub fn new(server_id:&'a str, keys: &'a [key::Algorithm], auth_banner:Option<&'a str>,
-               methods:auth::Methods, authenticator:&'a A) -> Self {
+    pub fn new() -> Self {
         SODIUM_INIT.call_once(|| { sodium::init(); });
         ServerSession {
-            keys:keys,
-            server_id: server_id,
-            authenticator: authenticator,
-            auth_methods: methods,
-            auth_banner:auth_banner,
-            
+
             recv_seqn: 0,
             sent_seqn: 0,
             read_len: 0,
@@ -384,7 +393,13 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
     }
 
     // returns whether a complete packet has been read.
-    pub fn read<R:BufRead>(&mut self, stream:&mut R, buffer:&mut CryptoBuf) -> Result<bool, Error> {
+    pub fn read<R:BufRead, A:Authenticate>(
+
+        &mut self, config:&config::Config<A>,
+        stream:&mut R, buffer:&mut CryptoBuf
+
+    ) -> Result<bool, Error> {
+
         let state = std::mem::replace(&mut self.state, None);
         // println!("state: {:?}", state);
         match state {
@@ -436,7 +451,7 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                         let kex = {
                             let payload = self.get_current_payload();
                             kexinit.exchange.client_kex_init = Some(payload.to_vec());
-                            read_kex(payload, self.keys).unwrap()
+                            read_kex(payload, &config.keys).unwrap()
                         };
                         self.read_buffer.clear();
                         self.read_len = 0;
@@ -527,7 +542,8 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                                             cipher:newkeys.cipher,
                                             mac:newkeys.mac,
                                             session_id: newkeys.session_id,
-                                            state: Some(EncryptedState::WaitingServiceRequest)
+                                            state: Some(EncryptedState::WaitingServiceRequest),
+                                            channels: HashMap::new()
                                 }
                             )
                         );
@@ -604,7 +620,7 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                                             user: name,
                                             password: password
                                         };
-                                        match self.authenticator.auth(auth_request.methods, &method) {
+                                        match config.auth.auth(auth_request.methods, &method) {
                                             auth::AuthResult::Success => {
                                                 enc.state = Some(EncryptedState::AuthRequestSuccess)
                                             },
@@ -613,15 +629,11 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                                                 auth_request.partial_success = partial_success;
                                                 enc.state = Some(EncryptedState::RejectAuthRequest(auth_request))
                                             },
-                                            _ => {
-                                                // Public key ?
-                                                enc.state = Some(EncryptedState::RejectAuthRequest(auth_request))
-                                            }
                                         }
 
                                     } else if method == b"publickey" {
 
-                                        let is_not_probe = buf[pos];
+                                        // let is_not_probe = buf[pos];
                                         pos+=1;
                                         let pubkey_algo = next(&mut pos);
                                         let pubkey = next(&mut pos);
@@ -631,7 +643,7 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                                                 let len = BigEndian::read_u32(pubkey) as usize;
                                                 let publen = BigEndian::read_u32(&pubkey[len+4 .. ]) as usize;
                                                 key::PublicKey::Ed25519(
-                                                    sodium::ed25519::PublicKey::copy_from_slice(&pubkey[len + 8 .. ])
+                                                    sodium::ed25519::PublicKey::copy_from_slice(&pubkey[len + 8 .. len+8+publen])
                                                 )
                                             },
                                             _ => unimplemented!()
@@ -640,13 +652,16 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                                             user: name,
                                             algo: std::str::from_utf8(pubkey_algo).unwrap(),
                                             pubkey: pubkey_,
-                                            is_probe: is_not_probe == 0
                                         };
 
-                                        match self.authenticator.auth(auth_request.methods, &method) {
+                                        match config.auth.auth(auth_request.methods, &method) {
                                             auth::AuthResult::Success => {
+                                                
 
-                                                enc.state = Some(EncryptedState::AuthRequestSuccess)
+                                                // Public key ?
+                                                auth_request.public_key.extend(pubkey);
+                                                auth_request.public_key_algorithm.extend(pubkey_algo);
+                                                enc.state = Some(EncryptedState::WaitingSignature(auth_request));
                                                     
                                             },
                                             auth::AuthResult::Reject { remaining_methods, partial_success } => {
@@ -656,12 +671,6 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                                                 enc.state = Some(EncryptedState::RejectAuthRequest(auth_request))
                                                     
                                             },
-                                            auth::AuthResult::PublicKey => {
-                                                // Public key ?
-                                                auth_request.public_key.extend(pubkey);
-                                                auth_request.public_key_algorithm.extend(pubkey_algo);
-                                                enc.state = Some(EncryptedState::WaitingSignature(auth_request));
-                                            }
                                         }
                                     } else {
                                         // Other methods of the base specification are insecure or optional.
@@ -678,7 +687,7 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                             }
                         },
 
-                        Some(EncryptedState::WaitingSignature(mut auth_request)) => {
+                        Some(EncryptedState::WaitingSignature(auth_request)) => {
                             println!("receiving signature, {:?}", buf);
                             if buf[0] == msg::USERAUTH_REQUEST {
 
@@ -692,8 +701,7 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                                     name
                                 };
 
-                                let name = next(&mut pos);
-                                let name = std::str::from_utf8(name).unwrap();
+                                let user_name = next(&mut pos);
                                 let service_name = next(&mut pos);
                                 let method = next(&mut pos);
                                 let is_probe = buf[pos] == 0;
@@ -718,7 +726,7 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                                         
                                         let key = {
                                             let algo_len = BigEndian::read_u32(key) as usize;
-                                            let algo_ = &key[4..4+algo_len];
+                                            // let algo_ = &key[4..4+algo_len];
                                             let key_len = BigEndian::read_u32(&key[4+algo_len..]) as usize;
                                             &key[8+algo_len .. 8+algo_len + key_len]
                                         };
@@ -751,12 +759,58 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                                 enc.state = Some(EncryptedState::RejectAuthRequest(auth_request));
                             }
                         },
-                        Some(EncryptedState::Authenticated) => {
+                        Some(EncryptedState::WaitingChannelOpen) if buf[0] == msg::CHANNEL_OPEN => {
                             println!("auth! received packet: {:?}", buf);
-                            enc.state = Some(EncryptedState::Authenticated);
+
+                            let typ_len = BigEndian::read_u32(&buf[1 ..]) as usize;
+                            let typ = &buf[5 .. 5+typ_len];
+                            let sender = BigEndian::read_u32(&buf[5+typ_len ..]);
+                            let window = BigEndian::read_u32(&buf[9+typ_len ..]);
+                            let maxpacket = BigEndian::read_u32(&buf[13+typ_len ..]);
+
+
+                            println!("typ = {:?} {:?} {:?} {:?}",
+                                     std::str::from_utf8(typ), sender, window, maxpacket);
+
+                            let mut sender_channel:u32 = 1;
+                            while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
+                                sender_channel = rand::thread_rng().gen()
+                            }
+                            
+                            enc.state = Some(EncryptedState::ChannelOpenConfirmation (Channel {
+
+                                recipient_channel: sender,
+                                sender_channel: sender_channel,
+                                initial_window_size: window,
+                                maximum_packet_size: maxpacket
+                            }));
+                            
+                            read_packet = true;
+                        },
+                        Some(EncryptedState::ChannelOpened(mut channels)) => {
+                            if buf[0] == msg::CHANNEL_DATA {
+                                println!("buf: {:?}", buf);
+
+                                let channel_num = BigEndian::read_u32(&buf[1..]);
+                                if let Some(&mut (_, ref mut buffer, ref mut server)) = enc.channels.get_mut(&channel_num) {
+
+                                    let len = BigEndian::read_u32(&buf[5..]) as usize;
+                                    let data = &buf[9 .. 9+len];
+                                    buffer.clear();
+                                    if let Ok(()) = server.data(&data, buffer) {
+                                        if buffer.len() > 0 {
+                                            channels.insert(channel_num);
+                                        }
+                                    } else {
+                                        unimplemented!()
+                                    }
+                                }
+                            }
+                            enc.state = Some(EncryptedState::ChannelOpened(channels));
                             read_packet = true;
                         },
                         state => {
+                            println!("buf: {:?}", buf);
                             println!("replacing state: {:?}", state);
                             enc.state = state;
                             read_packet = true;
@@ -804,14 +858,24 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
         // println!("flushed");
         Ok(true)
     }
-    
-    pub fn write<W:Write>(&mut self, stream:&mut W, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<(), Error> {
+
+
+    // Returns whether the connexion is still alive.
+
+    pub fn write<W:Write, A:Authenticate>(
+        &mut self,
+        config:&config::Config<A>,
+        server:&S,
+        stream:&mut W,
+        buffer:&mut CryptoBuf,
+        buffer2:&mut CryptoBuf
+    ) -> Result<bool, Error> {
 
         // println!("writing");
         // Finish pending writes, if any.
         if ! try!(self.write_all(stream)) {
             // If there are still bytes to write.
-            return Ok(())
+            return Ok(true)
         }
         self.write_buffer.clear();
         self.write_position = 0;
@@ -821,12 +885,12 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
         match state {
             Some(ServerState::VersionOk(mut exchange)) => {
 
-                self.write_buffer.extend(self.server_id.as_bytes());
+                self.write_buffer.extend(config.server_id.as_bytes());
                 self.write_buffer.push(b'\r');
                 self.write_buffer.push(b'\n');
                 try!(self.write_all(stream));
 
-                exchange.server_id = Some(self.server_id.as_bytes().to_vec());
+                exchange.server_id = Some(config.server_id.as_bytes().to_vec());
 
                 self.state = Some(
                     ServerState::KexInit(KexInit {
@@ -835,14 +899,14 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                         session_id: None
                     }
                 ));
-                Ok(())
+                Ok(true)
             },
             Some(ServerState::KexInit(mut kexinit)) => {
 
                 if !kexinit.sent {
                     // println!("kexinit");
                     self.write_buffer.extend(b"\0\0\0\0\0");
-                    write_kex(&self.keys, &mut self.write_buffer);
+                    write_kex(&config.keys, &mut self.write_buffer);
 
                     kexinit.exchange.server_kex_init = {
 
@@ -865,11 +929,11 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                             kex:kex, key:key, cipher:cipher, mac:mac, follows:follows,
                             session_id: kexinit.session_id
                         }));
-                    Ok(())
+                    Ok(true)
                 } else {
                     // println!("write kexinit: packet not yet received");
                     self.state = Some(ServerState::KexInit(kexinit));
-                    Ok(())
+                    Ok(true)
                 }
             },
             Some(ServerState::KexDhDone(mut kexdhdone)) => {
@@ -925,7 +989,7 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                         session_id: session_id,
                     }
                 ));
-                Ok(())
+                Ok(true)
             },
             Some(ServerState::Encrypted(mut enc)) => {
                 println!("read: encrypted {:?}", enc.state);
@@ -940,7 +1004,7 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                         self.sent_seqn += 1;
 
 
-                        if let Some(ref banner) = self.auth_banner {
+                        if let Some(ref banner) = config.auth_banner {
 
                             buffer.clear();
                             buffer.push(msg::USERAUTH_BANNER);
@@ -954,7 +1018,7 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                         try!(self.write_all(stream));
                         
                         enc.state = Some(EncryptedState::WaitingAuthRequest(AuthRequest {
-                            methods: self.auth_methods,
+                            methods: config.methods,
                             partial_success: false, // not used immediately anway.
                             public_key: CryptoBuf::new(),
                             public_key_algorithm: CryptoBuf::new(),
@@ -1002,32 +1066,62 @@ impl<'a, A:auth::Authenticate> ServerSession<'a, A> {
                         enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
 
                         self.sent_seqn += 1;
-                        enc.state = Some(EncryptedState::Authenticated);
+                        enc.state = Some(EncryptedState::WaitingChannelOpen);
                         try!(self.write_all(stream));
                     },
 
-                    Some(EncryptedState::Authenticated) => {
-                        /*buffer.clear();
-                        buffer.push(msg::USERAUTH_SUCCESS);
+                    Some(EncryptedState::ChannelOpenConfirmation(channel)) => {
 
+                        buffer.clear();
+                        buffer.push(msg::CHANNEL_OPEN_CONFIRMATION);
+                        buffer.push_u32_be(channel.recipient_channel);
+                        buffer.push_u32_be(channel.sender_channel);
+                        buffer.push_u32_be(channel.initial_window_size);
+                        buffer.push_u32_be(channel.maximum_packet_size);
                         enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
 
                         self.sent_seqn += 1;
-                        enc.state = EncryptedState::Authenticated;
-                        try!(self.write_all(stream));*/
-                        enc.state = Some(EncryptedState::Authenticated);
+                        let server = server.init(&channel);
+                        let buf = CryptoBuf::new();
+                        enc.channels.insert(channel.sender_channel, (channel, buf, server));
+
+                        enc.state = Some(EncryptedState::ChannelOpened(HashSet::new()));
+                        try!(self.write_all(stream));
+                    },
+                    Some(EncryptedState::ChannelOpened(mut channels)) => {
+
+                        for recip_channel in channels.drain() {
+
+                            if let Some(&mut (ref channel,
+                                              ref mut channel_buffer,
+                                              _)) = enc.channels.get_mut(&recip_channel) {
+
+                                buffer.clear();
+                                buffer.push(msg::CHANNEL_DATA);
+                                buffer.push_u32_be(channel.recipient_channel);
+                                buffer.extend_ssh_string(channel_buffer.as_slice());
+                                channel_buffer.clear();
+
+                                enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
+
+                                self.sent_seqn += 1;
+
+                                try!(self.write_all(stream));
+                            }
+                        }
+                        enc.state = Some(EncryptedState::ChannelOpened(channels))
                     },
                     state => {
                         enc.state = state
                     }
                 }
                 self.state = Some(ServerState::Encrypted(enc));
-                Ok(())
+                Ok(true)
             },
             session => {
                 // println!("write: unhandled {:?}", session);
                 self.state = session;
-                Ok(())
+                Ok(true)
             }
         }
     }
