@@ -265,7 +265,14 @@ pub fn hexdump(x: &CryptoBuf) {
     }
 }
 
-pub fn read<R: BufRead>(stream: &mut R,
+
+/// Fills the read buffer, and returns whether a complete message has been read.
+///
+/// It would be tempting to return either a slice of `stream`, or a
+/// slice of `read_buffer`, but except for a very small number of
+/// messages, we need double buffering anyway to decrypt in place on
+/// `read_buffer`.
+fn read<R: BufRead>(stream: &mut R,
                     read_buffer: &mut CryptoBuf,
                     read_len: usize)
                     -> Result<bool, Error> {
