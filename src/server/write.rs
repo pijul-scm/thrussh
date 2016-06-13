@@ -4,7 +4,8 @@ use super::super::key;
 use super::super::negociation;
 use super::*;
 use super::super::sodium;
-use super::super::{Error, CryptoBuf};
+use super::super::{Error, CryptoBuf, Kex, KexInit, KexDh, KexDhDone, Encrypted, ChannelParameters, Channel};
+
 
 use std::collections::HashSet;
 use std::io::{Write};
@@ -42,28 +43,6 @@ fn complete_packet(buf: &mut CryptoBuf, off: usize) {
 
 impl<T, S: super::Serve<T>> ServerSession<T, S> {
 
-    // Returns true iff the write buffer has been completely written.
-    pub fn write_all<W: Write>(&mut self, stream: &mut W) -> Result<bool, Error> {
-        // println!("write_all");
-        while self.write_position < self.write_buffer.len() {
-            match self.write_buffer.write_all_from(self.write_position, stream) {
-                Ok(s) => {
-                    self.write_position += s;
-                    self.written_bytes += s;
-                    try!(stream.flush());
-                }
-                Err(e) => {
-                    if e.kind() == std::io::ErrorKind::WouldBlock {
-                        return Ok(false); // need more bytes
-                    } else {
-                        return Err(Error::IO(e));
-                    }
-                }
-            }
-        }
-        // println!("flushed");
-        Ok(true)
-    }
     pub fn cleartext_write_kex_init<W: Write>(&mut self,
                                           keys: &[key::Algorithm],
                                           mut kexinit: KexInit,
@@ -71,17 +50,17 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
                                           -> Result<ServerState<S>, Error> {
         if !kexinit.sent {
             // println!("kexinit");
-            self.write_buffer.extend(b"\0\0\0\0\0");
-            negociation::write_kex(&keys, &mut self.write_buffer);
+            self.buffers.write_buffer.extend(b"\0\0\0\0\0");
+            negociation::write_kex(&keys, &mut self.buffers.write_buffer);
 
             {
-                let buf = self.write_buffer.as_slice();
+                let buf = self.buffers.write_buffer.as_slice();
                 kexinit.exchange.server_kex_init.extend(&buf[5..]);
             }
 
-            complete_packet(&mut self.write_buffer, 0);
-            self.sent_seqn += 1;
-            try!(self.write_all(stream));
+            complete_packet(&mut self.buffers.write_buffer, 0);
+            self.buffers.sent_seqn += 1;
+            try!(self.buffers.write_all(stream));
             kexinit.sent = true;
         }
         if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
@@ -104,39 +83,39 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
                                     hash: &kex::Digest) {
         // ECDH Key exchange.
         // http://tools.ietf.org/html/rfc5656#section-4
-        self.write_buffer.extend(b"\0\0\0\0\0");
-        self.write_buffer.push(msg::KEX_ECDH_REPLY);
-        kexdhdone.key.write_pubkey(&mut self.write_buffer);
+        self.buffers.write_buffer.extend(b"\0\0\0\0\0");
+        self.buffers.write_buffer.push(msg::KEX_ECDH_REPLY);
+        kexdhdone.key.write_pubkey(&mut self.buffers.write_buffer);
         // Server ephemeral
-        self.write_buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
+        self.buffers.write_buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
         // Hash signature
-        kexdhdone.key.add_signature(&mut self.write_buffer, hash.as_bytes());
+        kexdhdone.key.add_signature(&mut self.buffers.write_buffer, hash.as_bytes());
         //
-        complete_packet(&mut self.write_buffer, 0);
-        self.sent_seqn += 1;
+        complete_packet(&mut self.buffers.write_buffer, 0);
+        self.buffers.sent_seqn += 1;
     }
     pub fn cleartext_send_newkeys(&mut self) {
         // Sending the NEWKEYS packet.
         // https://tools.ietf.org/html/rfc4253#section-7.3
         // buffer.clear();
-        let pos = self.write_buffer.len();
-        self.write_buffer.extend(b"\0\0\0\0\0");
-        self.write_buffer.push(msg::NEWKEYS);
-        complete_packet(&mut self.write_buffer, pos);
-        self.sent_seqn += 1;
+        let pos = self.buffers.write_buffer.len();
+        self.buffers.write_buffer.extend(b"\0\0\0\0\0");
+        self.buffers.write_buffer.push(msg::NEWKEYS);
+        complete_packet(&mut self.buffers.write_buffer, pos);
+        self.buffers.sent_seqn += 1;
     }
 
     pub fn accept_service(&mut self,
                       banner: Option<&str>,
                       methods: auth::Methods,
-                      enc: &mut Encrypted<S>,
+                      enc: &mut Encrypted<S, super::EncryptedState>,
                       buffer: &mut CryptoBuf)
                       -> AuthRequest {
         buffer.clear();
         buffer.push(msg::SERVICE_ACCEPT);
         buffer.extend_ssh_string(b"ssh-userauth");
-        enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
-        self.sent_seqn += 1;
+        enc.cipher.write_server_packet(self.buffers.sent_seqn, buffer.as_slice(), &mut self.buffers.write_buffer);
+        self.buffers.sent_seqn += 1;
 
         if let Some(ref banner) = banner {
 
@@ -146,8 +125,8 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
             buffer.extend_ssh_string(b"");
 
             enc.cipher
-               .write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
-            self.sent_seqn += 1;
+               .write_server_packet(self.buffers.sent_seqn, buffer.as_slice(), &mut self.buffers.write_buffer);
+            self.buffers.sent_seqn += 1;
         }
 
         AuthRequest {
@@ -160,7 +139,7 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
     }
 
     pub fn reject_auth_request(&mut self,
-                           enc: &mut Encrypted<S>,
+                               enc: &mut Encrypted<S, super::EncryptedState>,
                            buffer: &mut CryptoBuf,
                            auth_request: &AuthRequest) {
         buffer.clear();
@@ -173,13 +152,13 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
             0
         });
 
-        enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
+        enc.cipher.write_server_packet(self.buffers.sent_seqn, buffer.as_slice(), &mut self.buffers.write_buffer);
 
-        self.sent_seqn += 1;
+        self.buffers.sent_seqn += 1;
     }
 
     pub fn confirm_channel_open(&mut self,
-                            enc: &mut Encrypted<S>,
+                                enc: &mut Encrypted<S, super::EncryptedState>,
                             buffer: &mut CryptoBuf,
                             channel: ChannelParameters,
                             server: S) {
@@ -189,9 +168,9 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
         buffer.push_u32_be(channel.sender_channel);
         buffer.push_u32_be(channel.initial_window_size);
         buffer.push_u32_be(channel.maximum_packet_size);
-        enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
+        enc.cipher.write_server_packet(self.buffers.sent_seqn, buffer.as_slice(), &mut self.buffers.write_buffer);
 
-        self.sent_seqn += 1;
+        self.buffers.sent_seqn += 1;
         let buf_stdout = CryptoBuf::new();
         let buf_stderr = CryptoBuf::new();
         enc.channels.insert(channel.sender_channel,
@@ -204,7 +183,7 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
     }
 
     pub fn send_pk_ok(&mut self,
-                  enc: &mut Encrypted<S>,
+                      enc: &mut Encrypted<S, super::EncryptedState>,
                   buffer: &mut CryptoBuf,
                   auth_request: &mut AuthRequest) {
         if !auth_request.sent_pk_ok {
@@ -213,14 +192,14 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
             buffer.extend_ssh_string(auth_request.public_key_algorithm.as_slice());
             buffer.extend_ssh_string(auth_request.public_key.as_slice());
             enc.cipher
-               .write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
-            self.sent_seqn += 1;
+                .write_server_packet(self.buffers.sent_seqn, buffer.as_slice(), &mut self.buffers.write_buffer);
+            self.buffers.sent_seqn += 1;
             auth_request.sent_pk_ok = true;
         }
     }
 
     pub fn flush_channels(&mut self,
-                      enc: &mut Encrypted<S>,
+                          enc: &mut Encrypted<S, super::EncryptedState>,
                       channel_nums: &mut HashSet<u32>,
                       buffer: &mut CryptoBuf) {
 
@@ -235,11 +214,11 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
                     buffer.extend_ssh_string(channel.stdout.as_slice());
                     channel.stdout.clear();
 
-                    enc.cipher.write_server_packet(self.sent_seqn,
+                    enc.cipher.write_server_packet(self.buffers.sent_seqn,
                                                    buffer.as_slice(),
-                                                   &mut self.write_buffer);
+                                                   &mut self.buffers.write_buffer);
 
-                    self.sent_seqn += 1;
+                    self.buffers.sent_seqn += 1;
                 }
                 if channel.stderr.len() > 0 {
                     buffer.clear();
@@ -249,11 +228,11 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
                     buffer.extend_ssh_string(channel.stderr.as_slice());
                     channel.stderr.clear();
 
-                    enc.cipher.write_server_packet(self.sent_seqn,
+                    enc.cipher.write_server_packet(self.buffers.sent_seqn,
                                                    buffer.as_slice(),
-                                                   &mut self.write_buffer);
+                                                   &mut self.buffers.write_buffer);
 
-                    self.sent_seqn += 1;
+                    self.buffers.sent_seqn += 1;
                 }
             }
         }

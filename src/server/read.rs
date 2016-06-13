@@ -1,8 +1,9 @@
 use super::*;
-use super::super::key;
-use super::super::negociation;
+use super::super::*;
+use super::super::{read};
+
 use super::super::msg;
-use super::super::{Exchange, Error, read, CryptoBuf};
+use super::super::negociation;
 
 use rand::{thread_rng, Rng};
 use std;
@@ -37,7 +38,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                  Err(Error::Version)
              })
         };
-        self.read_bytes += len;
+        self.buffers.read_bytes += len;
         stream.consume(len);
         result
     }
@@ -48,18 +49,18 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                                           -> Result<bool, Error> {
         if kexinit.algo.is_none() {
             // read algo from packet.
-            if self.read_len == 0 {
+            if self.buffers.read_len == 0 {
                 try!(self.set_clear_len(stream));
             }
-            if try!(read(stream, &mut self.read_buffer, self.read_len, &mut self.read_bytes)) {
+            if try!(read(stream, &mut self.buffers.read_buffer, self.buffers.read_len, &mut self.buffers.read_bytes)) {
                 {
                     let payload = self.get_current_payload();
                     kexinit.algo = Some(try!(negociation::read_kex(payload, keys)));
                     kexinit.exchange.client_kex_init.extend(payload);
                 }
-                self.recv_seqn += 1;
-                self.read_buffer.clear();
-                self.read_len = 0;
+                self.buffers.recv_seqn += 1;
+                self.buffers.read_buffer.clear();
+                self.buffers.read_len = 0;
                 self.state = Some(ServerState::Kex(try!(kexinit.kexinit())));
                 Ok(true)
             } else {
@@ -74,7 +75,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
     }
 }
 
-pub fn read_encrypted<A:Authenticate, T, S:super::Serve<T>>(auth:&A, enc:&mut Encrypted<S>, buf:&[u8], buffer:&mut CryptoBuf) -> EncryptedState {
+pub fn read_encrypted<A:Authenticate, T, S:super::Serve<T>>(auth:&A, enc:&mut Encrypted<S, super::EncryptedState>, buf:&[u8], buffer:&mut CryptoBuf) -> EncryptedState {
     // If we've successfully read a packet.
 
     let state = std::mem::replace(&mut enc.state, None);
