@@ -24,7 +24,7 @@ impl<'a> Method<'a> {
         }
     }
 }
-impl super::Bytes for M {
+impl super::encoding::Bytes for M {
     fn bytes(&self) -> &'static [u8] {
         match *self {
             NONE => b"none",

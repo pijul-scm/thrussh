@@ -270,3 +270,32 @@ impl Algorithm {
         }
     }
 }
+
+
+#[derive(Debug)]
+pub struct KexInit {
+    pub algo: Option<super::negociation::Names>,
+    pub exchange: super::Exchange,
+    pub session_id: Option<super::kex::Digest>,
+    pub sent: bool
+}
+
+impl KexInit {
+    pub fn kexinit<T>(self) -> Result<super::ServerState<T>, super::Error> {
+        if !self.sent {
+            Ok(super::ServerState::KexInit(self))
+        } else {
+            if let Some((kex,key,cipher,mac,follows)) = self.algo {
+
+                Ok(super::ServerState::KexDh(super::KexDh {
+                    exchange:self.exchange,
+                    kex:kex, key:key,
+                    cipher:cipher, mac:mac, follows:follows,
+                    session_id: self.session_id
+                }))
+            } else {
+                Err(super::Error::Kex)
+            }
+        }
+    }
+}

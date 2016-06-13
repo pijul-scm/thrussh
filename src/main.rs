@@ -46,15 +46,15 @@ impl Authenticate for Auth {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug,Clone)]
 struct S<'a> {
     channel: u32,
     counter: &'a std::sync::atomic::AtomicUsize
 }
 
-impl<'a> Serve for S<'a> {
-    fn init(&self, c:&Channel) -> S<'a> {
-        let mut s = self.clone();
+impl<'a> Serve<S<'a>> for S<'a> {
+    fn init(s:&S<'a>, c:&ChannelParameters) -> S<'a> {
+        let mut s = s.clone();
         s.channel = c.recipient_channel;
         s
     }
@@ -68,21 +68,21 @@ impl<'a> Serve for S<'a> {
 }
 
 
-struct Server<A,S:Serve> {
+struct Server<A,T:std::fmt::Debug,S:Serve<T>+std::fmt::Debug> {
     list:TcpListener,
     server_config: config::Config<A>,
-    server: S,
+    server: T,
     buffer0:CryptoBuf,
     buffer1:CryptoBuf,
-    sessions:HashMap<usize, (BufReader<TcpStream>, std::net::SocketAddr, ServerSession<S>)>
+    sessions:HashMap<usize, (BufReader<TcpStream>, std::net::SocketAddr, ServerSession<T,S>)>
 }
 
 const SERVER: Token = Token(0);
-impl<A:Authenticate,S:Serve> Handler for Server<A, S> {
+impl<A:Authenticate,T:std::fmt::Debug,S:Serve<T>+std::fmt::Debug> Handler for Server<A, T, S> {
     type Timeout = ();
     type Message = ();
 
-    fn ready(&mut self, event_loop: &mut EventLoop<Server<A,S>>, token: Token, events: EventSet) {
+    fn ready(&mut self, event_loop: &mut EventLoop<Server<A, T, S>>, token: Token, events: EventSet) {
         match token {
             SERVER => {
                 debug!("server token");
@@ -214,10 +214,10 @@ fn main () {
     // Define a handler to process the events
 
     // Start handling events;
-    let mut server = Server::<Auth, S> {
+    let mut server = Server::<Auth, S, S> {
         list: server,
         server: S {
-            channel:0,
+            channel: 0,
             counter: &initial
         },
         server_config: config,
