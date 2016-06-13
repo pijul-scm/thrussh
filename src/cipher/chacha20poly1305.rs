@@ -34,7 +34,7 @@ use super::super::CryptoBuf;
 
 impl super::CipherT for Cipher {
 
-    fn read_packet<'a, R:BufRead>(&self, seq:usize, stream:&mut R, read_len:&mut usize,
+    fn read_packet<'a, R:BufRead>(&self, bytes_read:&mut usize, seq:usize, stream:&mut R, read_len:&mut usize,
                                   read_buffer:&'a mut CryptoBuf) -> Result<Option<&'a[u8]>,Error> {
 
         // http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD
@@ -59,7 +59,7 @@ impl super::CipherT for Cipher {
             *read_len = BigEndian::read_u32(&len) as usize + poly1305::TAGBYTES;
         }
         // - Compute the Poly1305 auth on the first (4+length) first bytes of the packet.
-        if try!(super::super::read(stream, read_buffer, *read_len)) {
+        if try!(super::super::read(stream, read_buffer, *read_len, bytes_read)) {
 
             // println!("read_buffer {:?}", read_buffer);
             // try!(stream.read_exact(&mut buffer[4..]));

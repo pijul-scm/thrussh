@@ -91,7 +91,8 @@ impl Exchange {
 /// `read_buffer`.
 fn read<R: BufRead>(stream: &mut R,
                     read_buffer: &mut CryptoBuf,
-                    read_len: usize)
+                    read_len: usize,
+                    bytes_read: &mut usize)
                     -> Result<bool, Error> {
     // This loop consumes something or returns, it cannot loop forever.
     loop {
@@ -120,6 +121,7 @@ fn read<R: BufRead>(stream: &mut R,
             }
         };
         stream.consume(consumed_len);
+        *bytes_read += consumed_len;
         if read_buffer.len() >= 4 + read_len {
             return Ok(true);
         }

@@ -37,6 +37,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                  Err(Error::Version)
              })
         };
+        self.read_bytes += len;
         stream.consume(len);
         result
     }
@@ -50,7 +51,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
             if self.read_len == 0 {
                 try!(self.set_clear_len(stream));
             }
-            if try!(read(stream, &mut self.read_buffer, self.read_len)) {
+            if try!(read(stream, &mut self.read_buffer, self.read_len, &mut self.read_bytes)) {
                 {
                     let payload = self.get_current_payload();
                     kexinit.algo = Some(try!(negociation::read_kex(payload, keys)));

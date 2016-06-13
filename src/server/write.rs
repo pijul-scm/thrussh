@@ -49,6 +49,7 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
             match self.write_buffer.write_all_from(self.write_position, stream) {
                 Ok(s) => {
                     self.write_position += s;
+                    self.written_bytes += s;
                     try!(stream.flush());
                 }
                 Err(e) => {

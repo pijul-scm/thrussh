@@ -5,6 +5,7 @@ use std::path::Path;
 use std::fs::File;
 use std::io::{Read,BufReader,BufRead};
 use std;
+use time;
 
 use super::super::key;
 use key::ed25519::{PublicKey,SecretKey};
@@ -18,7 +19,11 @@ pub struct Config<Auth> {
     pub auth_banner: Option<&'static str>,
     pub keys: Vec<key::Algorithm>,
     pub auth: Auth,
+    pub rekey_write_limit: usize,
+    pub rekey_read_limit: usize,
+    pub rekey_time_limit_s: f64
 }
+
 
 const KEYTYPE_ED25519:&'static [u8] = b"ssh-ed25519";
 
