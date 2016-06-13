@@ -125,7 +125,7 @@ pub trait Authenticate {
 
 impl AuthRequest {
     
-    pub fn auth_request<A:Authenticate>(mut self, config:&super::config::Config<A>, buf:&[u8]) -> super::EncryptedState {
+    pub fn auth_request<A:Authenticate>(mut self, auth:&A, buf:&[u8]) -> super::EncryptedState {
         // https://tools.ietf.org/html/rfc4252#section-5
         let mut pos = 1;
         let next = |pos:&mut usize| {
@@ -157,7 +157,7 @@ impl AuthRequest {
                     user: name,
                     password: password
                 };
-                match config.auth.auth(self.methods, &method) {
+                match auth.auth(self.methods, &method) {
                     Auth::Success => {
                         
                         super::EncryptedState::AuthRequestSuccess
@@ -193,7 +193,7 @@ impl AuthRequest {
                     pubkey: pubkey_,
                 };
 
-                match config.auth.auth(self.methods, &method) {
+                match auth.auth(self.methods, &method) {
                     Auth::Success => {
                         
 

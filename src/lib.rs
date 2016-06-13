@@ -42,8 +42,8 @@ pub enum Error {
 
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Error {
-        Error::IO(e)
-    }
+    Error::IO(e)
+}
 }
 
 mod negociation;
@@ -229,33 +229,6 @@ impl Exchange {
 }
 
 
-fn complete_packet(buf: &mut CryptoBuf, off: usize) {
-
-    let block_size = 8; // no MAC yet.
-    let padding_len = {
-        (block_size - ((buf.len() - off) % block_size))
-    };
-    let padding_len = if padding_len < 4 {
-        padding_len + block_size
-    } else {
-        padding_len
-    };
-    let mac_len = 0;
-
-    let packet_len = buf.len() - off - 4 + padding_len + mac_len;
-    {
-        let buf = buf.as_mut_slice();
-        BigEndian::write_u32(&mut buf[off..], packet_len as u32);
-        buf[off + 4] = padding_len as u8;
-    }
-
-
-    let mut padding = [0; 256];
-    sodium::randombytes::into(&mut padding[0..padding_len]);
-
-    buf.extend(&padding[0..padding_len]);
-
-}
 
 
 pub use auth::Authenticate;
@@ -292,7 +265,7 @@ pub fn hexdump(x: &CryptoBuf) {
     }
 }
 
-fn read<R: BufRead>(stream: &mut R,
+pub fn read<R: BufRead>(stream: &mut R,
                     read_buffer: &mut CryptoBuf,
                     read_len: usize)
                     -> Result<bool, Error> {
@@ -329,6 +302,8 @@ fn read<R: BufRead>(stream: &mut R,
     }
 }
 
+mod read;
+mod write;
 
 impl<T, S: Serve<T>> ServerSession<T, S> {
     pub fn new() -> Self {
@@ -376,6 +351,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
         payload
     }
 
+
     // returns whether a complete packet has been read.
     pub fn read<R: BufRead, A: Authenticate>(&mut self,
                                              config: &config::Config<A>,
@@ -386,61 +362,10 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
         let state = std::mem::replace(&mut self.state, None);
         // println!("state: {:?}", state);
         match state {
-            None => {
+            None => self.read_client_id(stream),
 
-                let (len, result) = {
-                    let buf = try!(stream.fill_buf());
-                    let mut i = 0;
-                    while i < buf.len() - 1 {
-                        if &buf[i..i + 2] == b"\r\n" {
-                            break;
-                        }
-                        i += 1
-                    }
-                    if buf.len() <= 8 || i >= buf.len() - 1 {
-                        // Not enough bytes. Don't consume, wait until we have more bytes. The buffer is larger than 255 anyway.
-                        return Ok(false);
-                    }
-                    (buf.len(),
-                     if &buf[0..8] == b"SSH-2.0-" {
-                         let mut exchange = Exchange::new();
-                         exchange.client_id = Some((&buf[0..i]).to_vec());
-                         // println!("{:?}", std::str::from_utf8(&buf[ 0 .. i ]));
-                         self.state = Some(ServerState::VersionOk(exchange));
-                         Ok(true)
-                     } else {
-                         Err(Error::Version)
-                     })
-                };
-                stream.consume(len);
-                result
+            Some(ServerState::KexInit(kexinit)) => self.read_cleartext_kexinit(stream, kexinit, &config.keys),
 
-            }
-            Some(ServerState::KexInit(mut kexinit)) => {
-
-                if kexinit.algo.is_none() {
-                    // read algo from packet.
-                    if self.read_len == 0 {
-                        try!(self.set_clear_len(stream));
-                    }
-                    if try!(read(stream, &mut self.read_buffer, self.read_len)) {
-                        {
-                            let payload = self.get_current_payload();
-                            kexinit.algo = Some(try!(read_kex(payload, &config.keys)));
-                            kexinit.exchange.client_kex_init = Some(payload.to_vec());
-                        }
-                        self.recv_seqn += 1;
-                        self.read_buffer.clear();
-                        self.read_len = 0;
-                    } else {
-                        // A complete packet could not be read, we need to read more.
-                        self.state = Some(ServerState::KexInit(kexinit));
-                        return Ok(false);
-                    }
-                }
-                self.state = Some(try!(kexinit.kexinit()));
-                Ok(true)
-            }
             Some(ServerState::KexDh(mut kexdh)) => {
 
 
@@ -506,134 +431,26 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("read: encrypted {:?}", enc.state);
 
-                let mut read_packet = false;
+                let buf_is_some =
+                    if let Some(buf) = try!(enc.cipher.read_client_packet(self.recv_seqn,
+                                                                          stream,
+                                                                          &mut self.read_len,
+                                                                          &mut self.read_buffer)) {
 
-                if let Some(buf) = try!(enc.cipher.read_client_packet(self.recv_seqn,
-                                                                      stream,
-                                                                      &mut self.read_len,
-                                                                      &mut self.read_buffer)) {
-
-
-                    let state = std::mem::replace(&mut enc.state, None);
-                    match state {
-                        Some(EncryptedState::WaitingServiceRequest) if buf[0] ==
-                            msg::SERVICE_REQUEST => {
-
-                                let len = BigEndian::read_u32(&buf[1..]) as usize;
-                                let request = &buf[5..(5 + len)];
-                                debug!("request: {:?}", std::str::from_utf8(request));
-                                if request == b"ssh-userauth" {
-                                    enc.state = Some(EncryptedState::ServiceRequest)
-                                } else {
-                                    enc.state = Some(EncryptedState::WaitingServiceRequest)
-                                }
-                                read_packet = true;
-                                debug!("decrypted {:?}", buf);
-                            }
-                        Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
-                            if buf[0] == msg::USERAUTH_REQUEST {
-
-                                enc.state = Some(auth_request.auth_request(config, buf));
-                                read_packet = true;
-
-                            } else {
-                                // Wrong request
-                                enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
-                                read_packet = true;
-                            }
-                        }
-
-                        Some(EncryptedState::WaitingSignature(auth_request)) => {
-                            debug!("receiving signature, {:?}", buf);
-                            if buf[0] == msg::USERAUTH_REQUEST {
-
-                                enc.state = Some(auth_request.waiting_signature(buf,
-                                                                                enc.session_id
-                                                                                .as_bytes(),
-                                                                                buffer));
-                                read_packet = true
-
-                            } else {
-                                enc.state = Some(EncryptedState::RejectAuthRequest(auth_request));
-                            }
-                        }
-                        Some(EncryptedState::WaitingChannelOpen) if buf[0] == msg::CHANNEL_OPEN => {
-                            debug!("auth! received packet: {:?}", buf);
-
-                            let typ_len = BigEndian::read_u32(&buf[1..]) as usize;
-                            let typ = &buf[5..5 + typ_len];
-                            let sender = BigEndian::read_u32(&buf[5 + typ_len..]);
-                            let window = BigEndian::read_u32(&buf[9 + typ_len..]);
-                            let maxpacket = BigEndian::read_u32(&buf[13 + typ_len..]);
-
-
-                            debug!("typ = {:?} {:?} {:?} {:?}",
-                                   std::str::from_utf8(typ),
-                                   sender,
-                                   window,
-                                   maxpacket);
-
-                            let mut sender_channel: u32 = 1;
-                            while enc.channels.contains_key(&sender_channel) ||
-                                sender_channel == 0 {
-                                    sender_channel = rand::thread_rng().gen()
-                                }
-
-                            enc.state =
-                                Some(EncryptedState::ChannelOpenConfirmation(ChannelParameters {
-                                    recipient_channel: sender,
-                                    sender_channel: sender_channel,
-                                    initial_window_size: window,
-                                    maximum_packet_size: maxpacket,
-                                }));
-
-                            read_packet = true;
-                        }
-                        Some(EncryptedState::ChannelOpened(mut channels)) => {
-                            if buf[0] == msg::CHANNEL_DATA {
-                                debug!("buf: {:?}", buf);
-
-                                let channel_num = BigEndian::read_u32(&buf[1..]);
-                                if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
-
-                                    let len = BigEndian::read_u32(&buf[5..]) as usize;
-                                    let data = &buf[9..9 + len];
-                                    buffer.clear();
-                                    if let Ok(()) = channel.server.data(&data,
-                                                                        &mut channel.stdout,
-                                                                        &mut channel.stderr) {
-                                        if channel.stdout.len() > 0 || channel.stderr.len() > 0 {
-                                            channels.insert(channel_num);
-                                        }
-                                    } else {
-                                        unimplemented!()
-                                    }
-                                }
-                            }
-                            enc.state = Some(EncryptedState::ChannelOpened(channels));
-                            read_packet = true;
-                        }
-                        state => {
-                            debug!("buf: {:?}", buf);
-                            debug!("replacing state: {:?}", state);
-                            enc.state = state;
-                            read_packet = true;
-                        }
-                    }
-
-                } else {
-                    // More bytes needed
-                    // println!("more bytes needed");
-                }
-
-                if read_packet {
+                        let enc_state = read::read_encrypted(&config.auth, &mut enc, buf, buffer);
+                        enc.state = Some(enc_state);
+                        true
+                    } else {
+                        false
+                    };
+                if buf_is_some {
                     self.recv_seqn += 1;
                     self.read_buffer.clear();
                     self.read_len = 0;
                 }
 
                 self.state = Some(ServerState::Encrypted(enc));
-                Ok(read_packet)
+                Ok(buf_is_some)
             }
             _ => {
                 // println!("read: unhandled");
@@ -641,28 +458,6 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
             }
         }
     }
-
-    fn write_all<W: Write>(&mut self, stream: &mut W) -> Result<bool, Error> {
-        // println!("write_all");
-        while self.write_position < self.write_buffer.len() {
-            match self.write_buffer.write_all_from(self.write_position, stream) {
-                Ok(s) => {
-                    self.write_position += s;
-                    try!(stream.flush());
-                }
-                Err(e) => {
-                    if e.kind() == std::io::ErrorKind::WouldBlock {
-                        return Ok(false); // need more bytes
-                    } else {
-                        return Err(Error::IO(e));
-                    }
-                }
-            }
-        }
-        // println!("flushed");
-        Ok(true)
-    }
-
 
     // Returns whether the connexion is still alive.
 
@@ -788,209 +583,4 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
             }
         }
     }
-
-    fn cleartext_write_kex_init<W: Write>(&mut self,
-                                          keys: &[key::Algorithm],
-                                          mut kexinit: kex::KexInit,
-                                          stream: &mut W)
-                                          -> Result<ServerState<S>, Error> {
-        if !kexinit.sent {
-            // println!("kexinit");
-            self.write_buffer.extend(b"\0\0\0\0\0");
-            write_kex(&keys, &mut self.write_buffer);
-
-            kexinit.exchange.server_kex_init = {
-
-                let buf = self.write_buffer.as_slice();
-                Some((&buf[5..]).to_vec())
-
-            };
-
-            complete_packet(&mut self.write_buffer, 0);
-            self.sent_seqn += 1;
-            try!(self.write_all(stream));
-            kexinit.sent = true;
-        }
-        if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
-            Ok(ServerState::KexDh(KexDh {
-                exchange: kexinit.exchange,
-                kex: kex,
-                key: key,
-                cipher: cipher,
-                mac: mac,
-                follows: follows,
-                session_id: kexinit.session_id,
-            }))
-        } else {
-            Ok(ServerState::KexInit(kexinit))
-        }
-
-    }
-    fn cleartext_kex_ecdh_reply(&mut self,
-                                kexdhdone: &KexDhDone,
-                                hash: &kex::Digest)
-                                -> Result<(), Error> {
-        if let Some(ref server_ephemeral) = kexdhdone.exchange.server_ephemeral {
-            // ECDH Key exchange.
-            // http://tools.ietf.org/html/rfc5656#section-4
-            self.write_buffer.extend(b"\0\0\0\0\0");
-            self.write_buffer.push(msg::KEX_ECDH_REPLY);
-            kexdhdone.key.write_pubkey(&mut self.write_buffer);
-            // Server ephemeral
-            self.write_buffer.extend_ssh_string(server_ephemeral);
-            // Hash signature
-            kexdhdone.key.add_signature(&mut self.write_buffer, hash.as_bytes());
-            //
-            complete_packet(&mut self.write_buffer, 0);
-            self.sent_seqn += 1;
-            Ok(())
-        } else {
-            Err(Error::DH)
-        }
-    }
-    fn cleartext_send_newkeys(&mut self) {
-        // Sending the NEWKEYS packet.
-        // https://tools.ietf.org/html/rfc4253#section-7.3
-        // buffer.clear();
-        let pos = self.write_buffer.len();
-        self.write_buffer.extend(b"\0\0\0\0\0");
-        self.write_buffer.push(msg::NEWKEYS);
-        complete_packet(&mut self.write_buffer, pos);
-        self.sent_seqn += 1;
-    }
-
-    fn accept_service(&mut self,
-                      banner: Option<&str>,
-                      methods: auth::Methods,
-                      enc: &mut Encrypted<S>,
-                      buffer: &mut CryptoBuf)
-                      -> AuthRequest {
-        buffer.clear();
-        buffer.push(msg::SERVICE_ACCEPT);
-        buffer.extend_ssh_string(b"ssh-userauth");
-        enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
-        self.sent_seqn += 1;
-
-        if let Some(ref banner) = banner {
-
-            buffer.clear();
-            buffer.push(msg::USERAUTH_BANNER);
-            buffer.extend_ssh_string(banner.as_bytes());
-            buffer.extend_ssh_string(b"");
-
-            enc.cipher
-                .write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
-            self.sent_seqn += 1;
-        }
-
-        AuthRequest {
-            methods: methods,
-            partial_success: false, // not used immediately anway.
-            public_key: CryptoBuf::new(),
-            public_key_algorithm: CryptoBuf::new(),
-            sent_pk_ok: false,
-        }
-    }
-
-    fn reject_auth_request(&mut self,
-                           enc: &mut Encrypted<S>,
-                           buffer: &mut CryptoBuf,
-                           auth_request: &AuthRequest) {
-        buffer.clear();
-        buffer.push(msg::USERAUTH_FAILURE);
-
-        buffer.extend_list(auth_request.methods);
-        buffer.push(if auth_request.partial_success {
-            1
-        } else {
-            0
-        });
-
-        enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
-
-        self.sent_seqn += 1;
-    }
-
-    fn confirm_channel_open(&mut self,
-                            enc: &mut Encrypted<S>,
-                            buffer: &mut CryptoBuf,
-                            channel: ChannelParameters,
-                            server: S) {
-        buffer.clear();
-        buffer.push(msg::CHANNEL_OPEN_CONFIRMATION);
-        buffer.push_u32_be(channel.recipient_channel);
-        buffer.push_u32_be(channel.sender_channel);
-        buffer.push_u32_be(channel.initial_window_size);
-        buffer.push_u32_be(channel.maximum_packet_size);
-        enc.cipher.write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
-
-        self.sent_seqn += 1;
-        let buf_stdout = CryptoBuf::new();
-        let buf_stderr = CryptoBuf::new();
-        enc.channels.insert(channel.sender_channel,
-                            Channel {
-                                parameters: channel,
-                                stdout: buf_stdout,
-                                stderr: buf_stderr,
-                                server: server,
-                            });
-    }
-
-    fn send_pk_ok(&mut self,
-                  enc: &mut Encrypted<S>,
-                  buffer: &mut CryptoBuf,
-                  auth_request: &mut AuthRequest) {
-        if !auth_request.sent_pk_ok {
-            buffer.clear();
-            buffer.push(msg::USERAUTH_PK_OK);
-            buffer.extend_ssh_string(auth_request.public_key_algorithm.as_slice());
-            buffer.extend_ssh_string(auth_request.public_key.as_slice());
-            enc.cipher
-                .write_server_packet(self.sent_seqn, buffer.as_slice(), &mut self.write_buffer);
-            self.sent_seqn += 1;
-            auth_request.sent_pk_ok = true;
-        }
-    }
-
-    fn flush_channels(&mut self,
-                      enc: &mut Encrypted<S>,
-                      channel_nums: &mut HashSet<u32>,
-                      buffer: &mut CryptoBuf) {
-
-        for recip_channel in channel_nums.drain() {
-
-            if let Some(ref mut channel) = enc.channels.get_mut(&recip_channel) {
-
-                if channel.stdout.len() > 0 {
-                    buffer.clear();
-                    buffer.push(msg::CHANNEL_DATA);
-                    buffer.push_u32_be(channel.parameters.recipient_channel);
-                    buffer.extend_ssh_string(channel.stdout.as_slice());
-                    channel.stdout.clear();
-
-                    enc.cipher.write_server_packet(self.sent_seqn,
-                                                   buffer.as_slice(),
-                                                   &mut self.write_buffer);
-
-                    self.sent_seqn += 1;
-                }
-                if channel.stderr.len() > 0 {
-                    buffer.clear();
-                    buffer.push(msg::CHANNEL_EXTENDED_DATA);
-                    buffer.push_u32_be(channel.parameters.recipient_channel);
-                    buffer.push_u32_be(SSH_EXTENDED_DATA_STDERR);
-                    buffer.extend_ssh_string(channel.stderr.as_slice());
-                    channel.stderr.clear();
-
-                    enc.cipher.write_server_packet(self.sent_seqn,
-                                                   buffer.as_slice(),
-                                                   &mut self.write_buffer);
-
-                    self.sent_seqn += 1;
-                }
-            }
-        }
-
-    }
 }
-const SSH_EXTENDED_DATA_STDERR: u32 = 1;
