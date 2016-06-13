@@ -4,7 +4,6 @@ use std::collections::{HashSet, HashMap};
 
 use super::*;
 use super::read;
-pub mod config;
 pub mod auth;
 pub use self::auth::*;
 use std::marker::PhantomData;
