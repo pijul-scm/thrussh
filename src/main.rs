@@ -16,9 +16,11 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
 use russht::*;
-struct Auth;
+use russht::server::*;
+// use russht::server::auth::Authenticate;
+struct MyAuth;
 
-impl Authenticate for Auth {
+impl Authenticate for MyAuth {
     fn auth<'a>(&self, methods:auth::Methods, method:&auth::Method) -> auth::Auth {
         debug!("methods {:?}, method {:?}", methods, method);
         match method {
@@ -189,7 +191,7 @@ fn main () {
                 secret_host_key: config::read_secret_key("ssh_host_ed25519_key").unwrap(),
             }
         ),
-        auth: Auth
+        auth: MyAuth
     };
     let addr = "127.0.0.1:13265".parse().unwrap();
 
@@ -214,7 +216,7 @@ fn main () {
     // Define a handler to process the events
 
     // Start handling events;
-    let mut server = Server::<Auth, S, S> {
+    let mut server = Server::<MyAuth, S, S> {
         list: server,
         server: S {
             channel: 0,

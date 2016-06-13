@@ -1,10 +1,13 @@
-use super::msg;
-use std::collections::HashSet;
+use super::super::msg;
+use super::super::kex;
+use super::super::key;
+use super::super::negociation;
 use super::*;
-use super::auth::AuthRequest;
+use super::super::sodium;
+use super::super::{Error, CryptoBuf};
+
+use std::collections::HashSet;
 use std::io::{Write};
-use super::kex;
-use super::negociation;
 use std;
 use byteorder::{ByteOrder, BigEndian, WriteBytesExt};
 const SSH_EXTENDED_DATA_STDERR: u32 = 1;
@@ -39,6 +42,7 @@ fn complete_packet(buf: &mut CryptoBuf, off: usize) {
 
 impl<T, S: super::Serve<T>> ServerSession<T, S> {
 
+    // Returns true iff the write buffer has been completely written.
     pub fn write_all<W: Write>(&mut self, stream: &mut W) -> Result<bool, Error> {
         // println!("write_all");
         while self.write_position < self.write_buffer.len() {
@@ -61,7 +65,7 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
     }
     pub fn cleartext_write_kex_init<W: Write>(&mut self,
                                           keys: &[key::Algorithm],
-                                          mut kexinit: kex::KexInit,
+                                          mut kexinit: KexInit,
                                           stream: &mut W)
                                           -> Result<ServerState<S>, Error> {
         if !kexinit.sent {
@@ -69,12 +73,10 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
             self.write_buffer.extend(b"\0\0\0\0\0");
             negociation::write_kex(&keys, &mut self.write_buffer);
 
-            kexinit.exchange.server_kex_init = {
-
+            {
                 let buf = self.write_buffer.as_slice();
-                Some((&buf[5..]).to_vec())
-
-            };
+                kexinit.exchange.server_kex_init.extend(&buf[5..]);
+            }
 
             complete_packet(&mut self.write_buffer, 0);
             self.sent_seqn += 1;
@@ -82,7 +84,7 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
             kexinit.sent = true;
         }
         if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
-            Ok(ServerState::KexDh(KexDh {
+            Ok(ServerState::Kex(Kex::KexDh(KexDh {
                 exchange: kexinit.exchange,
                 kex: kex,
                 key: key,
@@ -90,33 +92,27 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
                 mac: mac,
                 follows: follows,
                 session_id: kexinit.session_id,
-            }))
+            })))
         } else {
-            Ok(ServerState::KexInit(kexinit))
+            Ok(ServerState::Kex(Kex::KexInit(kexinit)))
         }
 
     }
     pub fn cleartext_kex_ecdh_reply(&mut self,
-                                kexdhdone: &KexDhDone,
-                                hash: &kex::Digest)
-                                -> Result<(), Error> {
-        if let Some(ref server_ephemeral) = kexdhdone.exchange.server_ephemeral {
-            // ECDH Key exchange.
-            // http://tools.ietf.org/html/rfc5656#section-4
-            self.write_buffer.extend(b"\0\0\0\0\0");
-            self.write_buffer.push(msg::KEX_ECDH_REPLY);
-            kexdhdone.key.write_pubkey(&mut self.write_buffer);
-            // Server ephemeral
-            self.write_buffer.extend_ssh_string(server_ephemeral);
-            // Hash signature
-            kexdhdone.key.add_signature(&mut self.write_buffer, hash.as_bytes());
-            //
-            complete_packet(&mut self.write_buffer, 0);
-            self.sent_seqn += 1;
-            Ok(())
-        } else {
-            Err(Error::DH)
-        }
+                                    kexdhdone: &KexDhDone,
+                                    hash: &kex::Digest) {
+        // ECDH Key exchange.
+        // http://tools.ietf.org/html/rfc5656#section-4
+        self.write_buffer.extend(b"\0\0\0\0\0");
+        self.write_buffer.push(msg::KEX_ECDH_REPLY);
+        kexdhdone.key.write_pubkey(&mut self.write_buffer);
+        // Server ephemeral
+        self.write_buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
+        // Hash signature
+        kexdhdone.key.add_signature(&mut self.write_buffer, hash.as_bytes());
+        //
+        complete_packet(&mut self.write_buffer, 0);
+        self.sent_seqn += 1;
     }
     pub fn cleartext_send_newkeys(&mut self) {
         // Sending the NEWKEYS packet.

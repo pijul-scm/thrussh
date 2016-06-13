@@ -88,11 +88,9 @@ impl Name {
                 let mut server_pubkey = curve25519::GroupElement::new_blank();
                 curve25519::scalarmult_base(&mut server_pubkey, &server_secret);
 
-                {
-                    // fill exchange.
-                    let server_ephemeral = server_pubkey.as_bytes().to_vec();
-                    exchange.server_ephemeral = Some(server_ephemeral);
-                }
+                // fill exchange.
+                exchange.server_ephemeral.clear();
+                exchange.server_ephemeral.extend(server_pubkey.as_bytes());
 
                 let mut shared_secret = curve25519::GroupElement::new_blank();
                 curve25519::scalarmult(&mut shared_secret, &server_secret, &client_pubkey);
@@ -122,57 +120,39 @@ impl Algorithm {
         match self {
             &Algorithm::Curve25519(ref kex) => {
 
-                match (&exchange.client_id,
-                       &exchange.server_id,
-                       &exchange.client_kex_init,
-                       &exchange.server_kex_init,
-                       // &exchange.server_public_host_key,
-                       &exchange.client_ephemeral,
-                       &exchange.server_ephemeral) {
+                debug!("{:?} {:?}",
+                       std::str::from_utf8(&exchange.client_id),
+                       std::str::from_utf8(&exchange.server_id)
+                );
+                buffer.clear();
+                buffer.extend_ssh_string(&exchange.client_id);
+                buffer.extend_ssh_string(&exchange.server_id);
+                buffer.extend_ssh_string(&exchange.client_kex_init);
+                buffer.extend_ssh_string(&exchange.server_kex_init);
 
-                    (&Some(ref client_id),
-                     &Some(ref server_id),
-                     &Some(ref client_kex_init),
-                     &Some(ref server_kex_init),
-                     // &Some(ref server_public_host_key),
-                     &Some(ref client_ephemeral),
-                     &Some(ref server_ephemeral)) => {
-                        debug!("{:?} {:?}",
-                                 std::str::from_utf8(client_id),
-                                 std::str::from_utf8(server_id)
-                        );
-                        buffer.clear();
-                        buffer.extend_ssh_string(client_id);
-                        buffer.extend_ssh_string(server_id);
-                        buffer.extend_ssh_string(client_kex_init);
-                        buffer.extend_ssh_string(server_kex_init);
+                
+                key_algo.write_pubkey(buffer);
 
-                        
-                        key_algo.write_pubkey(buffer);
+                //println!("client_ephemeral: {:?}", client_ephemeral);
+                //println!("server_ephemeral: {:?}", server_ephemeral);
 
-                        //println!("client_ephemeral: {:?}", client_ephemeral);
-                        //println!("server_ephemeral: {:?}", server_ephemeral);
+                debug_assert!(exchange.client_ephemeral.len() == 32);
+                buffer.extend_ssh_string(&exchange.client_ephemeral);
 
-                        debug_assert!(client_ephemeral.len() == 32);
-                        buffer.extend_ssh_string(client_ephemeral);
+                debug_assert!(exchange.server_ephemeral.len() == 32);
+                buffer.extend_ssh_string(&exchange.server_ephemeral);
 
-                        debug_assert!(server_ephemeral.len() == 32);
-                        buffer.extend_ssh_string(server_ephemeral);
+                //println!("shared: {:?}", kex.shared_secret);
+                //unimplemented!(); // Should be in wire format.
 
-                        //println!("shared: {:?}", kex.shared_secret);
-                        //unimplemented!(); // Should be in wire format.
+                buffer.extend_ssh_mpint(kex.shared_secret.as_bytes());
 
-                        buffer.extend_ssh_mpint(kex.shared_secret.as_bytes());
-
-                        debug!("buffer len = {:?}", buffer.len());
-                        // super::hexdump(buffer);
-                        let mut hash = sha256::Digest::new_blank();
-                        sha256::hash(&mut hash, buffer.as_slice());
-                        debug!("hash: {:?}", hash);
-                        Ok(Digest::Sha256(hash))
-                    },
-                    _ => Err(Error::Kex)
-                }
+                debug!("buffer len = {:?}", buffer.len());
+                // super::hexdump(buffer);
+                let mut hash = sha256::Digest::new_blank();
+                sha256::hash(&mut hash, buffer.as_slice());
+                debug!("hash: {:?}", hash);
+                Ok(Digest::Sha256(hash))
             },
             // _ => Err(Error::Kex)
         }
@@ -267,35 +247,6 @@ impl Algorithm {
                 }
             },
             // _ => unimplemented!()
-        }
-    }
-}
-
-
-#[derive(Debug)]
-pub struct KexInit {
-    pub algo: Option<super::negociation::Names>,
-    pub exchange: super::Exchange,
-    pub session_id: Option<super::kex::Digest>,
-    pub sent: bool
-}
-
-impl KexInit {
-    pub fn kexinit<T>(self) -> Result<super::ServerState<T>, super::Error> {
-        if !self.sent {
-            Ok(super::ServerState::KexInit(self))
-        } else {
-            if let Some((kex,key,cipher,mac,follows)) = self.algo {
-
-                Ok(super::ServerState::KexDh(super::KexDh {
-                    exchange:self.exchange,
-                    kex:kex, key:key,
-                    cipher:cipher, mac:mac, follows:follows,
-                    session_id: self.session_id
-                }))
-            } else {
-                Err(super::Error::Kex)
-            }
         }
     }
 }

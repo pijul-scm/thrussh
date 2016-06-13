@@ -6,20 +6,23 @@ use std::fs::File;
 use std::io::{Read,BufReader,BufRead};
 use std;
 
-use super::key::ed25519::{PublicKey,SecretKey};
+use super::super::key;
+use key::ed25519::{PublicKey,SecretKey};
+use super::auth;
+use super::super::{Error};
 
 #[derive(Debug)]
 pub struct Config<Auth> {
     pub server_id: String,
-    pub methods: super::auth::Methods,
+    pub methods: auth::Methods,
     pub auth_banner: Option<&'static str>,
-    pub keys: Vec<super::key::Algorithm>,
+    pub keys: Vec<key::Algorithm>,
     pub auth: Auth,
 }
 
 const KEYTYPE_ED25519:&'static [u8] = b"ssh-ed25519";
 
-pub fn read_public_key<P:AsRef<Path>>(p:P) -> Result<PublicKey, super::Error> {
+pub fn read_public_key<P:AsRef<Path>>(p:P) -> Result<PublicKey, Error> {
 
     let pubkey_regex = Regex::new(r"ssh-\S*\s*(?P<key>\S+)\s*").unwrap();
     let mut pubkey = String::new();
@@ -32,11 +35,11 @@ pub fn read_public_key<P:AsRef<Path>>(p:P) -> Result<PublicKey, super::Error> {
         let pubkey = pos.read_string();
         Ok(PublicKey::copy_from_slice(pubkey))
     } else {
-        Err(super::Error::CouldNotReadKey)
+        Err(Error::CouldNotReadKey)
     }
 }
 
-pub fn read_secret_key<P:AsRef<Path>>(p:P) -> Result<SecretKey, super::Error> {
+pub fn read_secret_key<P:AsRef<Path>>(p:P) -> Result<SecretKey, Error> {
 
     let file = File::open(p.as_ref()).unwrap();
     let file = BufReader::new(file);
@@ -103,13 +106,13 @@ pub fn read_secret_key<P:AsRef<Path>>(p:P) -> Result<SecretKey, super::Error> {
                     info!("unsupported key type {:?}", std::str::from_utf8(key_type));
                 }
             }
-            Err(super::Error::CouldNotReadKey)
+            Err(Error::CouldNotReadKey)
         } else {
             info!("unsupported secret key cipher: {:?}", std::str::from_utf8(kdfname));
-            Err(super::Error::CouldNotReadKey)
+            Err(Error::CouldNotReadKey)
         }
     } else {
-        Err(super::Error::CouldNotReadKey)
+        Err(Error::CouldNotReadKey)
     }
 }
 

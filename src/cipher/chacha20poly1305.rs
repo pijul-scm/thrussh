@@ -119,6 +119,7 @@ impl super::CipherT for Cipher {
         }
     }
 
+    /// Append an encrypted packet with contents `packet_content` at the end of `buffer`.
     fn write_packet(&self, seq:usize, packet_content:&[u8], buffer:&mut CryptoBuf) {
 
         // http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD

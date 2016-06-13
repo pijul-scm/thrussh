@@ -1,4 +1,8 @@
 use std::ops::Sub;
+use super::super::key;
+use super::super::CryptoBuf;
+use super::super::sodium;
+use super::super::encoding;
 
 #[derive(Clone,Debug,Copy,PartialEq,Eq)]
 pub struct M(u32);
@@ -11,7 +15,7 @@ pub const HOSTBASED:M = M(8);
 pub enum Method<'a> {
     None,
     Password { user:&'a str, password:&'a str },
-    Pubkey { user:&'a str, algo: &'a str, pubkey: super::key::PublicKey },
+    Pubkey { user:&'a str, algo: &'a str, pubkey: key::PublicKey },
     Hostbased
 }
 impl<'a> Method<'a> {
@@ -24,7 +28,7 @@ impl<'a> Method<'a> {
         }
     }
 }
-impl super::encoding::Bytes for M {
+impl encoding::Bytes for M {
     fn bytes(&self) -> &'static [u8] {
         match *self {
             NONE => b"none",
@@ -105,7 +109,6 @@ pub enum Auth {
 use byteorder::{ByteOrder,BigEndian, ReadBytesExt};
 use std;
 
-use super::CryptoBuf;
 #[derive(Debug)]
 pub struct AuthRequest {
     pub methods: Methods,
@@ -115,8 +118,6 @@ pub struct AuthRequest {
     pub sent_pk_ok: bool
 }
 
-use super::sodium;
-use super::key;
 pub trait Authenticate {
     fn auth(&self, methods:Methods, method:&Method) -> Auth {
         Auth::Reject { remaining_methods: methods - method, partial_success: false }
