@@ -1,5 +1,5 @@
 use byteorder::{ByteOrder, BigEndian};
-use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, KexDh, KexDhDone};
+use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, KexDh, KexDhDone, EncryptedState};
 use super::encoding::*;
 use super::key;
 use super::kex;
@@ -128,7 +128,6 @@ impl ClientSession {
             }
             Some(ServerState::Kex(Kex::KexDhDone(mut kexdhdone))) => {
 
-
                 println!("kexdhdone");
 
 
@@ -141,7 +140,7 @@ impl ClientSession {
 
                     let hash = {
                         let payload = self.buffers.get_current_payload();
-                        println!("payload = {:?}", payload);
+                        // println!("payload = {:?}", payload);
                         assert!(payload[0] == msg::KEX_ECDH_REPLY);
                         let mut pos = 1;
                         let pubkey_len = BigEndian::read_u32(&payload[pos..]) as usize;
@@ -167,7 +166,23 @@ impl ClientSession {
                                                                             &kexdhdone.exchange,
                                                                             buffer));
 
-                        println!("hash = {:?}", hash);
+                        let signature = {
+                            let sig_type_len = BigEndian::read_u32(&signature) as usize;
+                            let sig_type = &signature[4..4+sig_type_len];
+                            let sig_len = BigEndian::read_u32(&signature[4+sig_type_len ..]) as usize;
+
+                            super::sodium::ed25519::Signature::copy_from_slice(&signature[8+sig_type_len .. 8+sig_type_len+sig_len])
+                        };
+
+                        let verif = match pubkey {
+                            key::PublicKey::Ed25519(ref pubkey) => {
+                                super::sodium::ed25519::verify_detached(&signature, hash.as_bytes(), pubkey)
+                            }
+                        };
+                        if !verif {
+                            panic!("wrong server signature")
+                        }
+                        println!("signature = {:?}", signature);
                         hash
                     };
                     let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2);
@@ -203,7 +218,7 @@ impl ClientSession {
                     Ok(false)
                 }
             }
-            _ => unimplemented!()
+            Some(ServerState::Encrypted(_)) => unimplemented!()
         }
 
     }
@@ -284,7 +299,24 @@ impl ClientSession {
                 Ok(true)
 
             },
-            _ => unimplemented!()
+            Some(ServerState::Kex(Kex::KexDhDone(kexdhdone))) => {
+                // We're waiting for ECDH_REPLY from server, nothing to write.
+                self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
+                Ok(true)
+            },
+            Some(ServerState::Kex(Kex::NewKeys(newkeys))) => {
+
+                debug!("sending NEWKEYS");
+                self.buffers.write_buffer.extend(b"\0\0\0\0\0");
+                self.buffers.write_buffer.push(msg::NEWKEYS);
+                super::complete_packet(&mut self.buffers.write_buffer, 0);
+                self.buffers.sent_seqn += 1;
+                try!(self.buffers.write_all(stream));
+                self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest)));
+                Ok(true)
+
+            }
+            Some(ServerState::Encrypted(_)) => unimplemented!()
         }
         
     }

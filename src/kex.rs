@@ -207,12 +207,12 @@ impl Algorithm {
                 } else {
                     return Err(Error::Kex)
                 }
-                println!("buffer len = {:?}", buffer.len());
-                println!("buffer: {:?}", buffer.as_slice());
+                // println!("buffer len = {:?}", buffer.len());
+                // println!("buffer: {:?}", buffer.as_slice());
                 // super::hexdump(buffer);
                 let mut hash = sha256::Digest::new_blank();
                 sha256::hash(&mut hash, buffer.as_slice());
-                println!("hash: {:?}", hash);
+                // println!("hash: {:?}", hash);
                 Ok(Digest::Sha256(hash))
             },
             // _ => Err(Error::Kex)

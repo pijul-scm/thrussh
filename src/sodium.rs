@@ -222,6 +222,19 @@ pub mod ed25519 {
     from_slice!(SecretKey, SECRETKEYBYTES);
     clone!(SecretKey);
 
+    pub fn generate_keypair() -> Option<(PublicKey, SecretKey)> {
+        unsafe {
+            let mut pk = [0;PUBLICKEYBYTES];
+            let mut sk = [0;SECRETKEYBYTES];
+            if libsodium_sys::crypto_sign_ed25519_keypair(
+                &mut pk, &mut sk
+            ) == 0 {
+                Some((PublicKey(pk),SecretKey(sk)))
+            } else {
+                None
+            }
+        }
+    }
     
     pub fn sign_detached(signature:&mut Signature, m: &[u8], &SecretKey(ref sk): &SecretKey) {
         unsafe {
