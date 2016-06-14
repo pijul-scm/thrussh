@@ -13,35 +13,6 @@ use byteorder::{ByteOrder, BigEndian, ReadBytesExt};
 
 impl<T, S: Serve<T>> ServerSession<T, S> {
 
-    pub fn read_client_id<R: BufRead>(&mut self, stream: &mut R) -> Result<bool, Error> {
-        let (len, result) = {
-            let buf = try!(stream.fill_buf());
-            let mut i = 0;
-            while i < buf.len() - 1 {
-                if &buf[i..i + 2] == b"\r\n" {
-                    break;
-                }
-                i += 1
-            }
-            if buf.len() <= 8 || i >= buf.len() - 1 {
-                // Not enough bytes. Don't consume, wait until we have more bytes. The buffer is larger than 255 anyway.
-                return Ok(false);
-            }
-            (buf.len(),
-             if &buf[0..8] == b"SSH-2.0-" {
-                 let mut exchange = Exchange::new();
-                 exchange.client_id.extend(&buf[0..i]);
-                 // println!("{:?}", std::str::from_utf8(&buf[ 0 .. i ]));
-                 self.state = Some(ServerState::VersionOk(exchange));
-                 Ok(true)
-             } else {
-                 Err(Error::Version)
-             })
-        };
-        self.buffers.read_bytes += len;
-        stream.consume(len);
-        result
-    }
     pub fn read_cleartext_kexinit<R: BufRead>(&mut self,
                                           stream: &mut R,
                                           mut kexinit: KexInit,
@@ -50,11 +21,11 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
         if kexinit.algo.is_none() {
             // read algo from packet.
             if self.buffers.read_len == 0 {
-                try!(self.set_clear_len(stream));
+                try!(self.buffers.set_clear_len(stream));
             }
-            if try!(read(stream, &mut self.buffers.read_buffer, self.buffers.read_len, &mut self.buffers.read_bytes)) {
+            if try!(self.buffers.read(stream)) {
                 {
-                    let payload = self.get_current_payload();
+                    let payload = self.buffers.get_current_payload();
                     kexinit.algo = Some(try!(negociation::read_kex(payload, keys)));
                     kexinit.exchange.client_kex_init.extend(payload);
                 }
@@ -75,7 +46,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
     }
 }
 
-pub fn read_encrypted<A:Authenticate, T, S:super::Serve<T>>(auth:&A, enc:&mut Encrypted<S, super::EncryptedState>, buf:&[u8], buffer:&mut CryptoBuf) -> EncryptedState {
+pub fn read_encrypted<A:Authenticate, T, S:super::Serve<T>>(auth:&A, enc:&mut Encrypted<S, EncryptedState>, buf:&[u8], buffer:&mut CryptoBuf) -> EncryptedState {
     // If we've successfully read a packet.
 
     let state = std::mem::replace(&mut enc.state, None);

@@ -1,15 +1,14 @@
 use std::io::{Read, Write, BufRead};
 use std::sync::{Once, ONCE_INIT};
 use std::collections::{HashSet, HashMap};
+use std::marker::PhantomData;
+use time;
+use std;
 
 use super::*;
 use super::read;
-pub mod auth;
-pub use self::auth::*;
-use std::marker::PhantomData;
-use std;
+pub use super::auth::*;
 use super::msg;
-use time;
 use super::kex;
 use super::cipher;
 use super::mac::Mac;
@@ -35,24 +34,6 @@ pub struct ServerSession<T, S> {
     marker: PhantomData<T>,
 }
 
-pub enum ServerState<T> {
-    VersionOk(Exchange), // Version number received.
-    Kex(Kex),
-    Encrypted(Encrypted<T, EncryptedState>), // Session is now encrypted.
-}
-
-#[derive(Debug)]
-pub enum EncryptedState {
-    WaitingServiceRequest,
-    ServiceRequest,
-    WaitingAuthRequest(auth::AuthRequest),
-    RejectAuthRequest(auth::AuthRequest),
-    WaitingSignature(auth::AuthRequest),
-    AuthRequestSuccess,
-    WaitingChannelOpen,
-    ChannelOpenConfirmation(ChannelParameters),
-    ChannelOpened(HashSet<u32>),
-}
 
 
 
@@ -106,31 +87,6 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
         }
     }
 
-    fn set_clear_len<R: BufRead>(&mut self, stream: &mut R) -> Result<(), Error> {
-        debug_assert!(self.buffers.read_len == 0);
-        // Packet lengths are always multiples of 8, so is a StreamBuf.
-        // Therefore, this can never block.
-        self.buffers.read_buffer.clear();
-        try!(self.buffers.read_buffer.read(4, stream));
-
-        self.buffers.read_len = self.buffers.read_buffer.read_u32_be(0) as usize;
-        // println!("clear_len: {:?}", self.read_len);
-        Ok(())
-    }
-
-    fn get_current_payload<'b>(&'b mut self) -> &'b [u8] {
-        let packet_length = self.buffers.read_buffer.read_u32_be(0) as usize;
-        let padding_length = self.buffers.read_buffer[4] as usize;
-
-        let buf = self.buffers.read_buffer.as_slice();
-        let payload = {
-            &buf[5..(4 + packet_length - padding_length)]
-        };
-        // println!("payload : {:?} {:?} {:?}", payload.len(), padding_length, packet_length);
-        payload
-    }
-
-
     // returns whether a complete packet has been read.
     pub fn read<R: BufRead, A: auth::Authenticate>(&mut self,
                                                    config: &Config<A>,
@@ -141,24 +97,35 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
         let state = std::mem::replace(&mut self.state, None);
         // println!("state: {:?}", state);
         match state {
-            None => self.read_client_id(stream),
+            None => {
+                let client_id = try!(self.buffers.read_ssh_id(stream));
+                if let Some(client_id) = client_id {
+                    let mut exchange = Exchange::new();
+                    exchange.client_id.extend(client_id);
+                    println!("client id, exchange = {:?}", exchange);
+                    self.state = Some(ServerState::VersionOk(exchange));
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            },
 
             Some(ServerState::Kex(Kex::KexInit(kexinit))) => self.read_cleartext_kexinit(stream, kexinit, &config.keys),
 
             Some(ServerState::Kex(Kex::KexDh(mut kexdh))) => {
 
                 if self.buffers.read_len == 0 {
-                    try!(self.set_clear_len(stream));
+                    try!(self.buffers.set_clear_len(stream));
                 }
 
                 if try!(read(stream, &mut self.buffers.read_buffer, self.buffers.read_len, &mut self.buffers.read_bytes)) {
 
                     let kex = {
-                        let payload = self.get_current_payload();
+                        let payload = self.buffers.get_current_payload();
                         println!("payload = {:?}", payload);
                         assert!(payload[0] == msg::KEX_ECDH_INIT);
                         kexdh.exchange.client_ephemeral.extend(&payload[5..]);
-                        try!(kexdh.kex.dh(&mut kexdh.exchange, payload))
+                        try!(kexdh.kex.server_dh(&mut kexdh.exchange, payload))
                     };
                     self.buffers.recv_seqn += 1;
                     self.buffers.read_buffer.clear();
@@ -184,11 +151,11 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
             Some(ServerState::Kex(Kex::NewKeys(newkeys))) => {
                 // We are waiting for the NEWKEYS packet. Is it this one?
                 if self.buffers.read_len == 0 {
-                    try!(self.set_clear_len(stream));
+                    try!(self.buffers.set_clear_len(stream));
                 }
                 if try!(read(stream, &mut self.buffers.read_buffer, self.buffers.read_len, &mut self.buffers.read_bytes)) {
 
-                    let payload_is_newkeys = self.get_current_payload()[0] == msg::NEWKEYS;
+                    let payload_is_newkeys = self.buffers.get_current_payload()[0] == msg::NEWKEYS;
                     if payload_is_newkeys {
                         // Ok, NEWKEYS received, now encrypted.
                         self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest)));
@@ -262,7 +229,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
 
                                         let kex = {
                                             kexdh.exchange.client_ephemeral.extend(&buf[5..]);
-                                            try!(kexdh.kex.dh(&mut kexdh.exchange, buf))
+                                            try!(kexdh.kex.server_dh(&mut kexdh.exchange, buf))
                                         };
                                         enc.rekey = Some(Kex::KexDhDone(KexDhDone {
                                             exchange: kexdh.exchange,
@@ -355,12 +322,9 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
         match state {
             Some(ServerState::VersionOk(mut exchange)) => {
 
-                self.buffers.write_buffer.extend(config.server_id.as_bytes());
-                self.buffers.write_buffer.push(b'\r');
-                self.buffers.write_buffer.push(b'\n');
-                try!(self.buffers.write_all(stream));
-
+                self.buffers.send_ssh_id(stream, config.server_id.as_bytes());
                 exchange.server_id.extend(config.server_id.as_bytes());
+                println!("sent id, exchange = {:?}", exchange);
 
                 self.state = Some(ServerState::Kex(Kex::KexInit(KexInit {
                     exchange: exchange,
@@ -372,14 +336,15 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
             }
             Some(ServerState::Kex(Kex::KexInit(kexinit))) => {
 
-                self.state = Some(try!(self.cleartext_write_kex_init(&config.keys,
-                                                                     kexinit,
-                                                                     stream)));
+                self.state = Some(try!(self.buffers.cleartext_write_kex_init(&config.keys,
+                                                                             true, // is_server
+                                                                             kexinit,
+                                                                             stream)));
                 Ok(true)
             }
             Some(ServerState::Kex(Kex::KexDhDone(kexdhdone))) => {
 
-                let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key,
+                let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key.public_host_key,
                                                                     &kexdhdone.exchange,
                                                                     buffer));
                 self.cleartext_kex_ecdh_reply(&kexdhdone, &hash);
@@ -447,14 +412,14 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
 
                         println!("kexdhdone: {:?}", kexdhdone);
 
-                        let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key,
+                        let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key.public_host_key,
                                                                             &kexdhdone.exchange,
                                                                             buffer));
 
                         // http://tools.ietf.org/html/rfc5656#section-4
                         buffer.clear();
                         buffer.push(msg::KEX_ECDH_REPLY);
-                        kexdhdone.key.write_pubkey(buffer);
+                        kexdhdone.key.public_host_key.extend_pubkey(buffer);
                         // Server ephemeral
                         buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
                         // Hash signature

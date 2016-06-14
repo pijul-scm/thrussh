@@ -11,13 +11,34 @@ pub enum Name {
 pub enum PublicKey {
     Ed25519(ed25519::PublicKey)
 }
+#[derive(Debug,Clone)]
+pub enum SecretKey {
+    Ed25519(ed25519::SecretKey)
+}
+
+
+impl PublicKey {
+    pub fn extend_pubkey(&self, buffer:&mut CryptoBuf) {
+        match self {
+            &PublicKey::Ed25519(ref public_host_key) => {
+
+                buffer.push_u32_be(
+                    (KEY_ED25519.len()
+                     + ed25519::PUBLICKEYBYTES
+                     + 8) as u32
+                );
+                buffer.extend_ssh_string(KEY_ED25519.as_bytes());
+                buffer.extend_ssh_string(public_host_key.as_bytes());
+            }
+        }
+    }
+}
+
 
 #[derive(Debug,Clone)]
-pub enum Algorithm {
-    Ed25519 {
-        public_host_key: ed25519::PublicKey,
-        secret_host_key: ed25519::SecretKey
-    } // "ssh-ed25519"
+pub struct Algorithm {
+    pub public_host_key: PublicKey,
+    pub secret_host_key: SecretKey,
 }
 
 
@@ -40,31 +61,24 @@ impl Preferred for Algorithm {
         KEY_ALGORITHMS
     }
 }
+use std::path::Path;
 impl Algorithm {
-    pub fn name(&self) -> &'static str {
-        match self {
-            &Algorithm::Ed25519 { .. } => "ssh-ed25519"
+    pub fn load_keypair_ed25519<P:AsRef<Path>, Q:AsRef<Path>>(public:P, secret:Q) -> Algorithm {
+        Algorithm {
+            public_host_key: super::load_public_key(public).unwrap(),
+            secret_host_key: super::load_secret_key(secret).unwrap(),
         }
     }
 
-    pub fn write_pubkey(&self, buffer:&mut CryptoBuf) {
-        match self {
-            &Algorithm::Ed25519 { ref public_host_key, .. } => {
-
-                buffer.push_u32_be(
-                    (KEY_ED25519.len()
-                     + ed25519::PUBLICKEYBYTES
-                     + 8) as u32
-                );
-                buffer.extend_ssh_string(KEY_ED25519.as_bytes());
-                buffer.extend_ssh_string(public_host_key.as_bytes());
-            }
+    pub fn name(&self) -> &'static str {
+        match self.public_host_key {
+            PublicKey::Ed25519 (_) => "ssh-ed25519"
         }
     }
     
     pub fn add_signature(&self, buffer: &mut CryptoBuf, hash:&[u8]) {
-        match self {
-            &Algorithm::Ed25519 { ref secret_host_key, .. } => {
+        match self.secret_host_key {
+            SecretKey::Ed25519(ref secret_host_key) => {
 
                 let mut sign = ed25519::Signature::new_blank();
                 ed25519::sign_detached(&mut sign, &hash, secret_host_key);

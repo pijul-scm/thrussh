@@ -18,7 +18,7 @@ pub mod sodium;
 mod cryptobuf;
 pub use cryptobuf::CryptoBuf;
 use std::sync::{Once, ONCE_INIT};
-use std::io::BufRead;
+use std::io::{Read, Write, BufRead, BufReader};
 
 
 use byteorder::{ByteOrder, BigEndian};
@@ -26,8 +26,7 @@ use regex::Regex;
 use rustc_serialize::base64::{FromBase64};
 use std::path::Path;
 use std::fs::File;
-use std::io::{Read,BufReader};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 static SODIUM_INIT: Once = ONCE_INIT;
 
@@ -65,6 +64,8 @@ use mac::*;
 mod compression;
 
 mod encoding;
+
+pub mod auth;
 
 pub mod server;
 pub mod client;
@@ -122,7 +123,196 @@ impl SSHBuffers {
         // println!("flushed");
         Ok(true)
     }
+
+    pub fn read_ssh_id<'a, R: BufRead>(&'a mut self, stream: &'a mut R) -> Result<Option<&'a [u8]>, Error> {
+        let i = {
+            let buf = try!(stream.fill_buf());
+            let mut i = 0;
+            while i < buf.len() - 1 {
+                if &buf[i..i + 2] == b"\r\n" {
+                    break;
+                }
+                i += 1
+            }
+            if buf.len() <= 8 || i >= buf.len() - 1 {
+                // Not enough bytes. Don't consume, wait until we have more bytes. The buffer is larger than 255 anyway.
+                return Ok(None);
+            }
+            if &buf[0..8] == b"SSH-2.0-" {
+                self.read_buffer.clear();
+                self.read_bytes += i+2;
+                self.read_buffer.extend(&buf[0..i+2]);
+                i
+
+            } else {
+                return Err(Error::Version)
+            }
+        };
+        stream.consume(i+2);
+        Ok(Some(&self.read_buffer.as_slice()[0..i]))
+    }
+    pub fn send_ssh_id<W:std::io::Write>(&mut self, stream:&mut W, id:&[u8]) -> Result<(), Error> {
+        self.write_buffer.extend(id);
+        self.write_buffer.push(b'\r');
+        self.write_buffer.push(b'\n');
+        try!(self.write_all(stream));
+        Ok(())
+    }
+    pub fn cleartext_write_kex_init<S,W: Write>(&mut self,
+                                                keys: &[key::Algorithm],
+                                                is_server: bool,
+                                                mut kexinit: KexInit,
+                                                stream: &mut W)
+                                                -> Result<ServerState<S>, Error> {
+        if !kexinit.sent {
+            // println!("kexinit");
+            self.write_buffer.extend(b"\0\0\0\0\0");
+            negociation::write_kex(&keys, &mut self.write_buffer);
+
+            {
+                let buf = self.write_buffer.as_slice();
+                if is_server {
+                    kexinit.exchange.server_kex_init.extend(&buf[5..]);
+                } else {
+                    kexinit.exchange.client_kex_init.extend(&buf[5..]);
+                }
+            }
+
+            complete_packet(&mut self.write_buffer, 0);
+            self.sent_seqn += 1;
+            try!(self.write_all(stream));
+            kexinit.sent = true;
+        }
+        if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
+            Ok(ServerState::Kex(Kex::KexDh(KexDh {
+                exchange: kexinit.exchange,
+                kex: kex,
+                key: key,
+                cipher: cipher,
+                mac: mac,
+                follows: follows,
+                session_id: kexinit.session_id,
+            })))
+        } else {
+            Ok(ServerState::Kex(Kex::KexInit(kexinit)))
+        }
+
+    }
+    fn set_clear_len<R: BufRead>(&mut self, stream: &mut R) -> Result<(), Error> {
+        debug_assert!(self.read_len == 0);
+        // Packet lengths are always multiples of 8, so is a StreamBuf.
+        // Therefore, this can never block.
+        self.read_buffer.clear();
+        try!(self.read_buffer.read(4, stream));
+
+        self.read_len = self.read_buffer.read_u32_be(0) as usize;
+        // println!("clear_len: {:?}", self.read_len);
+        Ok(())
+    }
+
+    fn get_current_payload<'b>(&'b mut self) -> &'b [u8] {
+        let packet_length = self.read_buffer.read_u32_be(0) as usize;
+        let padding_length = self.read_buffer[4] as usize;
+
+        let buf = self.read_buffer.as_slice();
+        let payload = {
+            &buf[5..(4 + packet_length - padding_length)]
+        };
+        // println!("payload : {:?} {:?} {:?}", payload.len(), padding_length, packet_length);
+        payload
+    }
+
+    /// Fills the read buffer, and returns whether a complete message has been read.
+    ///
+    /// It would be tempting to return either a slice of `stream`, or a
+    /// slice of `read_buffer`, but except for a very small number of
+    /// messages, we need double buffering anyway to decrypt in place on
+    /// `read_buffer`.
+    fn read<R: BufRead>(&mut self, stream: &mut R) -> Result<bool, Error> {
+        // This loop consumes something or returns, it cannot loop forever.
+        loop {
+            let consumed_len = match stream.fill_buf() {
+                Ok(buf) => {
+                    // println!("read {:?}", buf);
+                    if self.read_buffer.len() + buf.len() < self.read_len + 4 {
+
+                        self.read_buffer.extend(buf);
+                        buf.len()
+
+                    } else {
+                        let consumed_len = self.read_len + 4 - self.read_buffer.len();
+                        self.read_buffer.extend(&buf[0..consumed_len]);
+                        consumed_len
+                    }
+                }
+                Err(e) => {
+                    // println!("error :{:?}", e);
+                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                        // println!("would block");
+                        return Ok(false);
+                    } else {
+                        return Err(Error::IO(e));
+                    }
+                }
+            };
+            stream.consume(consumed_len);
+            self.read_bytes += consumed_len;
+            if self.read_buffer.len() >= 4 + self.read_len {
+                return Ok(true);
+            }
+        }
+    }
+
 }
+
+fn complete_packet(buf: &mut CryptoBuf, off: usize) {
+
+    let block_size = 8; // no MAC yet.
+    let padding_len = {
+        (block_size - ((buf.len() - off) % block_size))
+    };
+    let padding_len = if padding_len < 4 {
+        padding_len + block_size
+    } else {
+        padding_len
+    };
+    let mac_len = 0;
+
+    let packet_len = buf.len() - off - 4 + padding_len + mac_len;
+    {
+        let buf = buf.as_mut_slice();
+        BigEndian::write_u32(&mut buf[off..], packet_len as u32);
+        buf[off + 4] = padding_len as u8;
+    }
+
+
+    let mut padding = [0; 256];
+    sodium::randombytes::into(&mut padding[0..padding_len]);
+
+    buf.extend(&padding[0..padding_len]);
+
+}
+
+
+pub enum ServerState<T> {
+    VersionOk(Exchange),
+    Kex(Kex),
+    Encrypted(Encrypted<T, EncryptedState>), // Session is now encrypted.
+}
+
+#[derive(Debug)]
+pub enum EncryptedState {
+    WaitingServiceRequest,
+    ServiceRequest,
+    WaitingAuthRequest(auth::AuthRequest),
+    RejectAuthRequest(auth::AuthRequest),
+    WaitingSignature(auth::AuthRequest),
+    AuthRequestSuccess,
+    WaitingChannelOpen,
+    ChannelOpenConfirmation(ChannelParameters),
+    ChannelOpened(HashSet<u32>),
+}
+
 
 #[derive(Debug)]
 pub struct Exchange {
@@ -331,24 +521,27 @@ fn read<R: BufRead>(stream: &mut R,
 
 const KEYTYPE_ED25519:&'static [u8] = b"ssh-ed25519";
 
-pub fn read_public_key<P:AsRef<Path>>(p:P) -> Result<sodium::ed25519::PublicKey, Error> {
+pub fn load_public_key<P:AsRef<Path>>(p:P) -> Result<key::PublicKey, Error> {
 
     let pubkey_regex = Regex::new(r"ssh-\S*\s*(?P<key>\S+)\s*").unwrap();
     let mut pubkey = String::new();
     let mut file = File::open(p.as_ref()).unwrap();
     file.read_to_string(&mut pubkey).unwrap();
     let p = pubkey_regex.captures(&pubkey).unwrap().name("key").unwrap().from_base64().unwrap();
+    read_public_key(&p)
+}
 
-    let mut pos = Position { s:&p,position:0 };
+pub fn read_public_key(p: &[u8]) -> Result<key::PublicKey, Error> {
+    let mut pos = Position { s:p,position:0 };
     if pos.read_string() == b"ssh-ed25519" {
         let pubkey = pos.read_string();
-        Ok(sodium::ed25519::PublicKey::copy_from_slice(pubkey))
+        Ok(key::PublicKey::Ed25519(sodium::ed25519::PublicKey::copy_from_slice(pubkey)))
     } else {
         Err(Error::CouldNotReadKey)
     }
 }
 
-pub fn read_secret_key<P:AsRef<Path>>(p:P) -> Result<sodium::ed25519::SecretKey, Error> {
+pub fn load_secret_key<P:AsRef<Path>>(p:P) -> Result<key::SecretKey, Error> {
 
     let file = File::open(p.as_ref()).unwrap();
     let file = BufReader::new(file);
@@ -410,7 +603,7 @@ pub fn read_secret_key<P:AsRef<Path>>(p:P) -> Result<sodium::ed25519::SecretKey,
                     let comment = position.read_string();
                     debug!("comment = {:?}", comment);
                     let secret = sodium::ed25519::SecretKey::copy_from_slice(seckey);
-                    return Ok(secret)
+                    return Ok(key::SecretKey::Ed25519(secret))
                 } else {
                     info!("unsupported key type {:?}", std::str::from_utf8(key_type));
                 }

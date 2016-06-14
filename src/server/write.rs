@@ -4,8 +4,9 @@ use super::super::key;
 use super::super::negociation;
 use super::*;
 use super::super::sodium;
-use super::super::{Error, CryptoBuf, Kex, KexInit, KexDh, KexDhDone, Encrypted, ChannelParameters, Channel};
+use super::super::{Error, CryptoBuf, Kex, KexInit, KexDh, KexDhDone, Encrypted, ChannelParameters, Channel, ServerState, EncryptedState, complete_packet};
 
+use super::super::auth;
 
 use std::collections::HashSet;
 use std::io::{Write};
@@ -13,71 +14,9 @@ use std;
 use byteorder::{ByteOrder, BigEndian, WriteBytesExt};
 const SSH_EXTENDED_DATA_STDERR: u32 = 1;
 
-fn complete_packet(buf: &mut CryptoBuf, off: usize) {
-
-    let block_size = 8; // no MAC yet.
-    let padding_len = {
-        (block_size - ((buf.len() - off) % block_size))
-    };
-    let padding_len = if padding_len < 4 {
-        padding_len + block_size
-    } else {
-        padding_len
-    };
-    let mac_len = 0;
-
-    let packet_len = buf.len() - off - 4 + padding_len + mac_len;
-    {
-        let buf = buf.as_mut_slice();
-        BigEndian::write_u32(&mut buf[off..], packet_len as u32);
-        buf[off + 4] = padding_len as u8;
-    }
-
-
-    let mut padding = [0; 256];
-    sodium::randombytes::into(&mut padding[0..padding_len]);
-
-    buf.extend(&padding[0..padding_len]);
-
-}
 
 impl<T, S: super::Serve<T>> ServerSession<T, S> {
 
-    pub fn cleartext_write_kex_init<W: Write>(&mut self,
-                                          keys: &[key::Algorithm],
-                                          mut kexinit: KexInit,
-                                          stream: &mut W)
-                                          -> Result<ServerState<S>, Error> {
-        if !kexinit.sent {
-            // println!("kexinit");
-            self.buffers.write_buffer.extend(b"\0\0\0\0\0");
-            negociation::write_kex(&keys, &mut self.buffers.write_buffer);
-
-            {
-                let buf = self.buffers.write_buffer.as_slice();
-                kexinit.exchange.server_kex_init.extend(&buf[5..]);
-            }
-
-            complete_packet(&mut self.buffers.write_buffer, 0);
-            self.buffers.sent_seqn += 1;
-            try!(self.buffers.write_all(stream));
-            kexinit.sent = true;
-        }
-        if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
-            Ok(ServerState::Kex(Kex::KexDh(KexDh {
-                exchange: kexinit.exchange,
-                kex: kex,
-                key: key,
-                cipher: cipher,
-                mac: mac,
-                follows: follows,
-                session_id: kexinit.session_id,
-            })))
-        } else {
-            Ok(ServerState::Kex(Kex::KexInit(kexinit)))
-        }
-
-    }
     pub fn cleartext_kex_ecdh_reply(&mut self,
                                     kexdhdone: &KexDhDone,
                                     hash: &kex::Digest) {
@@ -85,7 +24,7 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
         // http://tools.ietf.org/html/rfc5656#section-4
         self.buffers.write_buffer.extend(b"\0\0\0\0\0");
         self.buffers.write_buffer.push(msg::KEX_ECDH_REPLY);
-        kexdhdone.key.write_pubkey(&mut self.buffers.write_buffer);
+        kexdhdone.key.public_host_key.extend_pubkey(&mut self.buffers.write_buffer);
         // Server ephemeral
         self.buffers.write_buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
         // Hash signature
@@ -108,7 +47,7 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
     pub fn accept_service(&mut self,
                       banner: Option<&str>,
                       methods: auth::Methods,
-                      enc: &mut Encrypted<S, super::EncryptedState>,
+                      enc: &mut Encrypted<S, EncryptedState>,
                       buffer: &mut CryptoBuf)
                       -> AuthRequest {
         buffer.clear();
@@ -139,7 +78,7 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
     }
 
     pub fn reject_auth_request(&mut self,
-                               enc: &mut Encrypted<S, super::EncryptedState>,
+                               enc: &mut Encrypted<S, EncryptedState>,
                            buffer: &mut CryptoBuf,
                            auth_request: &AuthRequest) {
         buffer.clear();
@@ -158,7 +97,7 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
     }
 
     pub fn confirm_channel_open(&mut self,
-                                enc: &mut Encrypted<S, super::EncryptedState>,
+                                enc: &mut Encrypted<S, EncryptedState>,
                             buffer: &mut CryptoBuf,
                             channel: ChannelParameters,
                             server: S) {
@@ -183,7 +122,7 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
     }
 
     pub fn send_pk_ok(&mut self,
-                      enc: &mut Encrypted<S, super::EncryptedState>,
+                      enc: &mut Encrypted<S, EncryptedState>,
                   buffer: &mut CryptoBuf,
                   auth_request: &mut AuthRequest) {
         if !auth_request.sent_pk_ok {
@@ -199,7 +138,7 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
     }
 
     pub fn flush_channels(&mut self,
-                          enc: &mut Encrypted<S, super::EncryptedState>,
+                          enc: &mut Encrypted<S, EncryptedState>,
                       channel_nums: &mut HashSet<u32>,
                       buffer: &mut CryptoBuf) {
 

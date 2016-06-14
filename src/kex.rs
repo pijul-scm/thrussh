@@ -10,6 +10,7 @@ use super::sodium::sha256;
 use super::sodium::curve25519;
 use super::CryptoBuf;
 
+
 #[derive(Debug,Clone)]
 pub enum Digest {
     Sha256(sha256::Digest)
@@ -45,10 +46,10 @@ impl Named for Name {
 
 #[derive(Debug)]
 pub struct Curve25519 {
-    client_pubkey: curve25519::GroupElement,
-    server_pubkey: curve25519::GroupElement,
-    server_secret: curve25519::Scalar,
-    shared_secret: curve25519::GroupElement,
+    local_pubkey: curve25519::GroupElement,
+    local_secret: curve25519::Scalar,
+    remote_pubkey: Option<curve25519::GroupElement>,
+    shared_secret: Option<curve25519::GroupElement>,
 }
 
 const KEX_ALGORITHMS: &'static [&'static str;1] = &[
@@ -64,7 +65,7 @@ impl Preferred for Name {
 
 impl Name {
     
-    pub fn dh(&mut self, exchange:&mut super::Exchange, payload:&[u8]) -> Result<Algorithm,Error> {
+    pub fn server_dh(&mut self, exchange:&mut super::Exchange, payload:&[u8]) -> Result<Algorithm,Error> {
 
         match self {
 
@@ -78,10 +79,10 @@ impl Name {
                     let mut server_secret = [0;curve25519::SCALARBYTES];
                     randombytes::into(&mut server_secret);
 
-                    // https://git.libssh.org/projects/libssh.git/tree/doc/curve25519-sha256@libssh.org.txt
-                    //server_secret_[0] &= 248;
-                    //server_secret_[31] &= 127;
-                    //server_secret_[31] |= 64;
+                    // https://cr.yp.to/ecdh.html
+                    server_secret[0] &= 248;
+                    server_secret[31] &= 127;
+                    server_secret[31] |= 64;
                     curve25519::Scalar::copy_from_slice(&server_secret)
                 };
 
@@ -94,25 +95,83 @@ impl Name {
 
                 let mut shared_secret = curve25519::GroupElement::new_blank();
                 curve25519::scalarmult(&mut shared_secret, &server_secret, &client_pubkey);
+                println!("server shared : {:?}", shared_secret);
 
                 // debug!("shared secret");
                 // super::hexdump(shared_secret.as_bytes());
 
                 Ok(Algorithm::Curve25519(Curve25519 {
-                    client_pubkey: client_pubkey,
-                    server_pubkey: server_pubkey,
-                    server_secret: server_secret,
-                    shared_secret: shared_secret
+                    local_pubkey: server_pubkey,
+                    local_secret: server_secret,
+                    remote_pubkey: Some(client_pubkey),
+                    shared_secret: Some(shared_secret)
                 }))
             },
             _ => Err(Error::Kex)
         }
     }
+    pub fn client_dh(&mut self, exchange:&mut super::Exchange, buf:&mut CryptoBuf) -> Result<Algorithm,Error> {
+
+        match self {
+
+            &mut Name::Curve25519 => {
+
+                let client_secret = {
+                    let mut secret = [0;curve25519::SCALARBYTES];
+                    randombytes::into(&mut secret);
+
+                    // https://cr.yp.to/ecdh.html
+                    secret[0] &= 248;
+                    secret[31] &= 127;
+                    secret[31] |= 64;
+                    curve25519::Scalar::copy_from_slice(&secret)
+                };
+
+                let mut client_pubkey = curve25519::GroupElement::new_blank();
+                curve25519::scalarmult_base(&mut client_pubkey, &client_secret);
+                
+                // fill exchange.
+                exchange.client_ephemeral.clear();
+                exchange.client_ephemeral.extend(client_pubkey.as_bytes());
+
+
+                buf.push(msg::KEX_ECDH_INIT);
+                buf.extend_ssh_string(client_pubkey.as_bytes());
+
+
+                Ok(Algorithm::Curve25519(Curve25519 {
+                    local_pubkey: client_pubkey,
+                    local_secret: client_secret,
+                    remote_pubkey: None,
+                    shared_secret: None
+                }))
+            },
+            // _ => Err(Error::Kex)
+        }
+    }
 }
 
 impl Algorithm {
+    pub fn compute_shared_secret(&mut self, remote_pubkey:&[u8]) -> Result<(), Error> {
+
+        match self {
+            &mut Algorithm::Curve25519(ref mut kex) => {
+
+                let server_public = curve25519::GroupElement::copy_from_slice(remote_pubkey);
+                let mut shared_secret = curve25519::GroupElement::new_blank();
+                curve25519::scalarmult(&mut shared_secret, &kex.local_secret, &server_public);
+
+                println!("client shared : {:?}", shared_secret);
+
+                kex.shared_secret = Some(shared_secret);
+                Ok(())
+            }
+        }
+
+    }
+
     pub fn compute_exchange_hash(&self,
-                                 key_algo:&super::key::Algorithm,
+                                 key:&super::key::PublicKey,
                                  exchange:&super::Exchange,
                                  buffer:&mut super::CryptoBuf) -> Result<Digest,Error> {
         // Computing the exchange hash, see page 7 of RFC 5656.
@@ -131,9 +190,8 @@ impl Algorithm {
                 buffer.extend_ssh_string(&exchange.server_kex_init);
 
                 
-                key_algo.write_pubkey(buffer);
+                key.extend_pubkey(buffer);
 
-                //println!("client_ephemeral: {:?}", client_ephemeral);
                 //println!("server_ephemeral: {:?}", server_ephemeral);
 
                 debug_assert!(exchange.client_ephemeral.len() == 32);
@@ -144,14 +202,17 @@ impl Algorithm {
 
                 //println!("shared: {:?}", kex.shared_secret);
                 //unimplemented!(); // Should be in wire format.
-
-                buffer.extend_ssh_mpint(kex.shared_secret.as_bytes());
-
-                debug!("buffer len = {:?}", buffer.len());
+                if let Some(ref shared) = kex.shared_secret {
+                    buffer.extend_ssh_mpint(shared.as_bytes());
+                } else {
+                    return Err(Error::Kex)
+                }
+                println!("buffer len = {:?}", buffer.len());
+                println!("buffer: {:?}", buffer.as_slice());
                 // super::hexdump(buffer);
                 let mut hash = sha256::Digest::new_blank();
                 sha256::hash(&mut hash, buffer.as_slice());
-                debug!("hash: {:?}", hash);
+                println!("hash: {:?}", hash);
                 Ok(Digest::Sha256(hash))
             },
             // _ => Err(Error::Kex)
@@ -172,7 +233,10 @@ impl Algorithm {
                     buffer.clear();
                     key.clear();
 
-                    buffer.extend_ssh_mpint(kex.shared_secret.as_bytes());
+                    if let Some(ref shared) = kex.shared_secret {
+                        buffer.extend_ssh_mpint(shared.as_bytes());
+                    }
+
                     buffer.extend(exchange_hash.as_bytes());
                     buffer.push(c);
                     buffer.extend(session_id.as_bytes());
@@ -183,7 +247,9 @@ impl Algorithm {
                     while key.len() < len {
                         // extend.
                         buffer.clear();
-                        buffer.extend_ssh_mpint(kex.shared_secret.as_bytes());
+                        if let Some(ref shared) = kex.shared_secret {
+                            buffer.extend_ssh_mpint(shared.as_bytes());
+                        }
                         buffer.extend(exchange_hash.as_bytes());
                         buffer.extend(
                             key.as_slice()
