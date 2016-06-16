@@ -1,9 +1,10 @@
 use byteorder::{ByteOrder, BigEndian};
-use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, KexDh, KexDhDone, EncryptedState};
+use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, KexDh, KexDhDone, EncryptedState, ChannelParameters};
 use super::encoding::*;
 use super::key;
 use super::kex;
 use super::msg;
+use super::auth;
 use super::negociation;
 use std::io::{Write,BufRead};
 use std;
@@ -17,13 +18,17 @@ pub struct Config {
     pub rekey_time_limit_s: f64
 }
 
-pub struct ClientSession {
+pub struct ClientSession<C> {
     buffers: super::SSHBuffers,
-    state: Option<ServerState<()>>
+    state: Option<ServerState<C>>
+}
+
+pub trait Client {
+    fn init(&self, channel:&ChannelParameters) -> Self;
 }
 
 
-impl ClientSession {
+impl<C:Client> ClientSession<C> {
     pub fn new() -> Self {
         ClientSession {
             buffers: super::SSHBuffers::new(),
@@ -33,11 +38,12 @@ impl ClientSession {
     }
     // returns whether a complete packet has been read.
     pub fn read<R: BufRead>(&mut self,
-                            config: &Config,
-                            stream: &mut R,
-                            buffer: &mut CryptoBuf,
-                            buffer2: &mut CryptoBuf)
-                            -> Result<bool, Error> {
+                                      config: &Config,
+                                      client: &C,
+                                      stream: &mut R,
+                                      buffer: &mut CryptoBuf,
+                                      buffer2: &mut CryptoBuf)
+                                      -> Result<bool, Error> {
         println!("read");
         let state = std::mem::replace(&mut self.state, None);
         match state {
@@ -183,6 +189,7 @@ impl ClientSession {
                             panic!("wrong server signature")
                         }
                         println!("signature = {:?}", signature);
+                        println!("exchange = {:?}", kexdhdone.exchange);
                         hash
                     };
                     let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2);
@@ -199,8 +206,7 @@ impl ClientSession {
                 }
 
             },
-            Some(ServerState::Kex(Kex::NewKeys(new_keys))) => {
-                self.state = Some(ServerState::Kex(Kex::NewKeys(new_keys)));
+            Some(ServerState::Kex(Kex::NewKeys(mut newkeys))) => {
                 if self.buffers.read_len == 0 {
                     try!(self.buffers.set_clear_len(stream));
                 }
@@ -208,17 +214,207 @@ impl ClientSession {
 
                     {
                         let payload = self.buffers.get_current_payload();
-                        println!("new keys payload = {:?}", payload);
+                        if payload[0] == msg::NEWKEYS {
+
+                            newkeys.received = true;
+
+                            if newkeys.sent {
+                                self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest)));
+                            } else {
+                                self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
+                            }
+                        }
                     }
                     self.buffers.recv_seqn += 1;
                     self.buffers.read_buffer.clear();
                     self.buffers.read_len = 0;
+
                     Ok(true)
                 } else {
                     Ok(false)
                 }
             }
-            Some(ServerState::Encrypted(_)) => unimplemented!()
+            Some(ServerState::Encrypted(mut enc)) => {
+                println!("encrypted state");
+                let state = std::mem::replace(&mut enc.state, None);
+                match state {
+                    Some(EncryptedState::ServiceRequest) => {
+                        println!("service request");
+                        let buf_received = if let Some(buf) = try!(enc.cipher.read_server_packet(
+                            &mut self.buffers.read_bytes,
+                            self.buffers.recv_seqn,
+                            stream,
+                            &mut self.buffers.read_len,
+                            &mut self.buffers.read_buffer)) {
+
+                            println!("buf= {:?}",buf);
+                            if buf[0] == msg::SERVICE_ACCEPT {
+                                println!("request success");
+                                let auth_request = auth::AuthRequest {
+                                    methods: auth::Methods::all(),
+                                    partial_success: false,
+                                    public_key: CryptoBuf::new(),
+                                    public_key_algorithm: CryptoBuf::new(),
+                                    public_key_is_ok: false,
+                                    sent_pk_ok: false,
+                                };
+                                enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+                            } else {
+                                println!("other message");
+                                enc.state = Some(EncryptedState::ServiceRequest);
+                            }
+                            true
+                        } else {
+                            println!("service request false, target {:?}", self.buffers.read_len);
+                            false
+                        };
+
+                        if buf_received {
+                            self.buffers.recv_seqn += 1;
+                            self.buffers.read_buffer.clear();
+                            self.buffers.read_len = 0;
+                        }
+                    },
+                    /*Some(EncryptedState::WaitingAuthRequest(mut auth_request)) => {
+                        // The server is waiting for our USERAUTH_REQUEST.
+                        enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+                    },*/
+                    Some(EncryptedState::AuthRequestSuccess(mut auth_request)) => {
+
+                        // We're waiting for success.
+                        let read =
+                            if let Some(buf) = try!(enc.cipher.read_server_packet(
+                                &mut self.buffers.read_bytes,
+                                self.buffers.recv_seqn,
+                                stream,
+                                &mut self.buffers.read_len,
+                                &mut self.buffers.read_buffer)) {
+
+                                println!("line {}, buf = {:?}", line!(), buf);
+
+                                if buf[0] == msg::USERAUTH_SUCCESS {
+
+                                    enc.state = Some(EncryptedState::WaitingChannelOpen)
+
+                                } else if buf[0] == msg::USERAUTH_FAILURE {
+
+                                    enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
+
+                                } else if buf[0] == msg::USERAUTH_PK_OK {
+
+                                    auth_request.public_key_is_ok = true;
+                                    enc.state = Some(EncryptedState::WaitingSignature(auth_request))
+
+                                } else {
+                                    println!("unknown message: {:?}", buf);
+                                    enc.state = Some(EncryptedState::AuthRequestSuccess(auth_request))
+                                }
+                                true
+
+                            } else {
+
+                                false
+
+                            };
+
+
+                        if read {
+                            self.buffers.recv_seqn += 1;
+                            self.buffers.read_buffer.clear();
+                            self.buffers.read_len = 0;
+                        }
+                        
+                    },
+                    Some(EncryptedState::WaitingSignature(mut auth_request)) => {
+                        // The server is waiting for our authentication signature (also USERAUTH_REQUEST).
+                        enc.state = Some(EncryptedState::WaitingSignature(auth_request))
+                    },
+                    Some(EncryptedState::WaitingChannelOpen) => {
+                        // The server is waiting for our CHANNEL_OPEN.
+                        enc.state = Some(EncryptedState::WaitingChannelOpen)
+                    },
+                    Some(EncryptedState::ChannelOpenConfirmation(mut channels)) => {
+
+                        // Check whether we're receiving a confirmation message.
+                        let read = if let Some(buf) = try!(enc.cipher.read_server_packet(
+                            &mut self.buffers.read_bytes,
+                            self.buffers.recv_seqn,
+                            stream,
+                            &mut self.buffers.read_len,
+                            &mut self.buffers.read_buffer)) {
+
+
+                            println!("channel_confirmation? {:?}", buf);
+                            if buf[0] == msg::CHANNEL_OPEN_CONFIRMATION {
+
+                                let id_send = BigEndian::read_u32(&buf[1..]);
+                                let id_recv = BigEndian::read_u32(&buf[5..]);
+                                let window = BigEndian::read_u32(&buf[9..]);
+                                let max_packet = BigEndian::read_u32(&buf[13..]);
+
+                                if channels.sender_channel == id_send {
+
+                                    channels.recipient_channel = id_recv;
+                                    channels.initial_window_size = std::cmp::min(window, channels.initial_window_size);
+                                    channels.maximum_packet_size = std::cmp::min(max_packet, channels.maximum_packet_size);
+
+                                    let client = C::init(client, &channels);
+                                    println!("id_send = {:?}", id_send);
+                                    enc.channels.insert(channels.sender_channel,
+                                                        super::Channel {
+                                                            parameters: channels,
+                                                            engine: client,
+                                                        });
+
+                                    enc.state = Some(EncryptedState::ChannelOpened(id_send));
+
+                                } else {
+
+                                    unimplemented!()
+                                }
+                            } else {
+                                enc.state = Some(EncryptedState::ChannelOpenConfirmation(channels));
+                            }
+                            true
+                        } else {
+                            enc.state = Some(EncryptedState::ChannelOpenConfirmation(channels));
+                            false
+                        };
+                        
+                        if read {
+                            self.buffers.recv_seqn += 1;
+                            self.buffers.read_buffer.clear();
+                            self.buffers.read_len = 0;
+                        }
+                    }
+                    /*Some(EncryptedState::ChannelOpened(x)) => {
+                        enc.state = Some(EncryptedState::ChannelOpened(x));
+                        true
+                    }*/
+                    state => {
+                        println!("read state {:?}", state);
+                        let read = if let Some(buf) = try!(enc.cipher.read_server_packet(
+                            &mut self.buffers.read_bytes,
+                            self.buffers.recv_seqn,
+                            stream,
+                            &mut self.buffers.read_len,
+                            &mut self.buffers.read_buffer)) {
+
+                            println!("msg: {:?}", buf);
+                            true
+                        } else { false };
+
+                        if read {
+                            self.buffers.recv_seqn += 1;
+                            self.buffers.read_buffer.clear();
+                            self.buffers.read_len = 0;
+                        }
+                        enc.state = state;
+                    }
+                }
+                self.state = Some(ServerState::Encrypted(enc));
+                Ok(true)
+            }
         }
 
     }
@@ -232,7 +428,7 @@ impl ClientSession {
                            -> Result<bool, Error> {
         println!("write");
         // Finish pending writes, if any.
-        if !try!(self.buffers.write_all(stream)) {
+        if ! try!(self.buffers.write_all(stream)) {
             // If there are still bytes to write.
             return Ok(true);
         }
@@ -304,20 +500,200 @@ impl ClientSession {
                 self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
                 Ok(true)
             },
-            Some(ServerState::Kex(Kex::NewKeys(newkeys))) => {
+            Some(ServerState::Kex(Kex::NewKeys(mut newkeys))) => {
 
-                debug!("sending NEWKEYS");
-                self.buffers.write_buffer.extend(b"\0\0\0\0\0");
-                self.buffers.write_buffer.push(msg::NEWKEYS);
-                super::complete_packet(&mut self.buffers.write_buffer, 0);
-                self.buffers.sent_seqn += 1;
-                try!(self.buffers.write_all(stream));
-                self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest)));
+                if !newkeys.sent {
+                    debug!("sending NEWKEYS");
+                    self.buffers.write_buffer.extend(b"\0\0\0\0\0");
+                    self.buffers.write_buffer.push(msg::NEWKEYS);
+                    super::complete_packet(&mut self.buffers.write_buffer, 0);
+                    self.buffers.sent_seqn += 1;
+
+                    newkeys.sent = true;
+                }
+                if newkeys.received {
+                    // Skipping over the WaitingServiceRequest state,
+                    // since we're immediately sending the request.
+                    let mut encrypted = newkeys.encrypted(EncryptedState::ServiceRequest);
+                    buffer.clear();
+                    buffer.push(msg::SERVICE_REQUEST);
+                    buffer.extend_ssh_string(b"ssh-userauth");
+
+                    encrypted.cipher.write_client_packet(self.buffers.sent_seqn, buffer.as_slice(), &mut self.buffers.write_buffer);
+                    self.buffers.sent_seqn += 1;
+                    try!(self.buffers.write_all(stream));
+                    println!("sending SERVICE_REQUEST");
+                    self.state = Some(ServerState::Encrypted(encrypted));
+                } else {
+                    try!(self.buffers.write_all(stream));
+                    self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)))
+                }
                 Ok(true)
 
             }
-            Some(ServerState::Encrypted(_)) => unimplemented!()
+            Some(ServerState::Encrypted(mut enc)) => {
+
+                let state = std::mem::replace(&mut enc.state, None);
+                match state {
+                    Some(EncryptedState::WaitingAuthRequest(mut auth_request)) => {
+                        // The server is waiting for our USERAUTH_REQUEST.
+                        buffer.clear();
+
+                        buffer.push(msg::USERAUTH_REQUEST);
+                        buffer.extend_ssh_string(b"pe");
+                        buffer.extend_ssh_string(b"ssh-connection");
+
+                        // TODO: check order of methods.
+
+                        println!("auth_request = {:?}", auth_request);
+                        if false { //password
+
+                            buffer.extend_ssh_string(b"password");
+                            buffer.push(1);
+                            buffer.extend_ssh_string(b"blabla");
+
+                        } else {
+
+                            buffer.extend_ssh_string(b"publickey");
+                            buffer.push(0); // This is a probe
+                            buffer.extend_ssh_string(config.keys[0].name().as_bytes());
+                            config.keys[0].public_host_key.extend_pubkey(buffer);
+
+                        }
+                        enc.cipher.write_client_packet(self.buffers.sent_seqn, buffer.as_slice(), &mut self.buffers.write_buffer);
+                        self.buffers.sent_seqn += 1;
+                        try!(self.buffers.write_all(stream));
+
+                        enc.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
+                    },
+
+                    Some(EncryptedState::WaitingSignature(mut auth_request)) => {
+                        // The server is waiting for our authentication signature (also USERAUTH_REQUEST).
+
+                        buffer.clear();
+
+                        buffer.extend_ssh_string(enc.session_id.as_bytes());
+                        let i0 = buffer.len();
+
+                        buffer.push(msg::USERAUTH_REQUEST);
+                        buffer.extend_ssh_string(b"pe");
+                        buffer.extend_ssh_string(b"ssh-connection");
+
+                        buffer.extend_ssh_string(b"publickey");
+                        buffer.push(1); // This is a probe
+                        buffer.extend_ssh_string(config.keys[0].name().as_bytes());
+                        config.keys[0].public_host_key.extend_pubkey(buffer);
+
+                        // Extend with signature.
+                        println!("========== signing");
+                        buffer2.clear();
+                        config.keys[0].add_signature(buffer2, buffer.as_slice());
+                        buffer.extend(buffer2.as_slice());
+
+                        // Send
+                        enc.cipher.write_client_packet(self.buffers.sent_seqn,
+                                                       &(buffer.as_slice())[i0..], // Skip the session id.
+                                                       &mut self.buffers.write_buffer);
+
+                        self.buffers.sent_seqn += 1;
+                        try!(self.buffers.write_all(stream));
+
+                        enc.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
+                        
+                    },
+                    Some(EncryptedState::WaitingChannelOpen) => {
+                        // The server is waiting for our CHANNEL_OPEN.
+                        /*
+                        let typ_len = BigEndian::read_u32(&buf[1..]) as usize;
+                        let typ = &buf[5..5 + typ_len];
+                        let sender = BigEndian::read_u32(&buf[5 + typ_len..]);
+                        let window = BigEndian::read_u32(&buf[9 + typ_len..]);
+                        let maxpacket = BigEndian::read_u32(&buf[13 + typ_len..]);
+                         */
+                        let sender_channel = 23;
+                        let window = 200000;
+                        let maxpacket = 200000;
+
+                        buffer.clear();
+                        buffer.push(msg::CHANNEL_OPEN);
+                        buffer.extend_ssh_string(b"channel name");
+                        buffer.push_u32_be(sender_channel); // sender channel id.
+                        buffer.push_u32_be(window); // window.
+                        buffer.push_u32_be(maxpacket); // max packet size.
+                        // Send
+                        enc.cipher.write_client_packet(self.buffers.sent_seqn,
+                                                       buffer.as_slice(),
+                                                       &mut self.buffers.write_buffer);
+
+                        self.buffers.sent_seqn += 1;
+                        try!(self.buffers.write_all(stream));
+                        enc.state = Some(EncryptedState::ChannelOpenConfirmation(
+                            ChannelParameters {
+                                recipient_channel: 0,
+                                sender_channel: sender_channel,
+                                initial_window_size: window,
+                                maximum_packet_size: maxpacket,
+                            }
+                        ));
+                            
+                    },
+                    Some(EncryptedState::ChannelOpened(id)) => {
+                        println!("write state {:?}", state);
+
+                        if let Some(ref mut channel) = enc.channels.get_mut(&id) {
+                            println!("FOUND!");
+                            buffer.clear();
+                            buffer.push(msg::CHANNEL_DATA);
+                            buffer.push_u32_be(channel.parameters.recipient_channel);
+                            buffer.extend_ssh_string(b"blabla\r\n");
+                            println!("{:?} {:?}", buffer.as_slice(), self.buffers.sent_seqn);
+                            enc.cipher.write_client_packet(self.buffers.sent_seqn,
+                                                           buffer.as_slice(),
+                                                           &mut self.buffers.write_buffer);
+                            println!("buf = {:?}", self.buffers.write_buffer.as_slice());
+                            self.buffers.sent_seqn += 1;
+
+                            try!(self.buffers.write_all(stream));
+                        }
+                        enc.state = state
+                    }
+                    state => {
+                        debug!("write state {:?}", state);
+                        enc.state = state
+                    }
+                }
+
+                self.state = Some(ServerState::Encrypted(enc));
+                Ok(true)
+            }
         }
         
+    }
+
+    pub fn msg<W:Write>(&mut self, buffer:&mut CryptoBuf, msg:&[u8]) -> bool {
+
+        match self.state {
+            Some(ServerState::Encrypted(ref mut enc)) => {
+                match enc.state {
+                    Some(EncryptedState::ChannelOpened(x)) => {
+
+                        buffer.clear();
+                        buffer.push(msg::CHANNEL_DATA);
+                        buffer.push_u32_be(x);
+                        buffer.extend_ssh_string(msg);
+                        println!("{:?} {:?}", buffer.as_slice(), self.buffers.sent_seqn);
+                        enc.cipher.write_client_packet(self.buffers.sent_seqn,
+                                                       buffer.as_slice(),
+                                                       &mut self.buffers.write_buffer);
+                        println!("buf = {:?}", self.buffers.write_buffer.as_slice());
+                        self.buffers.sent_seqn += 1;
+                        true
+                    },
+                    _ => false
+                }
+            },
+            _ => false
+        }
+
     }
 }

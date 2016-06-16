@@ -74,6 +74,7 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
             public_key: CryptoBuf::new(),
             public_key_algorithm: CryptoBuf::new(),
             sent_pk_ok: false,
+            public_key_is_ok: false
         }
     }
 
@@ -110,14 +111,10 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
         enc.cipher.write_server_packet(self.buffers.sent_seqn, buffer.as_slice(), &mut self.buffers.write_buffer);
 
         self.buffers.sent_seqn += 1;
-        let buf_stdout = CryptoBuf::new();
-        let buf_stderr = CryptoBuf::new();
         enc.channels.insert(channel.sender_channel,
                             Channel {
                                 parameters: channel,
-                                stdout: buf_stdout,
-                                stderr: buf_stderr,
-                                server: server,
+                                engine: server,
                             });
     }
 
@@ -125,24 +122,22 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
                       enc: &mut Encrypted<S, EncryptedState>,
                   buffer: &mut CryptoBuf,
                   auth_request: &mut AuthRequest) {
-        if !auth_request.sent_pk_ok {
-            buffer.clear();
-            buffer.push(msg::USERAUTH_PK_OK);
-            buffer.extend_ssh_string(auth_request.public_key_algorithm.as_slice());
-            buffer.extend_ssh_string(auth_request.public_key.as_slice());
-            enc.cipher
-                .write_server_packet(self.buffers.sent_seqn, buffer.as_slice(), &mut self.buffers.write_buffer);
-            self.buffers.sent_seqn += 1;
-            auth_request.sent_pk_ok = true;
-        }
+        buffer.clear();
+        buffer.push(msg::USERAUTH_PK_OK);
+        buffer.extend_ssh_string(auth_request.public_key_algorithm.as_slice());
+        buffer.extend_ssh_string(auth_request.public_key.as_slice());
+        enc.cipher
+            .write_server_packet(self.buffers.sent_seqn, buffer.as_slice(), &mut self.buffers.write_buffer);
+        self.buffers.sent_seqn += 1;
+        auth_request.sent_pk_ok = true;
     }
-
+    /*
     pub fn flush_channels(&mut self,
                           enc: &mut Encrypted<S, EncryptedState>,
-                      channel_nums: &mut HashSet<u32>,
-                      buffer: &mut CryptoBuf) {
+                          // channel_nums: &mut HashSet<u32>,
+                          buffer: &mut CryptoBuf) {
 
-        for recip_channel in channel_nums.drain() {
+        for recip_channel in enc.pending_messages.drain() {
 
             if let Some(ref mut channel) = enc.channels.get_mut(&recip_channel) {
 
@@ -177,4 +172,5 @@ impl<T, S: super::Serve<T>> ServerSession<T, S> {
         }
 
     }
+*/
 }

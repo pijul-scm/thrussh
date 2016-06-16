@@ -35,11 +35,49 @@ pub struct ServerSession<T, S> {
 }
 
 
+pub struct ServerBuf<'a> {
+    buffer:&'a mut CryptoBuf,
+    recipient_channel: u32,
+    sent_seqn: &'a mut usize,
+    write_buffer: &'a mut CryptoBuf,
+    cipher: &'a mut cipher::Cipher
+}
+
+const SSH_EXTENDED_DATA_STDERR: u32 = 1;
+
+impl<'a> ServerBuf<'a> {
+    pub fn stdout(&mut self, stdout:&[u8]) -> Result<(), Error> {
+        self.buffer.clear();
+        self.buffer.push(msg::CHANNEL_DATA);
+        self.buffer.push_u32_be(self.recipient_channel);
+        self.buffer.extend_ssh_string(stdout);
+
+        self.cipher.write_server_packet(*self.sent_seqn,
+                                        self.buffer.as_slice(),
+                                        self.write_buffer);
+                        
+        *self.sent_seqn += 1;
+        Ok(())
+    }
+    pub fn stderr(&mut self, stderr:&[u8]) -> Result<(), Error> {
+        self.buffer.clear();
+        self.buffer.push(msg::CHANNEL_EXTENDED_DATA);
+        self.buffer.push_u32_be(self.recipient_channel);
+        self.buffer.push_u32_be(SSH_EXTENDED_DATA_STDERR);
+        self.buffer.extend_ssh_string(stderr);
+        self.cipher.write_server_packet(*self.sent_seqn,
+                                        self.buffer.as_slice(),
+                                        self.write_buffer);
+                        
+        *self.sent_seqn += 1;
+        Ok(())
+    }
+}
 
 
 pub trait Serve<S> {
     fn init(&S, channel: &ChannelParameters) -> Self;
-    fn data(&mut self, _: &[u8], _: &mut CryptoBuf, _: &mut CryptoBuf) -> Result<(), Error> {
+    fn data(&mut self, _: &[u8], _: ServerBuf) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -149,7 +187,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                 }
             }
             Some(ServerState::Kex(Kex::NewKeys(newkeys))) => {
-                // We are waiting for the NEWKEYS packet. Is it this one?
+                // We have sent a NEWKEYS packet, and are waiting to receive one. Is it this one?
                 if self.buffers.read_len == 0 {
                     try!(self.buffers.set_clear_len(stream));
                 }
@@ -181,7 +219,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                                                                           &mut self.buffers.read_len,
                                                                           &mut self.buffers.read_buffer)) {
 
-
+                        println!("buf = {:?}", buf);
                         if buf[0] == msg::KEXINIT {
                             match enc.rekey {
                                 Some(Kex::KexInit(mut kexinit)) => {
@@ -220,7 +258,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                                 Some(Kex::NewKeys(_)) if buf[0] == msg::NEWKEYS => true,
                                 _ => false
                             };
-                            
+                            debug!("packet_matches: {:?}", packet_matches);
                             if packet_matches {
                                 let rekey = std::mem::replace(&mut enc.rekey, None);
                                 match rekey {
@@ -259,7 +297,11 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                                     _ => {}
                                 }
                             } else {
-                                let enc_state = read::read_encrypted(&config.auth, &mut enc, buf, buffer);
+                                println!("calling read_encrypted");
+                                let enc_state = read::read_encrypted(&config.auth, &mut enc, buf, buffer,
+                                                                     &mut self.buffers.write_buffer,
+                                                                     &mut self.buffers.sent_seqn
+                                );
                                 enc.state = Some(enc_state);
 
 
@@ -281,6 +323,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                         }
                         true
                     } else {
+                        debug!("buf_is_some: {:?}, target {:?}", false, self.buffers.read_len);
                         false
                     };
                 if buf_is_some {
@@ -293,7 +336,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                 Ok(buf_is_some)
             }
             _ => {
-                // println!("read: unhandled");
+                println!("read: unhandled");
                 Err(Error::Inconsistent)
             }
         }
@@ -464,13 +507,12 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                             }
 
                             Some(EncryptedState::WaitingSignature(mut auth_request)) => {
-
                                 self.send_pk_ok(&mut enc, buffer, &mut auth_request);
                                 enc.state = Some(EncryptedState::WaitingSignature(auth_request));
                                 try!(self.buffers.write_all(stream));
                             }
 
-                            Some(EncryptedState::AuthRequestSuccess) => {
+                            Some(EncryptedState::AuthRequestSuccess(_)) => {
                                 buffer.clear();
                                 buffer.push(msg::USERAUTH_SUCCESS);
                                 enc.cipher.write_server_packet(self.buffers.sent_seqn,
@@ -484,15 +526,16 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                             Some(EncryptedState::ChannelOpenConfirmation(channel)) => {
 
                                 let server = S::init(server, &channel);
+                                let sender_channel = channel.sender_channel;
                                 self.confirm_channel_open(&mut enc, buffer, channel, server);
-                                enc.state = Some(EncryptedState::ChannelOpened(HashSet::new()));
+                                enc.state = Some(EncryptedState::ChannelOpened(sender_channel));
                                 try!(self.buffers.write_all(stream));
                             }
-                            Some(EncryptedState::ChannelOpened(mut channels)) => {
+                            Some(EncryptedState::ChannelOpened(recipient_channel)) => {
 
-                                self.flush_channels(&mut enc, &mut channels, buffer);
-                                try!(self.buffers.write_all(stream));
-                                enc.state = Some(EncryptedState::ChannelOpened(channels))
+                                // self.flush_channels(&mut enc, buffer);
+                                // try!(self.buffers.write_all(stream));
+                                enc.state = Some(EncryptedState::ChannelOpened(recipient_channel))
                             }
                             state => enc.state = state,
                         }

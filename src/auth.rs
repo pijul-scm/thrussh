@@ -15,7 +15,7 @@ pub const HOSTBASED:M = M(8);
 pub enum Method<'a> {
     None,
     Password { user:&'a str, password:&'a str },
-    Pubkey { user:&'a str, algo: &'a str, pubkey: key::PublicKey },
+    Pubkey { user:&'a str, pubkey: key::PublicKey },
     Hostbased
 }
 impl<'a> Method<'a> {
@@ -115,7 +115,8 @@ pub struct AuthRequest {
     pub partial_success: bool,
     pub public_key: CryptoBuf,
     pub public_key_algorithm: CryptoBuf,
-    pub sent_pk_ok: bool
+    pub public_key_is_ok: bool,
+    pub sent_pk_ok: bool,
 }
 
 pub trait Authenticate {
@@ -126,7 +127,7 @@ pub trait Authenticate {
 
 impl AuthRequest {
     
-    pub fn auth_request<A:Authenticate>(mut self, auth:&A, buf:&[u8]) -> EncryptedState {
+    pub fn read_auth_request<A:Authenticate>(mut self, auth:&A, buf:&[u8]) -> EncryptedState {
         // https://tools.ietf.org/html/rfc4252#section-5
         let mut pos = 1;
         let next = |pos:&mut usize| {
@@ -161,7 +162,7 @@ impl AuthRequest {
                 match auth.auth(self.methods, &method) {
                     Auth::Success => {
                         
-                        EncryptedState::AuthRequestSuccess
+                        EncryptedState::AuthRequestSuccess(self)
                     },
                     Auth::Reject { remaining_methods, partial_success } => {
                         self.methods = remaining_methods;
@@ -190,7 +191,7 @@ impl AuthRequest {
                 };
                 let method = Method::Pubkey {
                     user: name,
-                    algo: std::str::from_utf8(pubkey_algo).unwrap(),
+                    // algo: std::str::from_utf8(pubkey_algo).unwrap(),
                     pubkey: pubkey_,
                 };
 
@@ -226,7 +227,7 @@ impl AuthRequest {
     }
 
 
-    pub fn waiting_signature(self, buf:&[u8], session_id:&[u8], buffer:&mut CryptoBuf) -> EncryptedState {
+    pub fn verify_signature(self, buf:&[u8], session_id:&[u8], buffer:&mut CryptoBuf) -> EncryptedState {
         // https://tools.ietf.org/html/rfc4252#section-5
         let mut pos = 1;
         let next = |pos:&mut usize| {
@@ -279,7 +280,7 @@ impl AuthRequest {
 
                 // Verify signature.
                 if sodium::ed25519::verify_detached(&sig, buffer.as_slice(), &key) {
-                    EncryptedState::AuthRequestSuccess
+                    EncryptedState::AuthRequestSuccess(self)
                 } else {
                     EncryptedState::RejectAuthRequest(self)
                 }

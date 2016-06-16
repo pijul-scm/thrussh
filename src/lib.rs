@@ -71,7 +71,7 @@ pub mod server;
 pub mod client;
 
 #[derive(Debug)]
-struct SSHBuffers {
+pub struct SSHBuffers {
     recv_seqn: usize,
     sent_seqn: usize,
 
@@ -307,10 +307,10 @@ pub enum EncryptedState {
     WaitingAuthRequest(auth::AuthRequest),
     RejectAuthRequest(auth::AuthRequest),
     WaitingSignature(auth::AuthRequest),
-    AuthRequestSuccess,
+    AuthRequestSuccess(auth::AuthRequest),
     WaitingChannelOpen,
     ChannelOpenConfirmation(ChannelParameters),
-    ChannelOpened(HashSet<u32>),
+    ChannelOpened(u32) // (HashSet<u32>),
 }
 
 
@@ -415,6 +415,8 @@ impl KexDhDone {
             cipher: c,
             mac: self.mac,
             session_id: session_id,
+            received: false,
+            sent: false
         }
     }
 }
@@ -427,6 +429,8 @@ pub struct NewKeys {
     cipher: cipher::Cipher,
     mac: Mac,
     session_id: kex::Digest,
+    received:bool,
+    sent:bool
 }
 
 impl NewKeys {
@@ -457,6 +461,7 @@ pub struct Encrypted<T,EncryptedState> {
     rekey: Option<Kex>,
     channels: HashMap<u32, Channel<T>>,
 }
+
 #[derive(Debug)]
 pub struct ChannelParameters {
     pub recipient_channel: u32,
@@ -467,9 +472,7 @@ pub struct ChannelParameters {
 
 pub struct Channel<S> {
     pub parameters: ChannelParameters,
-    pub stdout: CryptoBuf,
-    pub stderr: CryptoBuf,
-    pub server: S,
+    pub engine: S, // might be client or server
 }
 
 

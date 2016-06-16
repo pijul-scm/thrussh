@@ -65,6 +65,23 @@ impl Cipher {
             //_ => unimplemented!()
         }
     }
+    pub fn read_server_packet<'a, R:BufRead>(
+        &mut self,
+        bytes_read:&mut usize,
+        seq:usize,
+        stream:&mut R,
+        read_len:&mut usize,
+        read_buffer:&'a mut CryptoBuf) -> Result<Option<&'a[u8]>,Error> {
+
+        match *self {
+            Cipher::Chacha20Poly1305 { ref server_to_client, .. } => {
+
+                server_to_client.read_packet(bytes_read, seq, stream, read_len, read_buffer)
+
+            },
+            //_ => unimplemented!()
+        }
+    }
 
     pub fn write_server_packet(&mut self, seq:usize, packet:&[u8], buffer:&mut CryptoBuf) {
 
@@ -72,6 +89,18 @@ impl Cipher {
             Cipher::Chacha20Poly1305 { ref server_to_client, .. } => {
 
                 server_to_client.write_packet(seq, packet, buffer)
+            },
+            //_ => unimplemented!()
+        }
+
+        
+    }
+    pub fn write_client_packet(&mut self, seq:usize, packet:&[u8], buffer:&mut CryptoBuf) {
+
+        match *self {
+            Cipher::Chacha20Poly1305 { ref client_to_server, .. } => {
+
+                client_to_server.write_packet(seq, packet, buffer)
             },
             //_ => unimplemented!()
         }

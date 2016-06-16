@@ -41,13 +41,14 @@ impl super::CipherT for Cipher {
         let mut nonce = [0;8];
         BigEndian::write_u32(&mut nonce[4..], seq as u32);
         let nonce = chacha20::Nonce::copy_from_slice(&nonce);
-
+        //println!("seq = {:?}", seq);
 
         // - Compute the length, by chacha20-stream-xoring the first 4 bytes with the last 32 bytes of the client key.
         if *read_len == 0 {
             let mut len = [0;4];
             try!(stream.read_exact(&mut len));
             read_buffer.extend(&len);
+
 
             chacha20::stream_xor_inplace(
                 &mut len,
