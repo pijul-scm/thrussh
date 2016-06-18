@@ -112,7 +112,7 @@ pub fn read_encrypted<A:Authenticate, T, S:super::Serve<T>>(auth:&A, enc:&mut En
 
         }
         Some(EncryptedState::ChannelOpened(recipient_channel)) => {
-            println!("buf: {:?}", buf);
+            debug!("buf: {:?}", buf);
             if buf[0] == msg::CHANNEL_DATA {
 
                 let channel_num = BigEndian::read_u32(&buf[1..]);

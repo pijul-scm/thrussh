@@ -10,6 +10,8 @@ pub struct CryptoBuf {
     zero:u8,
 }
 
+unsafe impl Send for CryptoBuf {}
+
 impl std::ops::Index<usize> for CryptoBuf {
     type Output = u8;
     fn index<'a>(&'a self, index:usize) -> &'a u8 {

@@ -64,6 +64,7 @@ use mac::*;
 mod compression;
 
 mod encoding;
+use encoding::*;
 
 pub mod auth;
 
@@ -535,13 +536,13 @@ pub fn load_public_key<P:AsRef<Path>>(p:P) -> Result<key::PublicKey, Error> {
 }
 
 pub fn read_public_key(p: &[u8]) -> Result<key::PublicKey, Error> {
-    let mut pos = Position { s:p,position:0 };
-    if pos.read_string() == b"ssh-ed25519" {
-        let pubkey = pos.read_string();
-        Ok(key::PublicKey::Ed25519(sodium::ed25519::PublicKey::copy_from_slice(pubkey)))
-    } else {
-        Err(Error::CouldNotReadKey)
+    let mut pos = p.reader(0);
+    if pos.read_string() == Some(b"ssh-ed25519") {
+        if let Some(pubkey) = pos.read_string() {
+            return Ok(key::PublicKey::Ed25519(sodium::ed25519::PublicKey::copy_from_slice(pubkey)))
+        }
     }
+    Err(Error::CouldNotReadKey)
 }
 
 pub fn load_secret_key<P:AsRef<Path>>(p:P) -> Result<key::SecretKey, Error> {
@@ -567,43 +568,47 @@ pub fn load_secret_key<P:AsRef<Path>>(p:P) -> Result<key::SecretKey, Error> {
     //println!("secret: {:?}", std::str::from_utf8(&secret[0..62]));
 
     if &secret[0..15] == b"openssh-key-v1\0" {
-        let mut position = Position { s:&secret, position:15 };
+        let mut position = secret.reader(15);
 
-        let ciphername = position.read_string();
-        let kdfname = position.read_string();
-        let kdfoptions = position.read_string();
+        let ciphername = position.read_string().unwrap();
+        let kdfname = position.read_string().unwrap();
+        let kdfoptions = position.read_string().unwrap();
         info!("ciphername: {:?}", std::str::from_utf8(ciphername));
         debug!("kdf: {:?} {:?}",
                  std::str::from_utf8(kdfname),
                  std::str::from_utf8(kdfoptions));
 
-        let nkeys = position.read_u32();
+        let nkeys = position.read_u32().unwrap();
         
         for _ in 0..nkeys {
-            let public_string = position.read_string();
-            let mut pos = Position { s:public_string, position:0 };
-            if pos.read_string() == KEYTYPE_ED25519 {
+            let public_string = position.read_string().unwrap();
+            let mut pos = public_string.reader(0);
+            if pos.read_string() == Some(KEYTYPE_ED25519) {
                 // println!("{:?} {:?}", secret, secret.len());
-                let public = sodium::ed25519::PublicKey::copy_from_slice(pos.read_string());
-                info!("public: {:?}", public);
+                if let Some(pubkey) = pos.read_string() {
+                    let public = sodium::ed25519::PublicKey::copy_from_slice(pubkey);
+                    info!("public: {:?}", public);
+                } else {
+                    info!("warning: no public key");
+                }
             }
         }
         info!("there are {} keys in this file", nkeys);
-        let secret = position.read_string();
+        let secret = position.read_string().unwrap();
         if kdfname == b"none" {
-            let mut position = Position { s: secret, position: 0 };
-            let check0 = position.read_u32();
-            let check1 = position.read_u32();
+            let mut position = secret.reader(0);
+            let check0 = position.read_u32().unwrap();
+            let check1 = position.read_u32().unwrap();
             debug!("check0: {:?}", check0);
             debug!("check1: {:?}", check1);
             for _ in 0..nkeys {
 
-                let key_type = position.read_string();
+                let key_type = position.read_string().unwrap();
                 if key_type == KEYTYPE_ED25519 {
-                    let pubkey = position.read_string();
+                    let pubkey = position.read_string().unwrap();
                     debug!("pubkey = {:?}", pubkey);
-                    let seckey = position.read_string();
-                    let comment = position.read_string();
+                    let seckey = position.read_string().unwrap();
+                    let comment = position.read_string().unwrap();
                     debug!("comment = {:?}", comment);
                     let secret = sodium::ed25519::SecretKey::copy_from_slice(seckey);
                     return Ok(key::SecretKey::Ed25519(secret))
@@ -618,22 +623,5 @@ pub fn load_secret_key<P:AsRef<Path>>(p:P) -> Result<key::SecretKey, Error> {
         }
     } else {
         Err(Error::CouldNotReadKey)
-    }
-}
-
-struct Position<'a> { s:&'a[u8], position: usize }
-impl<'a> Position<'a> {
-    fn read_string(&mut self) -> &'a[u8] {
-
-        let len = BigEndian::read_u32(&self.s[self.position..]) as usize;
-        let result = &self.s[(self.position+4)..(self.position+4+len)];
-        self.position += 4+len;
-        result
-    }
-    fn read_u32(&mut self) -> u32 {
-
-        let u = BigEndian::read_u32(&self.s[self.position..]);
-        self.position += 4;
-        u
     }
 }

@@ -32,6 +32,12 @@ impl PublicKey {
             }
         }
     }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            &PublicKey::Ed25519 (_) => "ssh-ed25519"
+        }
+    }
 }
 
 
@@ -71,9 +77,7 @@ impl Algorithm {
     }
 
     pub fn name(&self) -> &'static str {
-        match self.public_host_key {
-            PublicKey::Ed25519 (_) => "ssh-ed25519"
-        }
+        self.public_host_key.name()
     }
     
     pub fn add_signature(&self, buffer: &mut CryptoBuf, hash:&[u8]) {

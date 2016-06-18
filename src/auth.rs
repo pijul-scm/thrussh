@@ -15,7 +15,7 @@ pub const HOSTBASED:M = M(8);
 pub enum Method<'a> {
     None,
     Password { user:&'a str, password:&'a str },
-    Pubkey { user:&'a str, pubkey: key::PublicKey },
+    Pubkey { user:&'a str, pubkey: key::PublicKey, seckey: Option<key::SecretKey> },
     Hostbased
 }
 impl<'a> Method<'a> {
@@ -62,6 +62,20 @@ impl Methods {
         }
         Methods { list: list, set: set }
     }
+    pub fn keep_remaining<'a, I:Iterator<Item=&'a [u8]>>(&mut self, i:I) {
+        for name in i {
+            let x = match name {
+                b"password" => Some(PASSWORD),
+                b"publickey" => Some(PUBKEY),
+                b"none" => Some(NONE),
+                b"hostbased" => Some(HOSTBASED),
+                _ => None
+            };
+            if let Some(M(i)) = x {
+                self.set &= i as u32;
+            }
+        }
+    }
     pub fn all() -> Methods {
         Self::new(&[ PUBKEY, PASSWORD, HOSTBASED ])
     }
@@ -82,7 +96,30 @@ impl Iterator for Methods {
                 result = self.list & 0xf;
                 self.list >>= 4;
             }
-            if self.list == 0 {
+            if result == 0 {
+                None
+            } else {
+                Some(M(result))
+            }
+        }
+    }
+}
+
+impl Methods {
+    pub fn peek(&self) -> Option<M> {
+        if self.list == 0 {
+            None
+        } else {
+            let mut result = self.list & 0xf;
+            let mut list = self.list;
+            list >>= 4;
+
+            // while this method is not in the set of allowed methods, pop the list.
+            while (list != 0) && (result & self.set == 0) {
+                result = list & 0xf;
+                list >>= 4;
+            }
+            if list == 0 {
                 None
             } else {
                 Some(M(result))
@@ -193,6 +230,7 @@ impl AuthRequest {
                     user: name,
                     // algo: std::str::from_utf8(pubkey_algo).unwrap(),
                     pubkey: pubkey_,
+                    seckey: None
                 };
 
                 match auth.auth(self.methods, &method) {

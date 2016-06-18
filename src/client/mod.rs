@@ -18,9 +18,24 @@ pub struct Config {
     pub rekey_time_limit_s: f64
 }
 
-pub struct ClientSession<C> {
+impl std::default::Default for Config {
+    fn default() -> Config {
+        Config {
+            client_id: "SSH-2.0-Russht_0.1".to_string(),
+            keys: Vec::new(),
+            // Following the recommendations of
+            // https://tools.ietf.org/html/rfc4253#section-9
+            rekey_write_limit: 1<<30, // 1 Gb
+            rekey_read_limit: 1<<30, // 1 Gb
+            rekey_time_limit_s: 3600.0
+        }
+    }
+}
+
+pub struct ClientSession<'a, C> {
     buffers: super::SSHBuffers,
-    state: Option<ServerState<C>>
+    state: Option<ServerState<C>>,
+    auth_method: Option<auth::Method<'a>>
 }
 
 pub trait Client {
@@ -28,12 +43,12 @@ pub trait Client {
 }
 
 
-impl<C:Client> ClientSession<C> {
+impl<'a, C:Client> ClientSession<'a, C> {
     pub fn new() -> Self {
         ClientSession {
             buffers: super::SSHBuffers::new(),
-            state: None
-
+            state: None,
+            auth_method: None
         }
     }
     // returns whether a complete packet has been read.
@@ -298,6 +313,11 @@ impl<C:Client> ClientSession<C> {
 
                                 } else if buf[0] == msg::USERAUTH_FAILURE {
 
+                                    let mut r = buf.reader(1);
+                                    let remaining_methods = r.read_string().unwrap();
+
+                                    auth_request.methods.keep_remaining(remaining_methods.split(|&c| c==b','));
+
                                     enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
 
                                 } else if buf[0] == msg::USERAUTH_PK_OK {
@@ -532,7 +552,7 @@ impl<C:Client> ClientSession<C> {
 
             }
             Some(ServerState::Encrypted(mut enc)) => {
-
+                println!("encrypted");
                 let state = std::mem::replace(&mut enc.state, None);
                 match state {
                     Some(EncryptedState::WaitingAuthRequest(mut auth_request)) => {
@@ -540,31 +560,39 @@ impl<C:Client> ClientSession<C> {
                         buffer.clear();
 
                         buffer.push(msg::USERAUTH_REQUEST);
-                        buffer.extend_ssh_string(b"pe");
-                        buffer.extend_ssh_string(b"ssh-connection");
+                        let method_ok = match self.auth_method {
+                            Some(auth::Method::Password { user, password }) => {
 
-                        // TODO: check order of methods.
-
-                        println!("auth_request = {:?}", auth_request);
-                        if false { //password
-
-                            buffer.extend_ssh_string(b"password");
-                            buffer.push(1);
-                            buffer.extend_ssh_string(b"blabla");
-
+                                buffer.extend_ssh_string(user.as_bytes());
+                                buffer.extend_ssh_string(b"ssh-connection");
+                                buffer.extend_ssh_string(b"password");
+                                buffer.push(1);
+                                buffer.extend_ssh_string(password.as_bytes());
+                                true
+                            },
+                            Some(auth::Method::Pubkey { ref user, ref pubkey, .. }) => {
+                                buffer.extend_ssh_string(user.as_bytes());
+                                buffer.extend_ssh_string(b"ssh-connection");
+                                buffer.extend_ssh_string(b"publickey");
+                                buffer.push(0); // This is a probe
+                                buffer.extend_ssh_string(pubkey.name().as_bytes());
+                                pubkey.extend_pubkey(buffer);
+                                true
+                            },
+                            _ => {
+                                false
+                            }
+                        };
+                        if method_ok {
+                            println!("method ok");
+                            enc.cipher.write_client_packet(self.buffers.sent_seqn, buffer.as_slice(), &mut self.buffers.write_buffer);
+                            self.buffers.sent_seqn += 1;
+                            try!(self.buffers.write_all(stream));
+                            enc.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
                         } else {
-
-                            buffer.extend_ssh_string(b"publickey");
-                            buffer.push(0); // This is a probe
-                            buffer.extend_ssh_string(config.keys[0].name().as_bytes());
-                            config.keys[0].public_host_key.extend_pubkey(buffer);
-
+                            println!("method not ok");
+                            enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
                         }
-                        enc.cipher.write_client_packet(self.buffers.sent_seqn, buffer.as_slice(), &mut self.buffers.write_buffer);
-                        self.buffers.sent_seqn += 1;
-                        try!(self.buffers.write_all(stream));
-
-                        enc.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
                     },
 
                     Some(EncryptedState::WaitingSignature(mut auth_request)) => {
@@ -642,7 +670,7 @@ impl<C:Client> ClientSession<C> {
 
                         if let Some(ref mut channel) = enc.channels.get_mut(&id) {
                             println!("FOUND!");
-                            buffer.clear();
+                            /*buffer.clear();
                             buffer.push(msg::CHANNEL_DATA);
                             buffer.push_u32_be(channel.parameters.recipient_channel);
                             buffer.extend_ssh_string(b"blabla\r\n");
@@ -654,6 +682,7 @@ impl<C:Client> ClientSession<C> {
                             self.buffers.sent_seqn += 1;
 
                             try!(self.buffers.write_all(stream));
+                             */
                         }
                         enc.state = state
                     }
@@ -670,16 +699,58 @@ impl<C:Client> ClientSession<C> {
         
     }
 
-    pub fn msg<W:Write>(&mut self, buffer:&mut CryptoBuf, msg:&[u8]) -> bool {
+    pub fn needs_auth_method(&self) -> Option<auth::Methods> {
+
+        match self.state {
+            Some(ServerState::Encrypted(ref enc)) => {
+                match enc.state {
+                    Some(EncryptedState::WaitingAuthRequest(ref auth_request)) => {
+
+                        println!("needs_auth_method: {:?}", auth_request);
+                        Some(auth_request.methods)
+                        
+                    },
+                    _ => None
+                }
+            },
+            _ => None
+        }
+    }
+    pub fn is_authenticated(&self) -> bool {
+
+        match self.state {
+            Some(ServerState::Encrypted(ref enc)) => {
+                match enc.state {
+                    Some(EncryptedState::WaitingChannelOpen)
+                        | Some(EncryptedState::ChannelOpenConfirmation(_))
+                        | Some(EncryptedState::ChannelOpened(_))
+                        => {
+
+                        true
+                        
+                    },
+                    _ => false
+                }
+            },
+            _ => false
+        }
+    }
+
+    pub fn set_method(&mut self, method:auth::Method<'a>) {
+        self.auth_method = Some(method)
+    }
+
+    pub fn msg<W:Write>(&mut self, stream:&mut W, buffer:&mut CryptoBuf, msg:&[u8]) -> Result<bool,Error> {
 
         match self.state {
             Some(ServerState::Encrypted(ref mut enc)) => {
                 match enc.state {
                     Some(EncryptedState::ChannelOpened(x)) => {
 
+                        let c = enc.channels.get(&x).unwrap();
                         buffer.clear();
                         buffer.push(msg::CHANNEL_DATA);
-                        buffer.push_u32_be(x);
+                        buffer.push_u32_be(c.parameters.recipient_channel);
                         buffer.extend_ssh_string(msg);
                         println!("{:?} {:?}", buffer.as_slice(), self.buffers.sent_seqn);
                         enc.cipher.write_client_packet(self.buffers.sent_seqn,
@@ -687,12 +758,13 @@ impl<C:Client> ClientSession<C> {
                                                        &mut self.buffers.write_buffer);
                         println!("buf = {:?}", self.buffers.write_buffer.as_slice());
                         self.buffers.sent_seqn += 1;
-                        true
+                        try!(self.buffers.write_all(stream));
+                        Ok(true)
                     },
-                    _ => false
+                    _ => Ok(false)
                 }
             },
-            _ => false
+            _ => Ok(false)
         }
 
     }

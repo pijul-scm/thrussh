@@ -140,7 +140,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                 if let Some(client_id) = client_id {
                     let mut exchange = Exchange::new();
                     exchange.client_id.extend(client_id);
-                    println!("client id, exchange = {:?}", exchange);
+                    debug!("client id, exchange = {:?}", exchange);
                     self.state = Some(ServerState::VersionOk(exchange));
                     Ok(true)
                 } else {
@@ -160,7 +160,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
 
                     let kex = {
                         let payload = self.buffers.get_current_payload();
-                        println!("payload = {:?}", payload);
+                        debug!("payload = {:?}", payload);
                         assert!(payload[0] == msg::KEX_ECDH_INIT);
                         kexdh.exchange.client_ephemeral.extend(&payload[5..]);
                         try!(kexdh.kex.server_dh(&mut kexdh.exchange, payload))
@@ -219,11 +219,11 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                                                                           &mut self.buffers.read_len,
                                                                           &mut self.buffers.read_buffer)) {
 
-                        println!("buf = {:?}", buf);
+                        debug!("buf = {:?}", buf);
                         if buf[0] == msg::KEXINIT {
                             match enc.rekey {
                                 Some(Kex::KexInit(mut kexinit)) => {
-                                    println!("received KEXINIT");
+                                    debug!("received KEXINIT");
                                     if kexinit.algo.is_none() {
                                         kexinit.algo = Some(try!(super::negociation::read_kex(buf, &config.keys)));
                                     }
@@ -263,7 +263,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                                 let rekey = std::mem::replace(&mut enc.rekey, None);
                                 match rekey {
                                     Some(Kex::KexDh(mut kexdh)) => {
-                                        println!("KexDH");
+                                        debug!("KexDH");
 
                                         let kex = {
                                             kexdh.exchange.client_ephemeral.extend(&buf[5..]);
@@ -280,7 +280,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                                         }));
                                     },
                                     Some(Kex::NewKeys(kexinit)) => {
-                                        println!("NewKeys");
+                                        debug!("NewKeys");
                                         if buf[0] == msg::NEWKEYS {
                                             self.buffers.read_bytes = 0;
                                             self.buffers.written_bytes = 0;
@@ -297,7 +297,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                                     _ => {}
                                 }
                             } else {
-                                println!("calling read_encrypted");
+                                debug!("calling read_encrypted");
                                 let enc_state = read::read_encrypted(&config.auth, &mut enc, buf, buffer,
                                                                      &mut self.buffers.write_buffer,
                                                                      &mut self.buffers.sent_seqn
@@ -336,7 +336,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                 Ok(buf_is_some)
             }
             _ => {
-                println!("read: unhandled");
+                debug!("read: unhandled");
                 Err(Error::Inconsistent)
             }
         }
@@ -367,7 +367,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
 
                 self.buffers.send_ssh_id(stream, config.server_id.as_bytes());
                 exchange.server_id.extend(config.server_id.as_bytes());
-                println!("sent id, exchange = {:?}", exchange);
+                debug!("sent id, exchange = {:?}", exchange);
 
                 self.state = Some(ServerState::Kex(Kex::KexInit(KexInit {
                     exchange: exchange,
@@ -415,13 +415,13 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                     kexinit.exchange.server_ephemeral.clear();
                     enc.rekey = Some(Kex::KexInit(kexinit))
                 } else {
-                    println!("not yet rekeying, {:?}", self.buffers.written_bytes)
+                    debug!("not yet rekeying, {:?}", self.buffers.written_bytes)
                 }
                 let rekey_state = std::mem::replace(&mut enc.rekey, None);
                 match rekey_state {
                     Some(Kex::KexInit(mut kexinit)) => {
                         if !kexinit.sent {
-                            println!("sending kexinit");
+                            debug!("sending kexinit");
                             buffer.clear();
                             super::negociation::write_kex(&config.keys, buffer);
                             kexinit.exchange.server_kex_init.extend(buffer.as_slice());
@@ -432,7 +432,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                             kexinit.sent = true;
                         }
                         if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
-                            println!("rekey ok");
+                            debug!("rekey ok");
                             enc.rekey = Some(Kex::KexDh(KexDh {
                                 exchange: kexinit.exchange,
                                 kex: kex,
@@ -443,7 +443,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                                 session_id: kexinit.session_id,
                             }))
                         } else {
-                            println!("still kexinit");
+                            debug!("still kexinit");
                             enc.rekey = Some(Kex::KexInit(kexinit))
                         }
                     },
@@ -453,7 +453,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                     },
                     Some(Kex::KexDhDone(mut kexdhdone)) => {
 
-                        println!("kexdhdone: {:?}", kexdhdone);
+                        debug!("kexdhdone: {:?}", kexdhdone);
 
                         let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key.public_host_key,
                                                                             &kexdhdone.exchange,
@@ -478,7 +478,7 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                         self.buffers.sent_seqn += 1;
 
                         try!(self.buffers.write_all(stream));
-                        println!("new keys");
+                        debug!("new keys");
                         let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2);
                         enc.rekey = Some(Kex::NewKeys(new_keys));
 

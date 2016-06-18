@@ -60,3 +60,43 @@ impl CryptoBuf {
     }
 
 }
+
+pub trait Reader {
+    fn reader<'a>(&'a self, starting_at: usize) -> Position<'a>;
+}
+
+impl Reader for CryptoBuf {
+    fn reader<'a>(&'a self, starting_at: usize) -> Position<'a> {
+        Position { s: self.as_slice(), position: starting_at }
+    }
+}
+
+impl Reader for [u8] {
+    fn reader<'a>(&'a self, starting_at: usize) -> Position<'a> {
+        Position { s: self, position: starting_at }
+    }
+}
+
+struct Position<'a> { s:&'a[u8], position: usize }
+impl<'a> Position<'a> {
+    pub fn read_string(&mut self) -> Option<&'a[u8]> {
+
+        let len = BigEndian::read_u32(&self.s[self.position..]) as usize;
+        if self.position+4+len <= self.s.len() {
+            let result = &self.s[(self.position+4)..(self.position+4+len)];
+            self.position += 4+len;
+            Some(result)
+        } else {
+            None
+        }
+    }
+    pub fn read_u32(&mut self) -> Option<u32> {
+        if self.position + 4 <= self.s.len() {
+            let u = BigEndian::read_u32(&self.s[self.position..]);
+            self.position += 4;
+            Some(u)
+        } else {
+            None
+        }
+    }
+}
