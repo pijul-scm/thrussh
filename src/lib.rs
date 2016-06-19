@@ -13,7 +13,6 @@ extern crate rustc_serialize; // config: read base 64.
 extern crate regex; // for config.
 extern crate time;
 
-
 pub mod sodium;
 mod cryptobuf;
 pub use cryptobuf::CryptoBuf;
@@ -26,7 +25,8 @@ use regex::Regex;
 use rustc_serialize::base64::{FromBase64};
 use std::path::Path;
 use std::fs::File;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap};
+
 
 static SODIUM_INIT: Once = ONCE_INIT;
 
@@ -40,6 +40,7 @@ pub enum Error {
     PacketAuth,
     NewKeys,
     Inconsistent,
+    HUP,
     IO(std::io::Error),
 }
 
@@ -346,6 +347,8 @@ pub enum Kex {
     NewKeys(NewKeys), /* The DH is over, we've sent the NEWKEYS packet, and are waiting the NEWKEYS from the other side. */
 }
 
+
+
 #[derive(Debug)]
 pub struct KexInit {
     pub algo: Option<negociation::Names>,
@@ -371,6 +374,20 @@ impl KexInit {
                 Err(Error::Kex)
             }
         }
+    }
+
+    pub fn rekey(ex:Exchange, algo:Names, session_id:&kex::Digest) -> Self {
+        let mut kexinit = KexInit {
+            exchange: ex,
+            algo: Some(algo),
+            sent: false,
+            session_id: Some(session_id.clone()),
+        };
+        kexinit.exchange.client_kex_init.clear();
+        kexinit.exchange.server_kex_init.clear();
+        kexinit.exchange.client_ephemeral.clear();
+        kexinit.exchange.server_ephemeral.clear();
+        kexinit
     }
 }
 
@@ -420,6 +437,43 @@ impl KexDhDone {
             sent: false
         }
     }
+
+    fn client_compute_exchange_hash(&mut self, payload:&[u8], buffer:&mut CryptoBuf) -> Result<kex::Digest, Error> {
+        assert!(payload[0] == msg::KEX_ECDH_REPLY);
+        let mut reader = payload.reader(1);
+
+        let pubkey = reader.read_string().unwrap();
+        let server_ephemeral = reader.read_string().unwrap();
+        self.exchange.server_ephemeral.extend(server_ephemeral);
+        let signature = reader.read_string().unwrap();
+
+        try!(self.kex.compute_shared_secret(&self.exchange.server_ephemeral));
+
+        let pubkey = try!(read_public_key(pubkey));
+        let hash = try!(self.kex.compute_exchange_hash(&pubkey,
+                                                       &self.exchange,
+                                                       buffer));
+
+        let signature = {
+            let mut sig_reader = signature.reader(0);
+            let sig_type = sig_reader.read_string().unwrap();
+            assert_eq!(sig_type, b"ssh-ed25519");
+            let signature = sig_reader.read_string().unwrap();
+            sodium::ed25519::Signature::copy_from_slice(signature)
+        };
+
+        match pubkey {
+            key::PublicKey::Ed25519(ref pubkey) => {
+
+                assert!(sodium::ed25519::verify_detached(&signature, hash.as_bytes(), pubkey))
+
+            }
+        };
+        println!("signature = {:?}", signature);
+        println!("exchange = {:?}", self.exchange);
+        Ok(hash)
+    }
+
 }
 
 #[derive(Debug)]
@@ -462,6 +516,90 @@ pub struct Encrypted<T,EncryptedState> {
     rekey: Option<Kex>,
     channels: HashMap<u32, Channel<T>>,
 }
+
+impl<T,EncryptedState> Encrypted<T,EncryptedState> {
+
+    fn server_rekey(&mut self, buf:&[u8], keys:&[key::Algorithm]) -> Result<bool, Error> {
+        if buf[0] == msg::KEXINIT {
+            match std::mem::replace(&mut self.rekey, None) {
+                Some(Kex::KexInit(mut kexinit)) => {
+                    debug!("received KEXINIT");
+                    if kexinit.algo.is_none() {
+                        kexinit.algo = Some(try!(negociation::read_kex(buf, keys)));
+                    }
+                    kexinit.exchange.client_kex_init.extend(buf);
+                    self.rekey = Some(try!(kexinit.kexinit()));
+                    Ok(true)
+                },
+                None => {
+                    // start a rekeying
+                    let mut kexinit = KexInit::rekey(
+                        std::mem::replace(&mut self.exchange, None).unwrap(),
+                        try!(negociation::read_kex(buf, &keys)),
+                        &self.session_id
+                    );
+                    kexinit.exchange.client_kex_init.extend(buf);
+                    self.rekey = Some(try!(kexinit.kexinit()));
+                    Ok(true)
+                },
+                _ => {
+                    // Error, maybe?
+                    // unimplemented!()
+                    Ok(true)
+                }
+            }
+        } else {
+
+            let packet_matches = match self.rekey {
+                Some(Kex::KexDh(_)) if buf[0] == msg::KEX_ECDH_INIT => true,
+                Some(Kex::NewKeys(_)) if buf[0] == msg::NEWKEYS => true,
+                _ => false
+            };
+            debug!("packet_matches: {:?}", packet_matches);
+            if packet_matches {
+                let rekey = std::mem::replace(&mut self.rekey, None);
+                match rekey {
+                    Some(Kex::KexDh(mut kexdh)) => {
+                        debug!("KexDH");
+                        let kex = {
+                            kexdh.exchange.client_ephemeral.extend(&buf[5..]);
+                            try!(kexdh.kex.server_dh(&mut kexdh.exchange, buf))
+                        };
+                        self.rekey = Some(Kex::KexDhDone(KexDhDone {
+                            exchange: kexdh.exchange,
+                            kex: kex,
+                            key: kexdh.key,
+                            cipher: kexdh.cipher,
+                            mac: kexdh.mac,
+                            follows: kexdh.follows,
+                            session_id: kexdh.session_id,
+                        }));
+                        Ok(true)
+                    },
+                    Some(Kex::NewKeys(kexinit)) => {
+                        debug!("NewKeys");
+                        if buf[0] == msg::NEWKEYS {
+                            self.exchange = Some(kexinit.exchange);
+                            self.kex = kexinit.kex;
+                            self.key = kexinit.key;
+                            self.cipher = kexinit.cipher;
+                            self.mac = kexinit.mac;
+                        } else {
+                            self.rekey = Some(Kex::NewKeys(kexinit))
+                        }
+                        Ok(true)
+                    },
+                    _ => {
+                        Ok(true)
+                    }
+                }
+            } else {
+                Ok(false)
+            }
+        }
+    }
+}
+
 
 #[derive(Debug)]
 pub struct ChannelParameters {

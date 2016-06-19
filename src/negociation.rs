@@ -91,32 +91,6 @@ pub fn read_kex(buffer:&[u8], keys:&[key::Algorithm]) -> Result<Names,Error> {
     }
 }
 
-fn client_select<A:Preferred + Named + 'static>(list:&[u8]) -> Option<A> {
-
-    for mine in A::preferred() {
-        for l in list.split(|&x| x == b',') {
-            if mine.as_bytes() == l {
-                return A::from_name(l)
-            }
-        }
-
-    }
-    None
-}
-
-fn client_select_key(list:&[u8], keys:&[key::Algorithm]) -> Option<key::Algorithm> {
-
-    for k in keys {
-        for l in list.split(|&x| x == b',') {
-            if l == k.name().as_bytes() {
-                return Some(k.clone())
-            }
-        }
-    }
-    None
-}
-
-
 pub fn client_read_kex(buffer:&[u8], keys:&[key::Algorithm]) -> Result<Names,Error> {
     if buffer[0] != msg::KEXINIT {
         Err(Error::KexInit)

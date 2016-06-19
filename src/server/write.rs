@@ -1,19 +1,8 @@
 use super::super::msg;
 use super::super::kex;
-use super::super::key;
-use super::super::negociation;
 use super::*;
-use super::super::sodium;
-use super::super::{Error, CryptoBuf, Kex, KexInit, KexDh, KexDhDone, Encrypted, ChannelParameters, Channel, ServerState, EncryptedState, complete_packet};
-
+use super::super::{CryptoBuf, KexDhDone, Encrypted, ChannelParameters, Channel, EncryptedState, complete_packet};
 use super::super::auth;
-
-use std::collections::HashSet;
-use std::io::{Write};
-use std;
-use byteorder::{ByteOrder, BigEndian, WriteBytesExt};
-const SSH_EXTENDED_DATA_STDERR: u32 = 1;
-
 
 impl<T, S: super::Serve<T>> ServerSession<T, S> {
 

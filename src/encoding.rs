@@ -77,7 +77,7 @@ impl Reader for [u8] {
     }
 }
 
-struct Position<'a> { s:&'a[u8], position: usize }
+pub struct Position<'a> { s:&'a[u8], position: usize }
 impl<'a> Position<'a> {
     pub fn read_string(&mut self) -> Option<&'a[u8]> {
 
