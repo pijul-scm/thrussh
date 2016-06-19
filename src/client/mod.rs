@@ -9,6 +9,7 @@ use rand;
 use rand::Rng;
 use std::io::{Write,BufRead};
 use std;
+use time;
 
 #[derive(Debug)]
 pub struct Config {
@@ -211,6 +212,7 @@ impl<'a, C:Client> ClientSession<'a, C> {
             }
             Some(ServerState::Encrypted(mut enc)) => {
                 println!("encrypted state");
+                self.try_rekey(&mut enc, &config);
                 let state = std::mem::replace(&mut enc.state, None);
                 match state {
                     Some(EncryptedState::ServiceRequest) => {
@@ -585,6 +587,9 @@ impl<'a, C:Client> ClientSession<'a, C> {
             }
             Some(ServerState::Encrypted(mut enc)) => {
                 println!("encrypted");
+
+                self.try_rekey(&mut enc, &config);
+
                 let state = std::mem::replace(&mut enc.state, None);
                 match state {
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
@@ -768,7 +773,27 @@ impl<'a, C:Client> ClientSession<'a, C> {
         }
         
     }
+    pub fn try_rekey<A,B>(&mut self, enc: &mut super::Encrypted<A,B>, config:&Config) {
+        if enc.rekey.is_none() &&
+            (self.buffers.written_bytes >= config.rekey_write_limit
+             || self.buffers.read_bytes >= config.rekey_read_limit
+             || time::precise_time_s() >= self.buffers.last_rekey_s + config.rekey_time_limit_s) {
+                let mut kexinit = KexInit {
+                    exchange: std::mem::replace(&mut enc.exchange, None).unwrap(),
+                    algo: None,
+                    sent: false,
+                    session_id: Some(enc.session_id.clone()),
+                };
+                kexinit.exchange.client_kex_init.clear();
+                kexinit.exchange.server_kex_init.clear();
+                kexinit.exchange.client_ephemeral.clear();
+                kexinit.exchange.server_ephemeral.clear();
+                enc.rekey = Some(Kex::KexInit(kexinit))
+            } else {
+                debug!("not yet rekeying, {:?}", self.buffers.written_bytes)
+            }
 
+    }
     pub fn needs_auth_method(&self) -> Option<auth::Methods> {
 
         match self.state {
