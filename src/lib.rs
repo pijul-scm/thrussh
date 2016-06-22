@@ -74,43 +74,48 @@ pub mod client;
 
 #[derive(Debug)]
 pub struct SSHBuffers {
-    recv_seqn: usize,
-    sent_seqn: usize,
-
-    read_buffer: CryptoBuf,
-    read_len: usize, // next packet length.
-    write_buffer: CryptoBuf,
-    write_position: usize, // first position of non-written suffix.
-
-    read_bytes: usize,
-    written_bytes: usize,
+    read: SSHBuffer,
+    write: SSHBuffer,
     last_rekey_s: f64,
 }
 
+#[derive(Debug)]
+pub struct SSHBuffer {
+    buffer: CryptoBuf,
+    len: usize, // next packet length.
+    bytes: usize,
+    seqn: usize,
+}
+impl SSHBuffer {
+    fn new() -> Self {
+        SSHBuffer {
+            buffer:CryptoBuf::new(),
+            len:0,
+            bytes:0,
+            seqn:0
+        }
+    }
+    fn clear(&mut self) {
+        self.len = 0;
+        self.buffer.clear();
+    }
+}
 impl SSHBuffers {
     fn new() -> Self {
         SSHBuffers {
-            recv_seqn: 0,
-            sent_seqn: 0,
-
-            read_len: 0,
-            read_buffer: CryptoBuf::new(),
-            write_buffer: CryptoBuf::new(),
-            write_position: 0,
-
-            read_bytes: 0,
-            written_bytes: 0,
+            read: SSHBuffer::new(),
+            write: SSHBuffer::new(),
             last_rekey_s: time::precise_time_s(),
         }
     }
     // Returns true iff the write buffer has been completely written.
     pub fn write_all<W: std::io::Write>(&mut self, stream: &mut W) -> Result<bool, Error> {
         // println!("write_all");
-        while self.write_position < self.write_buffer.len() {
-            match self.write_buffer.write_all_from(self.write_position, stream) {
+        while self.write.len < self.write.buffer.len() {
+            match self.write.buffer.write_all_from(self.write.len, stream) {
                 Ok(s) => {
-                    self.write_position += s;
-                    self.written_bytes += s;
+                    self.write.len += s;
+                    self.write.bytes += s;
                     try!(stream.flush());
                 }
                 Err(e) => {
@@ -141,9 +146,9 @@ impl SSHBuffers {
                 return Ok(None);
             }
             if &buf[0..8] == b"SSH-2.0-" {
-                self.read_buffer.clear();
-                self.read_bytes += i+2;
-                self.read_buffer.extend(&buf[0..i+2]);
+                self.read.buffer.clear();
+                self.read.bytes += i+2;
+                self.read.buffer.extend(&buf[0..i+2]);
                 i
 
             } else {
@@ -151,28 +156,30 @@ impl SSHBuffers {
             }
         };
         stream.consume(i+2);
-        Ok(Some(&self.read_buffer.as_slice()[0..i]))
+        Ok(Some(&self.read.buffer.as_slice()[0..i]))
     }
     pub fn send_ssh_id<W:std::io::Write>(&mut self, stream:&mut W, id:&[u8]) -> Result<(), Error> {
-        self.write_buffer.extend(id);
-        self.write_buffer.push(b'\r');
-        self.write_buffer.push(b'\n');
+        self.write.buffer.extend(id);
+        self.write.buffer.push(b'\r');
+        self.write.buffer.push(b'\n');
         try!(self.write_all(stream));
         Ok(())
     }
-    pub fn cleartext_write_kex_init<S,W: Write>(&mut self,
-                                                keys: &[key::Algorithm],
-                                                is_server: bool,
-                                                mut kexinit: KexInit,
-                                                stream: &mut W)
-                                                -> Result<ServerState<S>, Error> {
+    pub fn cleartext_write_kex_init<W: Write>(
+        &mut self,
+        keys: &[key::Algorithm],
+        is_server: bool,
+        mut kexinit: KexInit,
+        stream: &mut W)
+        -> Result<ServerState, Error> {
+
         if !kexinit.sent {
             // println!("kexinit");
-            self.write_buffer.extend(b"\0\0\0\0\0");
-            negociation::write_kex(&keys, &mut self.write_buffer);
+            self.write.buffer.extend(b"\0\0\0\0\0");
+            negociation::write_kex(&keys, &mut self.write.buffer);
 
             {
-                let buf = self.write_buffer.as_slice();
+                let buf = self.write.buffer.as_slice();
                 if is_server {
                     kexinit.exchange.server_kex_init.extend(&buf[5..]);
                 } else {
@@ -180,8 +187,8 @@ impl SSHBuffers {
                 }
             }
 
-            complete_packet(&mut self.write_buffer, 0);
-            self.sent_seqn += 1;
+            complete_packet(&mut self.write.buffer, 0);
+            self.write.seqn += 1;
             try!(self.write_all(stream));
             kexinit.sent = true;
         }
@@ -201,22 +208,22 @@ impl SSHBuffers {
 
     }
     fn set_clear_len<R: BufRead>(&mut self, stream: &mut R) -> Result<(), Error> {
-        debug_assert!(self.read_len == 0);
+        debug_assert!(self.read.len == 0);
         // Packet lengths are always multiples of 8, so is a StreamBuf.
         // Therefore, this can never block.
-        self.read_buffer.clear();
-        try!(self.read_buffer.read(4, stream));
+        self.read.buffer.clear();
+        try!(self.read.buffer.read(4, stream));
 
-        self.read_len = self.read_buffer.read_u32_be(0) as usize;
+        self.read.len = self.read.buffer.read_u32_be(0) as usize;
         // println!("clear_len: {:?}", self.read_len);
         Ok(())
     }
 
     fn get_current_payload<'b>(&'b mut self) -> &'b [u8] {
-        let packet_length = self.read_buffer.read_u32_be(0) as usize;
-        let padding_length = self.read_buffer[4] as usize;
+        let packet_length = self.read.buffer.read_u32_be(0) as usize;
+        let padding_length = self.read.buffer[4] as usize;
 
-        let buf = self.read_buffer.as_slice();
+        let buf = self.read.buffer.as_slice();
         let payload = {
             &buf[5..(4 + packet_length - padding_length)]
         };
@@ -236,14 +243,14 @@ impl SSHBuffers {
             let consumed_len = match stream.fill_buf() {
                 Ok(buf) => {
                     // println!("read {:?}", buf);
-                    if self.read_buffer.len() + buf.len() < self.read_len + 4 {
+                    if self.read.buffer.len() + buf.len() < self.read.len + 4 {
 
-                        self.read_buffer.extend(buf);
+                        self.read.buffer.extend(buf);
                         buf.len()
 
                     } else {
-                        let consumed_len = self.read_len + 4 - self.read_buffer.len();
-                        self.read_buffer.extend(&buf[0..consumed_len]);
+                        let consumed_len = self.read.len + 4 - self.read.buffer.len();
+                        self.read.buffer.extend(&buf[0..consumed_len]);
                         consumed_len
                     }
                 }
@@ -258,8 +265,8 @@ impl SSHBuffers {
                 }
             };
             stream.consume(consumed_len);
-            self.read_bytes += consumed_len;
-            if self.read_buffer.len() >= 4 + self.read_len {
+            self.read.bytes += consumed_len;
+            if self.read.buffer.len() >= 4 + self.read.len {
                 return Ok(true);
             }
         }
@@ -296,10 +303,10 @@ fn complete_packet(buf: &mut CryptoBuf, off: usize) {
 }
 
 
-pub enum ServerState<T> {
+pub enum ServerState {
     VersionOk(Exchange),
     Kex(Kex),
-    Encrypted(Encrypted<T, EncryptedState>), // Session is now encrypted.
+    Encrypted(Encrypted), // Session is now encrypted.
 }
 
 #[derive(Debug)]
@@ -489,7 +496,7 @@ pub struct NewKeys {
 }
 
 impl NewKeys {
-    fn encrypted<T, EncryptedState>(self, state:EncryptedState) -> Encrypted<T, EncryptedState> {
+    fn encrypted(self, state:EncryptedState) -> Encrypted {
         Encrypted {
             exchange: Some(self.exchange),
             kex: self.kex,
@@ -505,7 +512,7 @@ impl NewKeys {
 }
 
 
-pub struct Encrypted<T,EncryptedState> {
+pub struct Encrypted {
     exchange: Option<Exchange>, // It's always Some, except when we std::mem::replace it temporarily.
     kex: kex::Algorithm,
     key: key::Algorithm,
@@ -514,12 +521,12 @@ pub struct Encrypted<T,EncryptedState> {
     session_id: kex::Digest,
     state: Option<EncryptedState>,
     rekey: Option<Kex>,
-    channels: HashMap<u32, Channel<T>>,
+    channels: HashMap<u32, ChannelParameters>,
 }
 
-impl<T,EncryptedState> Encrypted<T,EncryptedState> {
+impl Encrypted {
 
-    fn server_rekey(&mut self, buf:&[u8], keys:&[key::Algorithm]) -> Result<bool, Error> {
+    fn server_read_rekey(&mut self, buf:&[u8], keys:&[key::Algorithm]) -> Result<bool, Error> {
         if buf[0] == msg::KEXINIT {
             match std::mem::replace(&mut self.rekey, None) {
                 Some(Kex::KexInit(mut kexinit)) => {
@@ -598,6 +605,80 @@ impl<T,EncryptedState> Encrypted<T,EncryptedState> {
             }
         }
     }
+
+
+    fn server_write_rekey<W:Write>(&mut self, stream:&mut W, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf, buffers:&mut SSHBuffers, keys:&[key::Algorithm], rekey: Kex) -> Result<(),Error> {
+        match rekey {
+            Kex::KexInit(mut kexinit) => {
+                if !kexinit.sent {
+                    debug!("sending kexinit");
+                    buffer.clear();
+                    negociation::write_kex(keys, buffer);
+                    kexinit.exchange.server_kex_init.extend(buffer.as_slice());
+
+                    self.cipher.write_server_packet(buffers.write.seqn, buffer.as_slice(), &mut buffers.write.buffer);
+                    buffers.write.seqn += 1;
+                    try!(buffers.write_all(stream));
+                    kexinit.sent = true;
+                }
+                if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
+                    debug!("rekey ok");
+                    self.rekey = Some(Kex::KexDh(KexDh {
+                        exchange: kexinit.exchange,
+                        kex: kex,
+                        key: key,
+                        cipher: cipher,
+                        mac: mac,
+                        follows: follows,
+                        session_id: kexinit.session_id,
+                    }))
+                } else {
+                    debug!("still kexinit");
+                    self.rekey = Some(Kex::KexInit(kexinit))
+                }
+            },
+            Kex::KexDh(kexinit) => {
+                // Nothing to do here.
+                self.rekey = Some(Kex::KexDh(kexinit))
+            },
+            Kex::KexDhDone(kexdhdone) => {
+
+                debug!("kexdhdone: {:?}", kexdhdone);
+
+                let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key.public_host_key,
+                                                                    &kexdhdone.exchange,
+                                                                    buffer));
+
+                // http://tools.ietf.org/html/rfc5656#section-4
+                buffer.clear();
+                buffer.push(msg::KEX_ECDH_REPLY);
+                kexdhdone.key.public_host_key.extend_pubkey(buffer);
+                // Server ephemeral
+                buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
+                // Hash signature
+                kexdhdone.key.add_signature(buffer, hash.as_bytes());
+                //
+                self.cipher.write_server_packet(buffers.write.seqn, buffer.as_slice(), &mut buffers.write.buffer);
+                buffers.write.seqn += 1;
+
+                
+                buffer.clear();
+                buffer.push(msg::NEWKEYS);
+                self.cipher.write_server_packet(buffers.write.seqn, buffer.as_slice(), &mut buffers.write.buffer);
+                buffers.write.seqn += 1;
+
+                try!(buffers.write_all(stream));
+                debug!("new keys");
+                let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2);
+                self.rekey = Some(Kex::NewKeys(new_keys));
+
+            },
+            Kex::NewKeys(n) => {
+                self.rekey = Some(Kex::NewKeys(n));
+            }
+        }
+        Ok(())
+    }
 }
 
 
@@ -607,11 +688,6 @@ pub struct ChannelParameters {
     pub sender_channel: u32,
     pub initial_window_size: u32,
     pub maximum_packet_size: u32,
-}
-
-pub struct Channel<S> {
-    pub parameters: ChannelParameters,
-    pub engine: S, // might be client or server
 }
 
 

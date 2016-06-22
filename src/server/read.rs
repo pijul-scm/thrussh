@@ -10,16 +10,16 @@ use std::io::BufRead;
 use byteorder::{ByteOrder, BigEndian, ReadBytesExt};
 
 
-impl<T, S: Serve<T>> ServerSession<T, S> {
+impl ServerSession {
 
     pub fn read_cleartext_kexinit<R: BufRead>(&mut self,
-                                          stream: &mut R,
-                                          mut kexinit: KexInit,
-                                          keys: &[key::Algorithm])
-                                          -> Result<bool, Error> {
+                                              stream: &mut R,
+                                              mut kexinit: KexInit,
+                                              keys: &[key::Algorithm])
+                                              -> Result<bool, Error> {
         if kexinit.algo.is_none() {
             // read algo from packet.
-            if self.buffers.read_len == 0 {
+            if self.buffers.read.len == 0 {
                 try!(self.buffers.set_clear_len(stream));
             }
             if try!(self.buffers.read(stream)) {
@@ -28,9 +28,9 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
                     kexinit.algo = Some(try!(negociation::read_kex(payload, keys)));
                     kexinit.exchange.client_kex_init.extend(payload);
                 }
-                self.buffers.recv_seqn += 1;
-                self.buffers.read_buffer.clear();
-                self.buffers.read_len = 0;
+                self.buffers.read.seqn += 1;
+                self.buffers.read.buffer.clear();
+                self.buffers.read.len = 0;
                 self.state = Some(ServerState::Kex(try!(kexinit.kexinit())));
                 Ok(true)
             } else {
@@ -43,112 +43,177 @@ impl<T, S: Serve<T>> ServerSession<T, S> {
             Ok(true)
         }
     }
+    pub fn read_cleartext_kexdh<R: BufRead>(&mut self, stream:&mut R, mut kexdh:KexDh) -> Result<bool, Error> {
+
+        if self.buffers.read.len == 0 {
+            try!(self.buffers.set_clear_len(stream));
+        }
+
+        if try!(self.buffers.read(stream)) {
+
+            let kex = {
+                let payload = self.buffers.get_current_payload();
+                debug!("payload = {:?}", payload);
+                assert!(payload[0] == msg::KEX_ECDH_INIT);
+                kexdh.exchange.client_ephemeral.extend(&payload[5..]);
+                try!(kexdh.kex.server_dh(&mut kexdh.exchange, payload))
+            };
+            self.buffers.read.seqn += 1;
+            self.buffers.read.buffer.clear();
+            self.buffers.read.len = 0;
+            self.state = Some(ServerState::Kex(Kex::KexDhDone(KexDhDone {
+                exchange: kexdh.exchange,
+                kex: kex,
+                key: kexdh.key,
+                cipher: kexdh.cipher,
+                mac: kexdh.mac,
+                follows: kexdh.follows,
+                session_id: kexdh.session_id,
+            })));
+
+            Ok(true)
+
+        } else {
+            // not enough bytes.
+            self.state = Some(ServerState::Kex(Kex::KexDh(kexdh)));
+            Ok(false)
+        }
+    }
+    pub fn read_cleartext_newkeys<R:BufRead>(&mut self, stream:&mut R, newkeys: NewKeys) -> Result<bool, Error> {
+        // We have sent a NEWKEYS packet, and are waiting to receive one. Is it this one?
+        if self.buffers.read.len == 0 {
+            try!(self.buffers.set_clear_len(stream));
+        }
+        if try!(self.buffers.read(stream)) {
+
+            let payload_is_newkeys = self.buffers.get_current_payload()[0] == msg::NEWKEYS;
+            if payload_is_newkeys {
+                // Ok, NEWKEYS received, now encrypted.
+                self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest)));
+                self.buffers.read.seqn += 1;
+                self.buffers.read.buffer.clear();
+                self.buffers.read.len = 0;
+                Ok(true)
+            } else {
+                Err(Error::NewKeys)
+            }
+        } else {
+            // Not enough bytes
+            self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
+            Ok(false)
+        }
+    }
+        
 }
 
-pub fn read_encrypted<A:Authenticate, T, S:super::Serve<T>>(auth:&A, enc:&mut Encrypted<S, EncryptedState>, buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut CryptoBuf, sent_seqn:&mut usize) -> EncryptedState {
-    // If we've successfully read a packet.
-    debug!("buf = {:?}", buf);
-    let state = std::mem::replace(&mut enc.state, None);
-    match state {
-        Some(EncryptedState::WaitingServiceRequest) if buf[0] == msg::SERVICE_REQUEST => {
+impl Encrypted {
+
+    pub fn read_encrypted<A:Authenticate, S:Serve>(&mut self, auth:&A, server:&mut S,
+                                                   buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) {
+        // If we've successfully read a packet.
+        debug!("buf = {:?}", buf);
+        let state = std::mem::replace(&mut self.state, None);
+        match state {
+            Some(EncryptedState::WaitingServiceRequest) if buf[0] == msg::SERVICE_REQUEST => {
 
                 let len = BigEndian::read_u32(&buf[1..]) as usize;
                 let request = &buf[5..(5 + len)];
                 debug!("request: {:?}", std::str::from_utf8(request));
                 debug!("decrypted {:?}", buf);
                 if request == b"ssh-userauth" {
-                    EncryptedState::ServiceRequest
+                    self.state = Some(EncryptedState::ServiceRequest)
                 } else {
-                    EncryptedState::WaitingServiceRequest
+                    self.state = Some(EncryptedState::WaitingServiceRequest)
                 }
             }
-        Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
-            if buf[0] == msg::USERAUTH_REQUEST {
+            Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
+                if buf[0] == msg::USERAUTH_REQUEST {
 
-                auth_request.read_auth_request(auth, buf)
+                    self.state = Some(auth_request.read_auth_request(auth, buf))
 
-            } else {
-                // Wrong request
-                EncryptedState::WaitingAuthRequest(auth_request)
-            }
-        }
-
-        Some(EncryptedState::WaitingSignature(auth_request)) => {
-            debug!("receiving signature, {:?}", buf);
-            if buf[0] == msg::USERAUTH_REQUEST {
-                // check signature.
-                auth_request.verify_signature(buf, enc.session_id.as_bytes(), buffer)
-
-            } else {
-                EncryptedState::RejectAuthRequest(auth_request)
-            }
-        }
-        Some(EncryptedState::WaitingChannelOpen) if buf[0] == msg::CHANNEL_OPEN => {
-            // https://tools.ietf.org/html/rfc4254#section-5.1
-            let typ_len = BigEndian::read_u32(&buf[1..]) as usize;
-            let typ = &buf[5..5 + typ_len];
-            let sender = BigEndian::read_u32(&buf[5 + typ_len..]);
-            let window = BigEndian::read_u32(&buf[9 + typ_len..]);
-            let maxpacket = BigEndian::read_u32(&buf[13 + typ_len..]);
-
-            debug!("waiting channel open: type = {:?} sender = {:?} window = {:?} maxpacket = {:?}",
-                   String::from_utf8_lossy(typ),
-                   sender,
-                   window,
-                   maxpacket);
-
-            let mut sender_channel: u32 = 1;
-            while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
-                sender_channel = thread_rng().gen()
+                } else {
+                    // Wrong request
+                    self.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
+                }
             }
 
-            EncryptedState::ChannelOpenConfirmation(ChannelParameters {
-                recipient_channel: sender,
-                sender_channel: sender_channel,
-                initial_window_size: window,
-                maximum_packet_size: maxpacket,
-            })
+            Some(EncryptedState::WaitingSignature(auth_request)) => {
+                debug!("receiving signature, {:?}", buf);
+                if buf[0] == msg::USERAUTH_REQUEST {
+                    // check signature.
+                    self.state = Some(auth_request.verify_signature(buf, self.session_id.as_bytes(), buffer))
 
-        }
-        Some(EncryptedState::ChannelOpened(recipient_channel)) => {
-            debug!("buf: {:?}", buf);
-            if buf[0] == msg::CHANNEL_DATA {
+                } else {
+                    self.state = Some(EncryptedState::RejectAuthRequest(auth_request))
+                }
+            }
+            Some(EncryptedState::WaitingChannelOpen) if buf[0] == msg::CHANNEL_OPEN => {
+                // https://tools.ietf.org/html/rfc4254#section-5.1
+                let typ_len = BigEndian::read_u32(&buf[1..]) as usize;
+                let typ = &buf[5..5 + typ_len];
+                let sender = BigEndian::read_u32(&buf[5 + typ_len..]);
+                let window = BigEndian::read_u32(&buf[9 + typ_len..]);
+                let maxpacket = BigEndian::read_u32(&buf[13 + typ_len..]);
 
-                let channel_num = BigEndian::read_u32(&buf[1..]);
-                if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
+                debug!("waiting channel open: type = {:?} sender = {:?} window = {:?} maxpacket = {:?}",
+                       String::from_utf8_lossy(typ),
+                       sender,
+                       window,
+                       maxpacket);
 
-                    let len = BigEndian::read_u32(&buf[5..]) as usize;
-                    let data = &buf[9..9 + len];
-                    buffer.clear();
+                let mut sender_channel: u32 = 1;
+                while self.channels.contains_key(&sender_channel) || sender_channel == 0 {
+                    sender_channel = thread_rng().gen()
+                }
 
-                    let data = {
-                        let server_buf = ServerBuf {
-                            buffer:buffer,
-                            recipient_channel: channel.parameters.recipient_channel,
-                            sent_seqn: sent_seqn,
-                            write_buffer: write_buffer,
-                            cipher: &mut enc.cipher
+                self.state = Some(EncryptedState::ChannelOpenConfirmation(ChannelParameters {
+                    recipient_channel: sender,
+                    sender_channel: sender_channel,
+                    initial_window_size: window,
+                    maximum_packet_size: maxpacket,
+                }))
+
+            }
+            Some(EncryptedState::ChannelOpened(recipient_channel)) => {
+                debug!("buf: {:?}", buf);
+                if buf[0] == msg::CHANNEL_DATA {
+
+                    let channel_num = BigEndian::read_u32(&buf[1..]);
+                    if let Some(ref mut channel) = self.channels.get_mut(&channel_num) {
+
+                        let len = BigEndian::read_u32(&buf[5..]) as usize;
+                        let data = &buf[9..9 + len];
+                        buffer.clear();
+
+                        let data = {
+                            let server_buf = ServerBuf {
+                                buffer:buffer,
+                                recipient_channel: channel.recipient_channel,
+                                sent_seqn: &mut write_buffer.seqn,
+                                write_buffer: &mut write_buffer.buffer,
+                                cipher: &mut self.cipher
+                            };
+                            server.data(&data, server_buf)
                         };
-                        channel.engine.data(&data, server_buf)
-                    };
 
-                    if let Ok(()) = data {
-                        /*if channel.stdout.len() > 0 || channel.stderr.len() > 0 {
+                        if let Ok(()) = data {
+                            /*if channel.stdout.len() > 0 || channel.stderr.len() > 0 {
                             enc.pending_messages.insert(channel_num);
                         }*/
-                    } else {
-                        unimplemented!()
+                        } else {
+                            unimplemented!()
+                        }
                     }
                 }
+                self.state = Some(EncryptedState::ChannelOpened(recipient_channel))
             }
-            EncryptedState::ChannelOpened(recipient_channel)
+            Some(state) => {
+                debug!("buf: {:?}", buf);
+                debug!("replacing state: {:?}", state);
+                self.state = Some(state)
+            },
+            None => {}
         }
-        Some(state) => {
-            debug!("buf: {:?}", buf);
-            debug!("replacing state: {:?}", state);
-            state
-        },
-        None => unreachable!()
-    }
 
+    }
 }

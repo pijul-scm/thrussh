@@ -38,18 +38,14 @@ impl std::default::Default for Config {
     }
 }
 
-pub struct ClientSession<'a, C> {
+pub struct ClientSession<'a> {
     buffers: super::SSHBuffers,
-    state: Option<ServerState<C>>,
+    state: Option<ServerState>,
     auth_method: Option<auth::Method<'a>>
 }
 
-pub trait Client {
-    fn init(&self, channel:&ChannelParameters) -> Self;
-}
 
-
-impl<'a, C:Client> ClientSession<'a, C> {
+impl<'a> ClientSession<'a> {
     pub fn new() -> Self {
         super::SODIUM_INIT.call_once(|| {
             super::sodium::init();
@@ -62,12 +58,11 @@ impl<'a, C:Client> ClientSession<'a, C> {
     }
     // returns whether a complete packet has been read.
     pub fn read<R: BufRead>(&mut self,
-                                      config: &Config,
-                                      client: &C,
-                                      stream: &mut R,
-                                      buffer: &mut CryptoBuf,
-                                      buffer2: &mut CryptoBuf)
-                                      -> Result<bool, Error> {
+                            config: &Config,
+                            stream: &mut R,
+                            buffer: &mut CryptoBuf,
+                            buffer2: &mut CryptoBuf)
+                            -> Result<bool, Error> {
         println!("read");
         let state = std::mem::replace(&mut self.state, None);
         match state {
@@ -113,7 +108,7 @@ impl<'a, C:Client> ClientSession<'a, C> {
                 // Have we determined the algorithm yet?
                 let mut received = false;
                 if kexinit.algo.is_none() {
-                    if self.buffers.read_len == 0 {
+                    if self.buffers.read.len == 0 {
                         try!(self.buffers.set_clear_len(stream));
                     }
                     if try!(self.buffers.read(stream)) {
@@ -126,9 +121,8 @@ impl<'a, C:Client> ClientSession<'a, C> {
                                 println!("unknown packet, expecting KEXINIT, received {:?}", payload);
                             }
                         }
-                        self.buffers.recv_seqn += 1;
-                        self.buffers.read_buffer.clear();
-                        self.buffers.read_len = 0;
+                        self.buffers.read.seqn += 1;
+                        self.buffers.read.clear();
                         received = true;
                     }
                 }
@@ -162,7 +156,7 @@ impl<'a, C:Client> ClientSession<'a, C> {
 
                 println!("kexdhdone");
                 // We've sent ECDH_INIT, waiting for ECDH_REPLY
-                if self.buffers.read_len == 0 {
+                if self.buffers.read.len == 0 {
                     try!(self.buffers.set_clear_len(stream));
                 }
 
@@ -171,9 +165,8 @@ impl<'a, C:Client> ClientSession<'a, C> {
                     let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2);
 
                     self.state = Some(ServerState::Kex(Kex::NewKeys(new_keys)));
-                    self.buffers.recv_seqn += 1;
-                    self.buffers.read_buffer.clear();
-                    self.buffers.read_len = 0;
+                    self.buffers.read.seqn += 1;
+                    self.buffers.read.clear();
 
                     Ok(true)
                 } else {
@@ -183,7 +176,7 @@ impl<'a, C:Client> ClientSession<'a, C> {
 
             },
             Some(ServerState::Kex(Kex::NewKeys(mut newkeys))) => {
-                if self.buffers.read_len == 0 {
+                if self.buffers.read.len == 0 {
                     try!(self.buffers.set_clear_len(stream));
                 }
                 if try!(self.buffers.read(stream)) {
@@ -201,9 +194,8 @@ impl<'a, C:Client> ClientSession<'a, C> {
                             }
                         }
                     }
-                    self.buffers.recv_seqn += 1;
-                    self.buffers.read_buffer.clear();
-                    self.buffers.read_len = 0;
+                    self.buffers.read.seqn += 1;
+                    self.buffers.read.clear();
 
                     Ok(true)
                 } else {
@@ -214,15 +206,18 @@ impl<'a, C:Client> ClientSession<'a, C> {
                 println!("encrypted state");
                 self.try_rekey(&mut enc, &config);
                 let state = std::mem::replace(&mut enc.state, None);
+
+                let read_complete;
+
                 match state {
                     Some(EncryptedState::ServiceRequest) => {
                         println!("service request");
-                        let buf_received = if let Some(buf) = try!(enc.cipher.read_server_packet(
-                            &mut self.buffers.read_bytes,
-                            self.buffers.recv_seqn,
+                        if let Some(buf) = try!(enc.cipher.read_server_packet(
+                            &mut self.buffers.read.bytes,
+                            self.buffers.read.seqn,
                             stream,
-                            &mut self.buffers.read_len,
-                            &mut self.buffers.read_buffer)) {
+                            &mut self.buffers.read.len,
+                            &mut self.buffers.read.buffer)) {
 
                             println!("buf= {:?}",buf);
                             if buf[0] == msg::SERVICE_ACCEPT {
@@ -240,16 +235,15 @@ impl<'a, C:Client> ClientSession<'a, C> {
                                 println!("other message");
                                 enc.state = Some(EncryptedState::ServiceRequest);
                             }
-                            true
+                            read_complete = true
                         } else {
-                            println!("service request false, target {:?}", self.buffers.read_len);
-                            false
+                            println!("service request false, target {:?}", self.buffers.read.len);
+                            read_complete = false
                         };
 
-                        if buf_received {
-                            self.buffers.recv_seqn += 1;
-                            self.buffers.read_buffer.clear();
-                            self.buffers.read_len = 0;
+                        if read_complete {
+                            self.buffers.read.seqn += 1;
+                            self.buffers.read.clear();
                         }
                     },
                     /*Some(EncryptedState::WaitingAuthRequest(mut auth_request)) => {
@@ -259,13 +253,13 @@ impl<'a, C:Client> ClientSession<'a, C> {
                     Some(EncryptedState::AuthRequestSuccess(mut auth_request)) => {
 
                         // We're waiting for success.
-                        let read =
+                        
                             if let Some(buf) = try!(enc.cipher.read_server_packet(
-                                &mut self.buffers.read_bytes,
-                                self.buffers.recv_seqn,
+                                &mut self.buffers.read.bytes,
+                                self.buffers.read.seqn,
                                 stream,
-                                &mut self.buffers.read_len,
-                                &mut self.buffers.read_buffer)) {
+                                &mut self.buffers.read.len,
+                                &mut self.buffers.read.buffer)) {
 
                                 println!("line {}, buf = {:?}", line!(), buf);
 
@@ -291,39 +285,40 @@ impl<'a, C:Client> ClientSession<'a, C> {
                                     println!("unknown message: {:?}", buf);
                                     enc.state = Some(EncryptedState::AuthRequestSuccess(auth_request))
                                 }
-                                true
+                                read_complete = true
 
                             } else {
 
-                                false
+                                read_complete = false
 
-                            };
+                            }
 
 
-                        if read {
-                            self.buffers.recv_seqn += 1;
-                            self.buffers.read_buffer.clear();
-                            self.buffers.read_len = 0;
+                        if read_complete {
+                            self.buffers.read.seqn += 1;
+                            self.buffers.read.clear();
                         }
                         
                     },
                     Some(EncryptedState::WaitingSignature(auth_request)) => {
                         // The server is waiting for our authentication signature (also USERAUTH_REQUEST).
-                        enc.state = Some(EncryptedState::WaitingSignature(auth_request))
+                        enc.state = Some(EncryptedState::WaitingSignature(auth_request));
+                        read_complete = false
                     },
                     Some(EncryptedState::WaitingChannelOpen) => {
                         // The server is waiting for our CHANNEL_OPEN.
-                        enc.state = Some(EncryptedState::WaitingChannelOpen)
+                        enc.state = Some(EncryptedState::WaitingChannelOpen);
+                        read_complete = false
                     },
                     Some(EncryptedState::ChannelOpenConfirmation(mut channels)) => {
 
                         // Check whether we're receiving a confirmation message.
-                        let read = if let Some(buf) = try!(enc.cipher.read_server_packet(
-                            &mut self.buffers.read_bytes,
-                            self.buffers.recv_seqn,
+                        if let Some(buf) = try!(enc.cipher.read_server_packet(
+                            &mut self.buffers.read.bytes,
+                            self.buffers.read.seqn,
                             stream,
-                            &mut self.buffers.read_len,
-                            &mut self.buffers.read_buffer)) {
+                            &mut self.buffers.read.len,
+                            &mut self.buffers.read.buffer)) {
 
 
                             println!("channel_confirmation? {:?}", buf);
@@ -340,13 +335,8 @@ impl<'a, C:Client> ClientSession<'a, C> {
                                     channels.initial_window_size = std::cmp::min(window, channels.initial_window_size);
                                     channels.maximum_packet_size = std::cmp::min(max_packet, channels.maximum_packet_size);
 
-                                    let client = C::init(client, &channels);
                                     println!("id_send = {:?}", id_send);
-                                    enc.channels.insert(channels.sender_channel,
-                                                        super::Channel {
-                                                            parameters: channels,
-                                                            engine: client,
-                                                        });
+                                    enc.channels.insert(channels.sender_channel, channels);
 
                                     enc.state = Some(EncryptedState::ChannelOpened(id_send));
 
@@ -357,30 +347,25 @@ impl<'a, C:Client> ClientSession<'a, C> {
                             } else {
                                 enc.state = Some(EncryptedState::ChannelOpenConfirmation(channels));
                             }
-                            true
+                            read_complete = true
                         } else {
                             enc.state = Some(EncryptedState::ChannelOpenConfirmation(channels));
-                            false
+                            read_complete = false
                         };
                         
-                        if read {
-                            self.buffers.recv_seqn += 1;
-                            self.buffers.read_buffer.clear();
-                            self.buffers.read_len = 0;
+                        if read_complete {
+                            self.buffers.read.seqn += 1;
+                            self.buffers.read.clear();
                         }
                     }
-                    /*Some(EncryptedState::ChannelOpened(x)) => {
-                        enc.state = Some(EncryptedState::ChannelOpened(x));
-                        true
-                    }*/
                     state => {
                         println!("read state {:?}", state);
-                        let read = if let Some(buf) = try!(enc.cipher.read_server_packet(
-                            &mut self.buffers.read_bytes,
-                            self.buffers.recv_seqn,
+                        if let Some(buf) = try!(enc.cipher.read_server_packet(
+                            &mut self.buffers.read.bytes,
+                            self.buffers.read.seqn,
                             stream,
-                            &mut self.buffers.read_len,
-                            &mut self.buffers.read_buffer)) {
+                            &mut self.buffers.read.len,
+                            &mut self.buffers.read.buffer)) {
 
                             println!("msg: {:?}", buf);
 
@@ -453,21 +438,20 @@ impl<'a, C:Client> ClientSession<'a, C> {
                                     }
                                 }
                             }
-                            true
+                            read_complete = true
                         } else {
-                            false
+                            read_complete = false
                         };
 
-                        if read {
-                            self.buffers.recv_seqn += 1;
-                            self.buffers.read_buffer.clear();
-                            self.buffers.read_len = 0;
+                        if read_complete {
+                            self.buffers.read.seqn += 1;
+                            self.buffers.read.clear();
                         }
                         enc.state = state;
                     }
                 }
                 self.state = Some(ServerState::Encrypted(enc));
-                Ok(true)
+                Ok(read_complete)
             }
         }
 
@@ -486,8 +470,7 @@ impl<'a, C:Client> ClientSession<'a, C> {
             // If there are still bytes to write.
             return Ok(true);
         }
-        self.buffers.write_buffer.clear();
-        self.buffers.write_position = 0;
+        self.buffers.write.clear();
 
         let state = std::mem::replace(&mut self.state, None);
         match state {
@@ -529,12 +512,12 @@ impl<'a, C:Client> ClientSession<'a, C> {
             },
             Some(ServerState::Kex(Kex::KexDh(mut kexdh))) => {
 
-                self.buffers.write_buffer.extend(b"\0\0\0\0\0");
+                self.buffers.write.buffer.extend(b"\0\0\0\0\0");
 
-                let kex = try!(kexdh.kex.client_dh(&mut kexdh.exchange, &mut self.buffers.write_buffer));
+                let kex = try!(kexdh.kex.client_dh(&mut kexdh.exchange, &mut self.buffers.write.buffer));
 
-                super::complete_packet(&mut self.buffers.write_buffer, 0);
-                self.buffers.sent_seqn += 1;
+                super::complete_packet(&mut self.buffers.write.buffer, 0);
+                self.buffers.write.seqn += 1;
                 try!(self.buffers.write_all(stream));
 
                 self.state = Some(ServerState::Kex(Kex::KexDhDone(KexDhDone {
@@ -558,10 +541,10 @@ impl<'a, C:Client> ClientSession<'a, C> {
 
                 if !newkeys.sent {
                     debug!("sending NEWKEYS");
-                    self.buffers.write_buffer.extend(b"\0\0\0\0\0");
-                    self.buffers.write_buffer.push(msg::NEWKEYS);
-                    super::complete_packet(&mut self.buffers.write_buffer, 0);
-                    self.buffers.sent_seqn += 1;
+                    self.buffers.write.buffer.extend(b"\0\0\0\0\0");
+                    self.buffers.write.buffer.push(msg::NEWKEYS);
+                    super::complete_packet(&mut self.buffers.write.buffer, 0);
+                    self.buffers.write.seqn += 1;
 
                     newkeys.sent = true;
                 }
@@ -573,8 +556,8 @@ impl<'a, C:Client> ClientSession<'a, C> {
                     buffer.push(msg::SERVICE_REQUEST);
                     buffer.extend_ssh_string(b"ssh-userauth");
 
-                    encrypted.cipher.write_client_packet(self.buffers.sent_seqn, buffer.as_slice(), &mut self.buffers.write_buffer);
-                    self.buffers.sent_seqn += 1;
+                    encrypted.cipher.write_client_packet(self.buffers.write.seqn, buffer.as_slice(), &mut self.buffers.write.buffer);
+                    self.buffers.write.seqn += 1;
                     try!(self.buffers.write_all(stream));
                     println!("sending SERVICE_REQUEST");
                     self.state = Some(ServerState::Encrypted(encrypted));
@@ -622,8 +605,8 @@ impl<'a, C:Client> ClientSession<'a, C> {
                         };
                         if method_ok {
                             println!("method ok");
-                            enc.cipher.write_client_packet(self.buffers.sent_seqn, buffer.as_slice(), &mut self.buffers.write_buffer);
-                            self.buffers.sent_seqn += 1;
+                            enc.cipher.write_client_packet(self.buffers.write.seqn, buffer.as_slice(), &mut self.buffers.write.buffer);
+                            self.buffers.write.seqn += 1;
                             try!(self.buffers.write_all(stream));
                             enc.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
                         } else {
@@ -656,11 +639,11 @@ impl<'a, C:Client> ClientSession<'a, C> {
                         buffer.extend(buffer2.as_slice());
 
                         // Send
-                        enc.cipher.write_client_packet(self.buffers.sent_seqn,
+                        enc.cipher.write_client_packet(self.buffers.write.seqn,
                                                        &(buffer.as_slice())[i0..], // Skip the session id.
-                                                       &mut self.buffers.write_buffer);
+                                                       &mut self.buffers.write.buffer);
 
-                        self.buffers.sent_seqn += 1;
+                        self.buffers.write.seqn += 1;
                         try!(self.buffers.write_all(stream));
 
                         enc.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
@@ -679,11 +662,11 @@ impl<'a, C:Client> ClientSession<'a, C> {
                         buffer.push_u32_be(config.window); // window.
                         buffer.push_u32_be(config.maxpacket); // max packet size.
                         // Send
-                        enc.cipher.write_client_packet(self.buffers.sent_seqn,
+                        enc.cipher.write_client_packet(self.buffers.write.seqn,
                                                        buffer.as_slice(),
-                                                       &mut self.buffers.write_buffer);
+                                                       &mut self.buffers.write.buffer);
 
-                        self.buffers.sent_seqn += 1;
+                        self.buffers.write.seqn += 1;
                         try!(self.buffers.write_all(stream));
                         enc.state = Some(EncryptedState::ChannelOpenConfirmation(
                             ChannelParameters {
@@ -704,10 +687,10 @@ impl<'a, C:Client> ClientSession<'a, C> {
                                     negociation::write_kex(&config.keys, buffer);
                                     kexinit.exchange.client_kex_init.extend(buffer.as_slice());
 
-                                    enc.cipher.write_client_packet(self.buffers.sent_seqn, buffer.as_slice(),
-                                                                   &mut self.buffers.write_buffer);
+                                    enc.cipher.write_client_packet(self.buffers.write.seqn, buffer.as_slice(),
+                                                                   &mut self.buffers.write.buffer);
                                     
-                                    self.buffers.sent_seqn += 1;
+                                    self.buffers.write.seqn += 1;
                                     try!(self.buffers.write_all(stream));
                                     kexinit.sent = true;
                                 }
@@ -730,9 +713,9 @@ impl<'a, C:Client> ClientSession<'a, C> {
                                 buffer.clear();
                                 let kex = try!(kexdh.kex.client_dh(&mut kexdh.exchange, buffer));
                                 
-                                enc.cipher.write_client_packet(self.buffers.sent_seqn, buffer.as_slice(),
-                                                                     &mut self.buffers.write_buffer);
-                                self.buffers.sent_seqn += 1;
+                                enc.cipher.write_client_packet(self.buffers.write.seqn, buffer.as_slice(),
+                                                               &mut self.buffers.write.buffer);
+                                self.buffers.write.seqn += 1;
                                 try!(self.buffers.write_all(stream));
 
                                 enc.rekey = Some(Kex::KexDhDone(KexDhDone {
@@ -748,9 +731,9 @@ impl<'a, C:Client> ClientSession<'a, C> {
                             Some(Kex::NewKeys(mut newkeys)) => {
 
                                 if !newkeys.sent {
-                                    enc.cipher.write_client_packet(self.buffers.sent_seqn, &[msg::NEWKEYS],
-                                                                         &mut self.buffers.write_buffer);
-                                    self.buffers.sent_seqn += 1;
+                                    enc.cipher.write_client_packet(self.buffers.write.seqn, &[msg::NEWKEYS],
+                                                                         &mut self.buffers.write.buffer);
+                                    self.buffers.write.seqn += 1;
                                     newkeys.sent = true;
                                 }
                                 if !newkeys.received {
@@ -773,10 +756,10 @@ impl<'a, C:Client> ClientSession<'a, C> {
         }
         
     }
-    pub fn try_rekey<A,B>(&mut self, enc: &mut super::Encrypted<A,B>, config:&Config) {
+    pub fn try_rekey(&mut self, enc: &mut super::Encrypted, config:&Config) {
         if enc.rekey.is_none() &&
-            (self.buffers.written_bytes >= config.rekey_write_limit
-             || self.buffers.read_bytes >= config.rekey_read_limit
+            (self.buffers.write.bytes >= config.rekey_write_limit
+             || self.buffers.read.bytes >= config.rekey_read_limit
              || time::precise_time_s() >= self.buffers.last_rekey_s + config.rekey_time_limit_s) {
                 let mut kexinit = KexInit {
                     exchange: std::mem::replace(&mut enc.exchange, None).unwrap(),
@@ -790,9 +773,8 @@ impl<'a, C:Client> ClientSession<'a, C> {
                 kexinit.exchange.server_ephemeral.clear();
                 enc.rekey = Some(Kex::KexInit(kexinit))
             } else {
-                debug!("not yet rekeying, {:?}", self.buffers.written_bytes)
+                debug!("not yet rekeying, {:?}", self.buffers.write.bytes)
             }
-
     }
     pub fn needs_auth_method(&self) -> Option<auth::Methods> {
 
@@ -858,14 +840,14 @@ impl<'a, C:Client> ClientSession<'a, C> {
                         let c = enc.channels.get(&channel).unwrap();
                         buffer.clear();
                         buffer.push(msg::CHANNEL_DATA);
-                        buffer.push_u32_be(c.parameters.recipient_channel);
+                        buffer.push_u32_be(c.recipient_channel);
                         buffer.extend_ssh_string(msg);
-                        println!("{:?} {:?}", buffer.as_slice(), self.buffers.sent_seqn);
-                        enc.cipher.write_client_packet(self.buffers.sent_seqn,
+                        println!("{:?} {:?}", buffer.as_slice(), self.buffers.write.seqn);
+                        enc.cipher.write_client_packet(self.buffers.write.seqn,
                                                        buffer.as_slice(),
-                                                       &mut self.buffers.write_buffer);
-                        println!("buf = {:?}", self.buffers.write_buffer.as_slice());
-                        self.buffers.sent_seqn += 1;
+                                                       &mut self.buffers.write.buffer);
+                        println!("buf = {:?}", self.buffers.write.buffer.as_slice());
+                        self.buffers.write.seqn += 1;
                         try!(self.buffers.write_all(stream));
                         Ok(true)
                     },

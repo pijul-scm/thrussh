@@ -129,12 +129,11 @@ impl super::CipherT for Cipher {
 
         // println!("seqnr = {}", seq);
         let block_size = 8;
-        let padding_len = {
+        let padding_len = if packet_content.len() + 5 <= 16 { 16 - packet_content.len() - 1 } else {
             (block_size - ((1 + packet_content.len()) % block_size))
         };
         // println!("padding_len {:?} {:?} {:?}", packet_content.len(), padding_len, poly1305::TAGBYTES);
         let padding_len = if padding_len < 4 { padding_len + block_size } else { padding_len };
-        let padding_len = padding_len + 16;
 
         // println!("pushing len: {:?}", packet_content.len() + padding_len + 1);
         buffer.push_u32_be((packet_content.len() + padding_len + 1) as u32);
