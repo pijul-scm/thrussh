@@ -28,9 +28,7 @@ impl ServerSession {
                     kexinit.algo = Some(try!(negociation::read_kex(payload, keys)));
                     kexinit.exchange.client_kex_init.extend(payload);
                 }
-                self.buffers.read.seqn += 1;
-                self.buffers.read.buffer.clear();
-                self.buffers.read.len = 0;
+                self.buffers.read.clear_incr();
                 self.state = Some(ServerState::Kex(try!(kexinit.kexinit())));
                 Ok(true)
             } else {
@@ -43,7 +41,7 @@ impl ServerSession {
             Ok(true)
         }
     }
-    pub fn read_cleartext_kexdh<R: BufRead>(&mut self, stream:&mut R, mut kexdh:KexDh) -> Result<bool, Error> {
+    pub fn read_cleartext_kexdh<R: BufRead>(&mut self, stream:&mut R, buffer: &mut CryptoBuf, buffer2:&mut CryptoBuf, mut kexdh:KexDh) -> Result<bool, Error> {
 
         if self.buffers.read.len == 0 {
             try!(self.buffers.set_clear_len(stream));
@@ -58,10 +56,9 @@ impl ServerSession {
                 kexdh.exchange.client_ephemeral.extend(&payload[5..]);
                 try!(kexdh.kex.server_dh(&mut kexdh.exchange, payload))
             };
-            self.buffers.read.seqn += 1;
-            self.buffers.read.buffer.clear();
-            self.buffers.read.len = 0;
-            self.state = Some(ServerState::Kex(Kex::KexDhDone(KexDhDone {
+            self.buffers.read.clear_incr();
+
+            let kexdhdone = KexDhDone {
                 exchange: kexdh.exchange,
                 kex: kex,
                 key: kexdh.key,
@@ -69,7 +66,8 @@ impl ServerSession {
                 mac: kexdh.mac,
                 follows: kexdh.follows,
                 session_id: kexdh.session_id,
-            })));
+            };
+            self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
 
             Ok(true)
 
@@ -90,9 +88,7 @@ impl ServerSession {
             if payload_is_newkeys {
                 // Ok, NEWKEYS received, now encrypted.
                 self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest)));
-                self.buffers.read.seqn += 1;
-                self.buffers.read.buffer.clear();
-                self.buffers.read.len = 0;
+                self.buffers.read.clear_incr();
                 Ok(true)
             } else {
                 Err(Error::NewKeys)

@@ -99,6 +99,11 @@ impl SSHBuffer {
         self.len = 0;
         self.buffer.clear();
     }
+    fn clear_incr(&mut self) {
+        self.len = 0;
+        self.buffer.clear();
+        self.seqn += 1
+    }
 }
 impl SSHBuffers {
     fn new() -> Self {

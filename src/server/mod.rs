@@ -120,7 +120,8 @@ impl ServerSession {
         server:&mut S,
         config: &Config<A>,
         stream: &mut R,
-        buffer: &mut CryptoBuf)
+        buffer: &mut CryptoBuf,
+        buffer2: &mut CryptoBuf)
         -> Result<bool, Error> {
 
         let state = std::mem::replace(&mut self.state, None);
@@ -141,7 +142,7 @@ impl ServerSession {
 
             Some(ServerState::Kex(Kex::KexInit(kexinit))) => self.read_cleartext_kexinit(stream, kexinit, &config.keys),
 
-            Some(ServerState::Kex(Kex::KexDh(kexdh))) => self.read_cleartext_kexdh(stream, kexdh),
+            Some(ServerState::Kex(Kex::KexDh(kexdh))) => self.read_cleartext_kexdh(stream, buffer, buffer2, kexdh),
 
             Some(ServerState::Kex(Kex::NewKeys(newkeys))) => self.read_cleartext_newkeys(stream, newkeys),
 
