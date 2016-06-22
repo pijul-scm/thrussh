@@ -3,6 +3,7 @@ use super::super::*;
 
 use super::super::msg;
 use super::super::negociation;
+use super::super::encoding::Reader;
 
 use rand::{thread_rng, Rng};
 use std;
@@ -145,11 +146,11 @@ impl Encrypted {
             }
             Some(EncryptedState::WaitingChannelOpen) if buf[0] == msg::CHANNEL_OPEN => {
                 // https://tools.ietf.org/html/rfc4254#section-5.1
-                let typ_len = BigEndian::read_u32(&buf[1..]) as usize;
-                let typ = &buf[5..5 + typ_len];
-                let sender = BigEndian::read_u32(&buf[5 + typ_len..]);
-                let window = BigEndian::read_u32(&buf[9 + typ_len..]);
-                let maxpacket = BigEndian::read_u32(&buf[13 + typ_len..]);
+                let mut r = buf.reader(1);
+                let typ = r.read_string().unwrap();
+                let sender = r.read_u32().unwrap();
+                let window = r.read_u32().unwrap();
+                let maxpacket = r.read_u32().unwrap();
 
                 debug!("waiting channel open: type = {:?} sender = {:?} window = {:?} maxpacket = {:?}",
                        String::from_utf8_lossy(typ),

@@ -703,6 +703,7 @@ impl<'a> ClientSession<'a> {
         }
         
     }
+
     pub fn try_rekey(&mut self, enc: &mut super::Encrypted, config:&Config) {
         if enc.rekey.is_none() &&
             (self.buffers.write.bytes >= config.rekey_write_limit
@@ -723,6 +724,7 @@ impl<'a> ClientSession<'a> {
                 debug!("not yet rekeying, {:?}", self.buffers.write.bytes)
             }
     }
+
     pub fn needs_auth_method(&self) -> Option<auth::Methods> {
 
         match self.state {
@@ -740,6 +742,7 @@ impl<'a> ClientSession<'a> {
             _ => None
         }
     }
+
     pub fn is_authenticated(&self) -> bool {
 
         match self.state {
@@ -803,6 +806,5 @@ impl<'a> ClientSession<'a> {
             },
             _ => Ok(false)
         }
-
     }
 }
