@@ -554,43 +554,7 @@ impl<'a> ClientSession<'a> {
                 let state = std::mem::replace(&mut enc.state, None);
                 match state {
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
-                        // The server is waiting for our USERAUTH_REQUEST.
-                        buffer.clear();
-
-                        buffer.push(msg::USERAUTH_REQUEST);
-                        let method_ok = match self.auth_method {
-                            Some(auth::Method::Password { user, password }) => {
-
-                                buffer.extend_ssh_string(user.as_bytes());
-                                buffer.extend_ssh_string(b"ssh-connection");
-                                buffer.extend_ssh_string(b"password");
-                                buffer.push(1);
-                                buffer.extend_ssh_string(password.as_bytes());
-                                true
-                            },
-                            Some(auth::Method::Pubkey { ref user, ref pubkey, .. }) => {
-                                buffer.extend_ssh_string(user.as_bytes());
-                                buffer.extend_ssh_string(b"ssh-connection");
-                                buffer.extend_ssh_string(b"publickey");
-                                buffer.push(0); // This is a probe
-                                buffer.extend_ssh_string(pubkey.name().as_bytes());
-                                pubkey.extend_pubkey(buffer);
-                                true
-                            },
-                            _ => {
-                                false
-                            }
-                        };
-                        if method_ok {
-                            println!("method ok");
-                            enc.cipher.write_client_packet(self.buffers.write.seqn, buffer.as_slice(), &mut self.buffers.write.buffer);
-                            self.buffers.write.seqn += 1;
-                            try!(self.buffers.write_all(stream));
-                            enc.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
-                        } else {
-                            println!("method not ok");
-                            enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
-                        }
+                        try!(enc.client_waiting_auth_request(stream, &mut self.buffers, auth_request, &self.auth_method, config, buffer, buffer2))
                     },
 
                     Some(EncryptedState::WaitingSignature(auth_request)) => {
@@ -598,32 +562,7 @@ impl<'a> ClientSession<'a> {
                         try!(enc.client_send_signature(stream, &mut self.buffers, auth_request, config, buffer, buffer2));
                     },
                     Some(EncryptedState::WaitingChannelOpen) => {
-                        // The server is waiting for our CHANNEL_OPEN.
-                        let mut sender_channel = 0;
-                        while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
-                            sender_channel = rand::thread_rng().gen()
-                        }
-                        buffer.clear();
-                        buffer.push(msg::CHANNEL_OPEN);
-                        buffer.extend_ssh_string(b"channel name");
-                        buffer.push_u32_be(sender_channel); // sender channel id.
-                        buffer.push_u32_be(config.window); // window.
-                        buffer.push_u32_be(config.maxpacket); // max packet size.
-                        // Send
-                        enc.cipher.write_client_packet(self.buffers.write.seqn,
-                                                       buffer.as_slice(),
-                                                       &mut self.buffers.write.buffer);
-
-                        self.buffers.write.seqn += 1;
-                        try!(self.buffers.write_all(stream));
-                        enc.state = Some(EncryptedState::ChannelOpenConfirmation(
-                            ChannelParameters {
-                                recipient_channel: 0,
-                                sender_channel: sender_channel,
-                                initial_window_size: config.window,
-                                maximum_packet_size: config.maxpacket,
-                            }
-                        ));
+                        try!(enc.client_waiting_channel_open(stream, &mut self.buffers, config, buffer))
                     },
                     state => {
                         match std::mem::replace(&mut enc.rekey, None) {

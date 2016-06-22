@@ -247,8 +247,8 @@ impl ServerSession {
                 let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key.public_host_key,
                                                                     &kexdhdone.exchange,
                                                                     buffer));
-                self.cleartext_kex_ecdh_reply(&kexdhdone, &hash);
-                self.cleartext_send_newkeys();
+                self.server_cleartext_kex_ecdh_reply(&kexdhdone, &hash);
+                self.server_cleartext_send_newkeys();
                 try!(self.buffers.write_all(stream));
 
                 self.state = Some(ServerState::Kex(Kex::NewKeys(kexdhdone.compute_keys(hash,
@@ -287,23 +287,23 @@ impl ServerSession {
                         match state {
 
                             Some(EncryptedState::ServiceRequest) => {
-                                let auth_request = self.accept_service(config.auth_banner,
-                                                                       config.methods,
-                                                                       &mut enc,
-                                                                       buffer);
+                                let auth_request = self.server_accept_service(config.auth_banner,
+                                                                              config.methods,
+                                                                              &mut enc,
+                                                                              buffer);
                                 enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
                                 try!(self.buffers.write_all(stream));
                             }
 
                             Some(EncryptedState::RejectAuthRequest(auth_request)) => {
 
-                                self.reject_auth_request(&mut enc, buffer, &auth_request);
+                                self.server_reject_auth_request(&mut enc, buffer, &auth_request);
                                 enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
                                 try!(self.buffers.write_all(stream));
                             }
 
                             Some(EncryptedState::WaitingSignature(mut auth_request)) => {
-                                self.send_pk_ok(&mut enc, buffer, &mut auth_request);
+                                self.server_send_pk_ok(&mut enc, buffer, &mut auth_request);
                                 enc.state = Some(EncryptedState::WaitingSignature(auth_request));
                                 try!(self.buffers.write_all(stream));
                             }
@@ -323,7 +323,7 @@ impl ServerSession {
 
                                 server.new_channel(&channel);
                                 let sender_channel = channel.sender_channel;
-                                self.confirm_channel_open(&mut enc, buffer, channel);
+                                self.server_confirm_channel_open(&mut enc, buffer, channel);
                                 enc.state = Some(EncryptedState::ChannelOpened(sender_channel));
                                 try!(self.buffers.write_all(stream));
                             }
