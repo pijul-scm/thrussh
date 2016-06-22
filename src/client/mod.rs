@@ -161,12 +161,12 @@ impl<'a> ClientSession<'a> {
                 }
 
                 if try!(self.buffers.read(stream)) {
+                    // Received ECDH_REPLY
                     let hash = try!(kexdhdone.client_compute_exchange_hash(self.buffers.get_current_payload(), buffer));
                     let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2);
 
                     self.state = Some(ServerState::Kex(Kex::NewKeys(new_keys)));
-                    self.buffers.read.seqn += 1;
-                    self.buffers.read.clear();
+                    self.buffers.read.clear_incr();
 
                     Ok(true)
                 } else {
@@ -212,12 +212,7 @@ impl<'a> ClientSession<'a> {
                 match state {
                     Some(EncryptedState::ServiceRequest) => {
                         println!("service request");
-                        if let Some(buf) = try!(enc.cipher.read_server_packet(
-                            &mut self.buffers.read.bytes,
-                            self.buffers.read.seqn,
-                            stream,
-                            &mut self.buffers.read.len,
-                            &mut self.buffers.read.buffer)) {
+                        if let Some(buf) = try!(enc.cipher.read_server_packet(stream, &mut self.buffers.read)) {
 
                             println!("buf= {:?}",buf);
                             if buf[0] == msg::SERVICE_ACCEPT {
@@ -237,7 +232,6 @@ impl<'a> ClientSession<'a> {
                             }
                             read_complete = true
                         } else {
-                            println!("service request false, target {:?}", self.buffers.read.len);
                             read_complete = false
                         };
 
@@ -254,44 +248,39 @@ impl<'a> ClientSession<'a> {
 
                         // We're waiting for success.
                         
-                            if let Some(buf) = try!(enc.cipher.read_server_packet(
-                                &mut self.buffers.read.bytes,
-                                self.buffers.read.seqn,
-                                stream,
-                                &mut self.buffers.read.len,
-                                &mut self.buffers.read.buffer)) {
+                        if let Some(buf) = try!(enc.cipher.read_server_packet(stream, &mut self.buffers.read)) {
 
-                                println!("line {}, buf = {:?}", line!(), buf);
+                            println!("line {}, buf = {:?}", line!(), buf);
 
-                                if buf[0] == msg::USERAUTH_SUCCESS {
+                            if buf[0] == msg::USERAUTH_SUCCESS {
 
-                                    enc.state = Some(EncryptedState::WaitingChannelOpen)
+                                enc.state = Some(EncryptedState::WaitingChannelOpen)
 
-                                } else if buf[0] == msg::USERAUTH_FAILURE {
+                            } else if buf[0] == msg::USERAUTH_FAILURE {
 
-                                    let mut r = buf.reader(1);
-                                    let remaining_methods = r.read_string().unwrap();
+                                let mut r = buf.reader(1);
+                                let remaining_methods = r.read_string().unwrap();
 
-                                    auth_request.methods.keep_remaining(remaining_methods.split(|&c| c==b','));
+                                auth_request.methods.keep_remaining(remaining_methods.split(|&c| c==b','));
 
-                                    enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
+                                enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
 
-                                } else if buf[0] == msg::USERAUTH_PK_OK {
+                            } else if buf[0] == msg::USERAUTH_PK_OK {
 
-                                    auth_request.public_key_is_ok = true;
-                                    enc.state = Some(EncryptedState::WaitingSignature(auth_request))
-
-                                } else {
-                                    println!("unknown message: {:?}", buf);
-                                    enc.state = Some(EncryptedState::AuthRequestSuccess(auth_request))
-                                }
-                                read_complete = true
+                                auth_request.public_key_is_ok = true;
+                                enc.state = Some(EncryptedState::WaitingSignature(auth_request))
 
                             } else {
-
-                                read_complete = false
-
+                                println!("unknown message: {:?}", buf);
+                                enc.state = Some(EncryptedState::AuthRequestSuccess(auth_request))
                             }
+                            read_complete = true
+
+                        } else {
+
+                            read_complete = false
+
+                        }
 
 
                         if read_complete {
@@ -313,12 +302,7 @@ impl<'a> ClientSession<'a> {
                     Some(EncryptedState::ChannelOpenConfirmation(mut channels)) => {
 
                         // Check whether we're receiving a confirmation message.
-                        if let Some(buf) = try!(enc.cipher.read_server_packet(
-                            &mut self.buffers.read.bytes,
-                            self.buffers.read.seqn,
-                            stream,
-                            &mut self.buffers.read.len,
-                            &mut self.buffers.read.buffer)) {
+                        if let Some(buf) = try!(enc.cipher.read_server_packet(stream, &mut self.buffers.read)) {
 
 
                             println!("channel_confirmation? {:?}", buf);
@@ -360,12 +344,7 @@ impl<'a> ClientSession<'a> {
                     }
                     state => {
                         println!("read state {:?}", state);
-                        if let Some(buf) = try!(enc.cipher.read_server_packet(
-                            &mut self.buffers.read.bytes,
-                            self.buffers.read.seqn,
-                            stream,
-                            &mut self.buffers.read.len,
-                            &mut self.buffers.read.buffer)) {
+                        if let Some(buf) = try!(enc.cipher.read_server_packet(stream, &mut self.buffers.read)) {
 
                             println!("msg: {:?}", buf);
 

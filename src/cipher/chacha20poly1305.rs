@@ -1,5 +1,5 @@
 use byteorder::{ByteOrder,BigEndian,WriteBytesExt};
-use super::super::Error;
+use super::super::{Error,SSHBuffer};
 use std::io::{Read, BufRead};
 
 // use sodiumoxide::crypto::onetimeauth::poly1305;
@@ -34,20 +34,19 @@ use super::super::CryptoBuf;
 
 impl super::CipherT for Cipher {
 
-    fn read_packet<'a, R:BufRead>(&self, bytes_read:&mut usize, seq:usize, stream:&mut R, read_len:&mut usize,
-                                  read_buffer:&'a mut CryptoBuf) -> Result<Option<&'a[u8]>,Error> {
+    fn read_packet<'a, R:BufRead>(&self, stream:&mut R, read_buffer:&'a mut SSHBuffer) -> Result<Option<&'a[u8]>,Error> {
 
         // http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD
         let mut nonce = [0;8];
-        BigEndian::write_u32(&mut nonce[4..], seq as u32);
+        BigEndian::write_u32(&mut nonce[4..], read_buffer.seqn as u32);
         let nonce = chacha20::Nonce::copy_from_slice(&nonce);
         //println!("seq = {:?}", seq);
 
         // - Compute the length, by chacha20-stream-xoring the first 4 bytes with the last 32 bytes of the client key.
-        if *read_len == 0 {
+        if read_buffer.len == 0 {
             let mut len = [0;4];
             try!(stream.read_exact(&mut len));
-            read_buffer.extend(&len);
+            read_buffer.buffer.extend(&len);
 
 
             chacha20::stream_xor_inplace(
@@ -57,10 +56,10 @@ impl super::CipherT for Cipher {
 
             //println!("chacha20: packet length: {:?}", &len[..]);
 
-            *read_len = BigEndian::read_u32(&len) as usize + poly1305::TAGBYTES;
+            read_buffer.len = BigEndian::read_u32(&len) as usize + poly1305::TAGBYTES;
         }
         // - Compute the Poly1305 auth on the first (4+length) first bytes of the packet.
-        if try!(super::super::read(stream, read_buffer, *read_len, bytes_read)) {
+        if try!(super::super::read(stream, &mut read_buffer.buffer, read_buffer.len, &mut read_buffer.bytes)) {
 
             // println!("read_buffer {:?}", read_buffer);
             // try!(stream.read_exact(&mut buffer[4..]));
@@ -73,11 +72,11 @@ impl super::CipherT for Cipher {
 
             let mut tag = poly1305::Tag::new_blank();
 
-            let read_buffer_slice = read_buffer.as_mut_slice();
+            let read_buffer_slice = read_buffer.buffer.as_mut_slice();
             {
                 poly1305::authenticate(
                     &mut tag,
-                    &read_buffer_slice[0 .. 4 + *read_len - poly1305::TAGBYTES],
+                    &read_buffer_slice[0 .. 4 + read_buffer.len - poly1305::TAGBYTES],
                     &poly_key
                 );
             }
@@ -92,14 +91,14 @@ impl super::CipherT for Cipher {
             // - Constant-time-compare it with the Poly1305 at the end of the packet (right after the 4+length first bytes).
             if sodium::memcmp(
                 tag.as_bytes(),
-                &read_buffer_slice[ 4 + *read_len - poly1305::TAGBYTES ..]
+                &read_buffer_slice[ 4 + read_buffer.len - poly1305::TAGBYTES ..]
             ) {
 
                 // - If the auth is correct, chacha20-xor the length bytes after the first 4 ones, with ic 1.
                 //   (actually, the above doc says "ic = LE encoding of 1", which is different from the libsodium interface).
 
                 {
-                    chacha20::xor_inplace(&mut read_buffer_slice[4..(4 + *read_len - poly1305::TAGBYTES)],
+                    chacha20::xor_inplace(&mut read_buffer_slice[4..(4 + read_buffer.len - poly1305::TAGBYTES)],
                                           &nonce,
                                           1,
                                           &self.k2);
@@ -109,7 +108,7 @@ impl super::CipherT for Cipher {
                 // println!("read packet = {:?}", &read_buffer_slice[5..(5+ *read_len - poly1305::TAGBYTES - padding - 1)]);
                 //println!("chacha20: packet({:?}): {:?}", read_buffer_slice.len(), read_buffer_slice);
                 //println!("padding len = {:?}", padding);
-                Ok(Some(&read_buffer_slice[5..(5+ *read_len - poly1305::TAGBYTES - padding - 1)]))
+                Ok(Some(&read_buffer_slice[5..(5+ read_buffer.len - poly1305::TAGBYTES - padding - 1)]))
 
             } else {
                 //println!("should be {:?}, was {:?}", tag.as_bytes(), &read_buffer_slice[4 + *read_len - poly1305::TAGBYTES..]);

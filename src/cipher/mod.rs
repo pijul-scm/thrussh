@@ -38,28 +38,21 @@ pub enum Cipher {
 use super::CryptoBuf;
 
 pub trait CipherT {
-
-    fn read_packet<'a, R:BufRead>(&self, bytes_read:&mut usize, seq:usize, stream:&mut R,
-                                  read_len:&mut usize, read_buffer:&'a mut CryptoBuf) -> Result<Option<&'a[u8]>,Error>;
-
+    fn read_packet<'a, R:BufRead>(&self, stream:&mut R, buffer: &'a mut super::SSHBuffer) -> Result<Option<&'a[u8]>,Error>;
     fn write_packet(&self, seq:usize, packet:&[u8], buffer:&mut CryptoBuf);
-    
 }
 
 impl Cipher {
 
     pub fn read_client_packet<'a, R:BufRead>(
         &mut self,
-        bytes_read:&mut usize,
-        seq:usize,
         stream:&mut R,
-        read_len:&mut usize,
-        read_buffer:&'a mut CryptoBuf) -> Result<Option<&'a[u8]>,Error> {
+        buffer:&'a mut super::SSHBuffer) -> Result<Option<&'a[u8]>,Error> {
 
         match *self {
             Cipher::Chacha20Poly1305 { ref client_to_server, .. } => {
 
-                client_to_server.read_packet(bytes_read, seq, stream, read_len, read_buffer)
+                client_to_server.read_packet(stream, buffer)
 
             },
             //_ => unimplemented!()
@@ -67,16 +60,13 @@ impl Cipher {
     }
     pub fn read_server_packet<'a, R:BufRead>(
         &mut self,
-        bytes_read:&mut usize,
-        seq:usize,
         stream:&mut R,
-        read_len:&mut usize,
-        read_buffer:&'a mut CryptoBuf) -> Result<Option<&'a[u8]>,Error> {
+        buffer:&'a mut super::SSHBuffer) -> Result<Option<&'a[u8]>,Error> {
 
         match *self {
             Cipher::Chacha20Poly1305 { ref server_to_client, .. } => {
 
-                server_to_client.read_packet(bytes_read, seq, stream, read_len, read_buffer)
+                server_to_client.read_packet(stream, buffer)
 
             },
             //_ => unimplemented!()

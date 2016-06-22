@@ -11,6 +11,8 @@ impl ServerSession {
                                     hash: &kex::Digest) {
         // ECDH Key exchange.
         // http://tools.ietf.org/html/rfc5656#section-4
+        let pos = self.buffers.write.buffer.len();
+
         self.buffers.write.buffer.extend(b"\0\0\0\0\0");
         self.buffers.write.buffer.push(msg::KEX_ECDH_REPLY);
         kexdhdone.key.public_host_key.extend_pubkey(&mut self.buffers.write.buffer);
@@ -19,7 +21,7 @@ impl ServerSession {
         // Hash signature
         kexdhdone.key.add_signature(&mut self.buffers.write.buffer, hash.as_bytes());
         //
-        complete_packet(&mut self.buffers.write.buffer, 0);
+        complete_packet(&mut self.buffers.write.buffer, pos);
         self.buffers.write.seqn += 1;
     }
     pub fn cleartext_send_newkeys(&mut self) {
