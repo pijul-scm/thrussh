@@ -8,15 +8,15 @@ use rand::{thread_rng, Rng};
 use std;
 use std::io::BufRead;
 use byteorder::{ByteOrder, BigEndian, ReadBytesExt};
-use encoding::Reader;
+
 
 impl ServerSession {
 
-    pub fn read_cleartext_kexinit<R: BufRead>(&mut self,
-                                              stream: &mut R,
-                                              mut kexinit: KexInit,
-                                              keys: &[key::Algorithm])
-                                              -> Result<bool, Error> {
+    pub fn server_read_cleartext_kexinit<R: BufRead>(&mut self,
+                                                     stream: &mut R,
+                                                     mut kexinit: KexInit,
+                                                     keys: &[key::Algorithm])
+                                                     -> Result<bool, Error> {
         if kexinit.algo.is_none() {
             // read algo from packet.
             if self.buffers.read.len == 0 {
@@ -41,7 +41,7 @@ impl ServerSession {
             Ok(true)
         }
     }
-    pub fn read_cleartext_kexdh<R: BufRead>(&mut self, stream:&mut R, buffer: &mut CryptoBuf, buffer2:&mut CryptoBuf, mut kexdh:KexDh) -> Result<bool, Error> {
+    pub fn server_read_cleartext_kexdh<R: BufRead>(&mut self, stream:&mut R, buffer: &mut CryptoBuf, buffer2:&mut CryptoBuf, mut kexdh:KexDh) -> Result<bool, Error> {
 
         if self.buffers.read.len == 0 {
             try!(self.buffers.set_clear_len(stream));
@@ -58,7 +58,6 @@ impl ServerSession {
             };
             self.buffers.read.clear_incr();
 
-            // Write the write buffer, send all messages up to newkeys, and move to NewKeys state.
             let kexdhdone = KexDhDone {
                 exchange: kexdh.exchange,
                 kex: kex,
@@ -68,15 +67,8 @@ impl ServerSession {
                 follows: kexdh.follows,
                 session_id: kexdh.session_id,
             };
+            self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
 
-            let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key.public_host_key,
-                                                                &kexdhdone.exchange,
-                                                                buffer));
-            self.cleartext_kex_ecdh_reply(&kexdhdone, &hash);
-            self.cleartext_send_newkeys();
-            self.state = Some(ServerState::Kex(Kex::NewKeys(kexdhdone.compute_keys(hash,
-                                                                                   buffer,
-                                                                                   buffer2))));
             Ok(true)
 
         } else {
@@ -85,8 +77,7 @@ impl ServerSession {
             Ok(false)
         }
     }
-    pub fn read_cleartext_newkeys<R:BufRead>(&mut self, stream:&mut R, newkeys: NewKeys) -> Result<bool, Error> {
-        debug!("read_cleartext_newkeys");
+    pub fn server_read_cleartext_newkeys<R:BufRead>(&mut self, stream:&mut R, newkeys: NewKeys) -> Result<bool, Error> {
         // We have sent a NEWKEYS packet, and are waiting to receive one. Is it this one?
         if self.buffers.read.len == 0 {
             try!(self.buffers.set_clear_len(stream));
@@ -113,8 +104,8 @@ impl ServerSession {
 
 impl Encrypted {
 
-    pub fn read_encrypted<A:Authenticate, S:Serve>(&mut self, auth:&A, server:&mut S,
-                                                   buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) {
+    pub fn server_read_encrypted<A:Authenticate, S:Serve>(&mut self, auth:&A, server:&mut S,
+                                                          buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) {
         // If we've successfully read a packet.
         debug!("buf = {:?}", buf);
         let state = std::mem::replace(&mut self.state, None);
@@ -154,11 +145,11 @@ impl Encrypted {
             }
             Some(EncryptedState::WaitingChannelOpen) if buf[0] == msg::CHANNEL_OPEN => {
                 // https://tools.ietf.org/html/rfc4254#section-5.1
-                let mut r = buf.reader(1);
-                let typ = r.read_string().unwrap();
-                let sender = r.read_u32().unwrap();
-                let window = r.read_u32().unwrap();
-                let maxpacket = r.read_u32().unwrap();
+                let typ_len = BigEndian::read_u32(&buf[1..]) as usize;
+                let typ = &buf[5..5 + typ_len];
+                let sender = BigEndian::read_u32(&buf[5 + typ_len..]);
+                let window = BigEndian::read_u32(&buf[9 + typ_len..]);
+                let maxpacket = BigEndian::read_u32(&buf[13 + typ_len..]);
 
                 debug!("waiting channel open: type = {:?} sender = {:?} window = {:?} maxpacket = {:?}",
                        String::from_utf8_lossy(typ),

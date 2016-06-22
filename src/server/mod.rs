@@ -140,15 +140,15 @@ impl ServerSession {
                 }
             },
 
-            Some(ServerState::Kex(Kex::KexInit(kexinit))) => self.read_cleartext_kexinit(stream, kexinit, &config.keys),
+            Some(ServerState::Kex(Kex::KexInit(kexinit))) => self.server_read_cleartext_kexinit(stream, kexinit, &config.keys),
 
-            Some(ServerState::Kex(Kex::KexDh(kexdh))) => self.read_cleartext_kexdh(stream, buffer, buffer2, kexdh),
+            Some(ServerState::Kex(Kex::KexDh(kexdh))) => self.server_read_cleartext_kexdh(stream, buffer, buffer2, kexdh),
 
-            Some(ServerState::Kex(Kex::NewKeys(newkeys))) => self.read_cleartext_newkeys(stream, newkeys),
+            Some(ServerState::Kex(Kex::NewKeys(newkeys))) => self.server_read_cleartext_newkeys(stream, newkeys),
 
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("read: encrypted {:?}", enc.state);
-                let (buf_is_some, was_newkeys) =
+                let (buf_is_some, rekeying_done) =
                     if let Some(buf) = try!(enc.cipher.read_client_packet(stream, &mut self.buffers.read)) {
 
                         if try!(enc.server_read_rekey(buf, &config.keys)) && enc.rekey.is_none() && buf[0] == msg::NEWKEYS {
@@ -156,17 +156,13 @@ impl ServerSession {
                             (true, true)
                         } else {
                             debug!("calling read_encrypted");
-                            enc.read_encrypted(&config.auth, server, buf, buffer, &mut self.buffers.write);
-                            (true,false)
+                            enc.server_read_encrypted(&config.auth, server, buf, buffer, &mut self.buffers.write);
+                            (true, false)
                         }
                     } else {
                         (false, false)
                     };
-                if was_newkeys {
-                    self.buffers.read.seqn += 1;
-                    self.buffers.read.buffer.clear();
-                    self.buffers.read.len = 0;
-                }
+
                 if buf_is_some {
                     if self.buffers.read.bytes >= config.rekey_read_limit
                         || time::precise_time_s() >= self.buffers.last_rekey_s + config.rekey_time_limit_s {
@@ -182,8 +178,14 @@ impl ServerSession {
                             kexinit.exchange.server_ephemeral.clear();
                             enc.rekey = Some(Kex::KexInit(kexinit))
                         }
-
-
+                    if rekeying_done {
+                        self.buffers.read.bytes = 0;
+                        self.buffers.write.bytes = 0;
+                        self.buffers.last_rekey_s = time::precise_time_s();
+                    }
+                    self.buffers.read.seqn += 1;
+                    self.buffers.read.buffer.clear();
+                    self.buffers.read.len = 0;
                 }
 
                 self.state = Some(ServerState::Encrypted(enc));
@@ -242,6 +244,16 @@ impl ServerSession {
             }
             Some(ServerState::Kex(Kex::KexDhDone(kexdhdone))) => {
 
+                let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key.public_host_key,
+                                                                    &kexdhdone.exchange,
+                                                                    buffer));
+                self.cleartext_kex_ecdh_reply(&kexdhdone, &hash);
+                self.cleartext_send_newkeys();
+                try!(self.buffers.write_all(stream));
+
+                self.state = Some(ServerState::Kex(Kex::NewKeys(kexdhdone.compute_keys(hash,
+                                                                                       buffer,
+                                                                                       buffer2))));
                 Ok(true)
             }
             Some(ServerState::Encrypted(mut enc)) => {

@@ -1,3 +1,4 @@
+use byteorder::{ByteOrder, BigEndian};
 use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, KexDh, KexDhDone, EncryptedState, ChannelParameters};
 use super::encoding::*;
 use super::key;
@@ -10,7 +11,8 @@ use std::io::{Write,BufRead};
 use std;
 use time;
 
-mod read;
+mod write;
+use self::write::*;
 
 #[derive(Debug)]
 pub struct Config {
@@ -105,26 +107,332 @@ impl<'a> ClientSession<'a> {
                 }
                 Ok(true)
             },
-            Some(ServerState::Kex(Kex::KexInit(kexinit))) => self.read_cleartext_kexinit(stream, kexinit, &config.keys),
+            Some(ServerState::Kex(Kex::KexInit(mut kexinit))) => {
+                // Have we determined the algorithm yet?
+                let mut received = false;
+                if kexinit.algo.is_none() {
+                    if self.buffers.read.len == 0 {
+                        try!(self.buffers.set_clear_len(stream));
+                    }
+                    if try!(self.buffers.read(stream)) {
+                        {
+                            let payload = self.buffers.get_current_payload();
+                            if payload[0] == msg::KEXINIT {
+                                kexinit.algo = Some(try!(negociation::client_read_kex(payload, &config.keys)));
+                                kexinit.exchange.server_kex_init.extend(payload);
+                            } else {
+                                println!("unknown packet, expecting KEXINIT, received {:?}", payload);
+                            }
+                        }
+                        self.buffers.read.seqn += 1;
+                        self.buffers.read.clear();
+                        received = true;
+                    }
+                }
 
+                if kexinit.sent {
+                    if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
+                        self.state = Some(ServerState::Kex(Kex::KexDh(KexDh {
+                            exchange: kexinit.exchange,
+                            kex: kex,
+                            key: key,
+                            cipher: cipher,
+                            mac: mac,
+                            follows: follows,
+                            session_id: kexinit.session_id,
+                        })))
+                    } else {
+                        self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
+                    }
+                } else {
+                    self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
+                }
+                Ok(received)
+            }
             Some(ServerState::Kex(Kex::KexDh(kexdh))) => {
                 // This is a writing state from the client.
                 println!("kexdh");
                 self.state = Some(ServerState::Kex(Kex::KexDh(kexdh)));
                 Ok(true)
             }
-            Some(ServerState::Kex(Kex::KexDhDone(kexdhdone))) => self.read_cleartext_kexdhdone(stream, kexdhdone, buffer, buffer2),
+            Some(ServerState::Kex(Kex::KexDhDone(mut kexdhdone))) => {
 
-            Some(ServerState::Kex(Kex::NewKeys(newkeys))) => self.read_cleartext_newkeys(stream, newkeys),
-            
+                println!("kexdhdone");
+                // We've sent ECDH_INIT, waiting for ECDH_REPLY
+                if self.buffers.read.len == 0 {
+                    try!(self.buffers.set_clear_len(stream));
+                }
+
+                if try!(self.buffers.read(stream)) {
+                    let hash = try!(kexdhdone.client_compute_exchange_hash(self.buffers.get_current_payload(), buffer));
+                    let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2);
+
+                    self.state = Some(ServerState::Kex(Kex::NewKeys(new_keys)));
+                    self.buffers.read.seqn += 1;
+                    self.buffers.read.clear();
+
+                    Ok(true)
+                } else {
+                    self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
+                    Ok(false)
+                }
+
+            },
+            Some(ServerState::Kex(Kex::NewKeys(mut newkeys))) => {
+                if self.buffers.read.len == 0 {
+                    try!(self.buffers.set_clear_len(stream));
+                }
+                if try!(self.buffers.read(stream)) {
+
+                    {
+                        let payload = self.buffers.get_current_payload();
+                        if payload[0] == msg::NEWKEYS {
+
+                            newkeys.received = true;
+
+                            if newkeys.sent {
+                                self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest)));
+                            } else {
+                                self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
+                            }
+                        }
+                    }
+                    self.buffers.read.seqn += 1;
+                    self.buffers.read.clear();
+
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
             Some(ServerState::Encrypted(mut enc)) => {
                 println!("encrypted state");
                 self.try_rekey(&mut enc, &config);
-                let result = enc.read_client_encrypted(stream, config, &mut self.buffers.read, buffer, buffer2);
+                let state = std::mem::replace(&mut enc.state, None);
+
+                let read_complete;
+
+                match state {
+                    Some(EncryptedState::ServiceRequest) => {
+                        println!("service request");
+                        if let Some(buf) = try!(enc.cipher.read_server_packet(stream, &mut self.buffers.read)) {
+
+                            println!("buf= {:?}",buf);
+                            if buf[0] == msg::SERVICE_ACCEPT {
+                                println!("request success");
+                                let auth_request = auth::AuthRequest {
+                                    methods: auth::Methods::all(),
+                                    partial_success: false,
+                                    public_key: CryptoBuf::new(),
+                                    public_key_algorithm: CryptoBuf::new(),
+                                    public_key_is_ok: false,
+                                    sent_pk_ok: false,
+                                };
+                                enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+                            } else {
+                                println!("other message");
+                                enc.state = Some(EncryptedState::ServiceRequest);
+                            }
+                            read_complete = true
+                        } else {
+                            read_complete = false
+                        };
+
+                        if read_complete {
+                            self.buffers.read.seqn += 1;
+                            self.buffers.read.clear();
+                        }
+                    },
+                    Some(EncryptedState::AuthRequestSuccess(mut auth_request)) => {
+
+                        // We're waiting for success.
+                        
+                        if let Some(buf) = try!(enc.cipher.read_server_packet(stream,&mut self.buffers.read)) {
+
+                                println!("line {}, buf = {:?}", line!(), buf);
+
+                                if buf[0] == msg::USERAUTH_SUCCESS {
+
+                                    enc.state = Some(EncryptedState::WaitingChannelOpen)
+
+                                } else if buf[0] == msg::USERAUTH_FAILURE {
+
+                                    let mut r = buf.reader(1);
+                                    let remaining_methods = r.read_string().unwrap();
+
+                                    auth_request.methods.keep_remaining(remaining_methods.split(|&c| c==b','));
+
+                                    enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
+
+                                } else if buf[0] == msg::USERAUTH_PK_OK {
+
+                                    auth_request.public_key_is_ok = true;
+                                    enc.state = Some(EncryptedState::WaitingSignature(auth_request))
+
+                                } else {
+                                    println!("unknown message: {:?}", buf);
+                                    enc.state = Some(EncryptedState::AuthRequestSuccess(auth_request))
+                                }
+                                read_complete = true
+
+                            } else {
+
+                                read_complete = false
+
+                            }
+
+
+                        if read_complete {
+                            self.buffers.read.seqn += 1;
+                            self.buffers.read.clear();
+                        }
+                        
+                    },
+                    Some(EncryptedState::WaitingSignature(auth_request)) => {
+                        // The server is waiting for our authentication signature (also USERAUTH_REQUEST).
+                        enc.state = Some(EncryptedState::WaitingSignature(auth_request));
+                        read_complete = false
+                    },
+                    Some(EncryptedState::WaitingChannelOpen) => {
+                        // The server is waiting for our CHANNEL_OPEN.
+                        enc.state = Some(EncryptedState::WaitingChannelOpen);
+                        read_complete = false
+                    },
+                    Some(EncryptedState::ChannelOpenConfirmation(mut channels)) => {
+
+                        // Check whether we're receiving a confirmation message.
+                        if let Some(buf) = try!(enc.cipher.read_server_packet(stream,&mut self.buffers.read)) {
+
+
+                            println!("channel_confirmation? {:?}", buf);
+                            if buf[0] == msg::CHANNEL_OPEN_CONFIRMATION {
+
+                                let id_send = BigEndian::read_u32(&buf[1..]);
+                                let id_recv = BigEndian::read_u32(&buf[5..]);
+                                let window = BigEndian::read_u32(&buf[9..]);
+                                let max_packet = BigEndian::read_u32(&buf[13..]);
+
+                                if channels.sender_channel == id_send {
+
+                                    channels.recipient_channel = id_recv;
+                                    channels.initial_window_size = std::cmp::min(window, channels.initial_window_size);
+                                    channels.maximum_packet_size = std::cmp::min(max_packet, channels.maximum_packet_size);
+
+                                    println!("id_send = {:?}", id_send);
+                                    enc.channels.insert(channels.sender_channel, channels);
+
+                                    enc.state = Some(EncryptedState::ChannelOpened(id_send));
+
+                                } else {
+
+                                    unimplemented!()
+                                }
+                            } else {
+                                enc.state = Some(EncryptedState::ChannelOpenConfirmation(channels));
+                            }
+                            read_complete = true
+                        } else {
+                            enc.state = Some(EncryptedState::ChannelOpenConfirmation(channels));
+                            read_complete = false
+                        };
+                        
+                        if read_complete {
+                            self.buffers.read.seqn += 1;
+                            self.buffers.read.clear();
+                        }
+                    }
+                    state => {
+                        println!("read state {:?}", state);
+                        if let Some(buf) = try!(enc.cipher.read_server_packet(stream,&mut self.buffers.read)) {
+
+                            println!("msg: {:?}", buf);
+
+                            if buf[0] == msg::KEXINIT {
+
+                                match std::mem::replace(&mut enc.rekey, None) {
+                                    Some(Kex::KexInit(mut kexinit)) => {
+                                        debug!("received KEXINIT");
+                                        if kexinit.algo.is_none() {
+                                            kexinit.algo = Some(try!(negociation::client_read_kex(buf, &config.keys)));
+                                            kexinit.exchange.server_kex_init.extend(buf);
+                                        }
+                                        if kexinit.sent {
+                                            if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
+                                                enc.rekey = Some(Kex::KexDh(KexDh {
+                                                    exchange: kexinit.exchange,
+                                                    kex: kex,
+                                                    key: key,
+                                                    cipher: cipher,
+                                                    mac: mac,
+                                                    follows: follows,
+                                                    session_id: kexinit.session_id,
+                                                }))
+                                            } else {
+                                                enc.rekey = Some(Kex::KexInit(kexinit));
+                                            }
+                                        } else {
+                                            enc.rekey = Some(Kex::KexInit(kexinit));
+                                        }
+                                    },
+                                    Some(Kex::KexDhDone(mut kexdhdone)) => {
+                                        
+                                        let hash = try!(kexdhdone.client_compute_exchange_hash(buf, buffer));
+                                        let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2);
+                                        enc.rekey = Some(Kex::NewKeys(new_keys));
+                                    },
+                                    Some(Kex::NewKeys(mut newkeys)) => {
+
+                                        if buf[0] == msg::NEWKEYS {
+
+                                            newkeys.received = true;
+
+                                            if !newkeys.sent {
+                                                enc.rekey = Some(Kex::NewKeys(newkeys));
+                                            }
+                                        }
+                                    },
+                                    Some(state) => {
+                                        enc.rekey = Some(state);
+                                    }
+                                    None => {
+                                        // The server is initiating a rekeying.
+                                        let mut kexinit = KexInit::rekey(
+                                            std::mem::replace(&mut enc.exchange, None).unwrap(),
+                                            try!(super::negociation::read_kex(buf, &config.keys)),
+                                            &enc.session_id
+                                        );
+                                        kexinit.exchange.server_kex_init.extend(buf);
+                                        enc.rekey = Some(try!(kexinit.kexinit()));
+                                    }
+                                }
+                            } else {
+
+                                match enc.rekey {
+                                    None => {
+                                        // business as usual
+                                    },
+                                    Some(_) => {
+
+                                    }
+                                }
+                            }
+                            read_complete = true
+                        } else {
+                            read_complete = false
+                        };
+
+                        if read_complete {
+                            self.buffers.read.seqn += 1;
+                            self.buffers.read.clear();
+                        }
+                        enc.state = state;
+                    }
+                }
                 self.state = Some(ServerState::Encrypted(enc));
-                result
+                Ok(read_complete)
             }
         }
+
     }
 
     // Returns whether the connexion is still alive.
@@ -287,37 +595,7 @@ impl<'a> ClientSession<'a> {
 
                     Some(EncryptedState::WaitingSignature(auth_request)) => {
                         // The server is waiting for our authentication signature (also USERAUTH_REQUEST).
-
-                        buffer.clear();
-
-                        buffer.extend_ssh_string(enc.session_id.as_bytes());
-                        let i0 = buffer.len();
-
-                        buffer.push(msg::USERAUTH_REQUEST);
-                        buffer.extend_ssh_string(b"pe");
-                        buffer.extend_ssh_string(b"ssh-connection");
-
-                        buffer.extend_ssh_string(b"publickey");
-                        buffer.push(1); // This is a probe
-                        buffer.extend_ssh_string(config.keys[0].name().as_bytes());
-                        config.keys[0].public_host_key.extend_pubkey(buffer);
-
-                        // Extend with signature.
-                        println!("========== signing");
-                        buffer2.clear();
-                        config.keys[0].add_signature(buffer2, buffer.as_slice());
-                        buffer.extend(buffer2.as_slice());
-
-                        // Send
-                        enc.cipher.write_client_packet(self.buffers.write.seqn,
-                                                       &(buffer.as_slice())[i0..], // Skip the session id.
-                                                       &mut self.buffers.write.buffer);
-
-                        self.buffers.write.seqn += 1;
-                        try!(self.buffers.write_all(stream));
-
-                        enc.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
-                        
+                        try!(enc.client_send_signature(stream, &mut self.buffers, auth_request, config, buffer, buffer2));
                     },
                     Some(EncryptedState::WaitingChannelOpen) => {
                         // The server is waiting for our CHANNEL_OPEN.
@@ -346,7 +624,6 @@ impl<'a> ClientSession<'a> {
                                 maximum_packet_size: config.maxpacket,
                             }
                         ));
-                        
                     },
                     state => {
                         match std::mem::replace(&mut enc.rekey, None) {
