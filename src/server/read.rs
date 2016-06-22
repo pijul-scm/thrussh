@@ -105,8 +105,8 @@ impl ServerSession {
 
 impl Encrypted {
 
-    pub fn server_read_encrypted<A:Authenticate, S:Serve>(&mut self, auth:&A, server:&mut S,
-                                                          buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) {
+    pub fn server_read_encrypted<A:Authenticate, S:SSHHandler>(&mut self, auth:&A, server:&mut S,
+                                                               buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) {
         // If we've successfully read a packet.
         debug!("buf = {:?}", buf);
         let state = std::mem::replace(&mut self.state, None);
@@ -183,7 +183,7 @@ impl Encrypted {
                         buffer.clear();
 
                         let data = {
-                            let server_buf = ServerBuf {
+                            let server_buf = ChannelBuf {
                                 buffer:buffer,
                                 recipient_channel: channel.recipient_channel,
                                 sent_seqn: &mut write_buffer.seqn,

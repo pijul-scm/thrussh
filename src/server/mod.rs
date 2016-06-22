@@ -25,17 +25,9 @@ pub struct ServerSession {
 }
 
 
-pub struct ServerBuf<'a> {
-    buffer:&'a mut CryptoBuf,
-    recipient_channel: u32,
-    sent_seqn: &'a mut usize,
-    write_buffer: &'a mut CryptoBuf,
-    cipher: &'a mut cipher::Cipher
-}
-
 const SSH_EXTENDED_DATA_STDERR: u32 = 1;
 
-impl<'a> ServerBuf<'a> {
+impl<'a> ChannelBuf<'a> {
     pub fn stdout(&mut self, stdout:&[u8]) -> Result<(), Error> {
         self.buffer.clear();
         self.buffer.push(msg::CHANNEL_DATA);
@@ -64,13 +56,6 @@ impl<'a> ServerBuf<'a> {
     }
 }
 
-
-pub trait Serve {
-    fn new_channel(&mut self, channel: &ChannelParameters);
-    fn data(&mut self, _: &[u8], _: ServerBuf) -> Result<(), Error> {
-        Ok(())
-    }
-}
 
 pub fn hexdump(x: &CryptoBuf) {
     let x = x.as_slice();
@@ -115,7 +100,7 @@ impl ServerSession {
     }
 
     // returns whether a complete packet has been read.
-    pub fn read<R: BufRead, A: auth::Authenticate,S:Serve>(
+    pub fn read<R: BufRead, A: auth::Authenticate,S:SSHHandler>(
         &mut self,
         server:&mut S,
         config: &Config<A>,
@@ -147,7 +132,7 @@ impl ServerSession {
             Some(ServerState::Kex(Kex::NewKeys(newkeys))) => self.server_read_cleartext_newkeys(stream, newkeys),
 
             Some(ServerState::Encrypted(mut enc)) => {
-                debug!("read: encrypted {:?}", enc.state);
+                debug!("read: encrypted {:?} {:?}", enc.state, enc.rekey);
                 let (buf_is_some, rekeying_done) =
                     if let Some(buf) = try!(enc.cipher.read_client_packet(stream, &mut self.buffers.read)) {
 
@@ -200,7 +185,7 @@ impl ServerSession {
 
     // Returns whether the connexion is still alive.
 
-    pub fn write<W: Write, A: auth::Authenticate, S:Serve>(
+    pub fn write<W: Write, A: auth::Authenticate, S:SSHHandler>(
         &mut self,
         config: &Config<A>,
         server: &mut S,
@@ -255,7 +240,7 @@ impl ServerSession {
                 Ok(true)
             }
             Some(ServerState::Encrypted(mut enc)) => {
-                debug!("write: encrypted {:?}", enc.state);
+                debug!("write: encrypted {:?} {:?}", enc.state, enc.rekey);
                 if enc.rekey.is_none() && self.buffers.write.bytes >= config.rekey_write_limit
                     || time::precise_time_s() >= self.buffers.last_rekey_s + config.rekey_time_limit_s {
                         let mut kexinit = KexInit {

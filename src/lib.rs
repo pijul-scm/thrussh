@@ -72,6 +72,22 @@ pub mod auth;
 pub mod server;
 pub mod client;
 
+
+pub struct ChannelBuf<'a> {
+    buffer:&'a mut CryptoBuf,
+    recipient_channel: u32,
+    sent_seqn: &'a mut usize,
+    write_buffer: &'a mut CryptoBuf,
+    cipher: &'a mut cipher::Cipher
+}
+
+pub trait SSHHandler {
+    fn new_channel(&mut self, channel: &ChannelParameters);
+    fn data(&mut self, _: &[u8], _: ChannelBuf) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub struct SSHBuffers {
     read: SSHBuffer,

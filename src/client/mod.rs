@@ -1,5 +1,5 @@
 use byteorder::{ByteOrder, BigEndian};
-use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, KexDh, KexDhDone, EncryptedState, ChannelParameters};
+use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, KexDh, KexDhDone, EncryptedState, ChannelParameters, ChannelBuf};
 use super::encoding::*;
 use super::key;
 use super::msg;
@@ -44,9 +44,8 @@ impl std::default::Default for Config {
 pub struct ClientSession<'a> {
     buffers: super::SSHBuffers,
     state: Option<ServerState>,
-    auth_method: Option<auth::Method<'a>>
+    auth_method: Option<auth::Method<'a>>,
 }
-
 
 impl<'a> ClientSession<'a> {
     pub fn new() -> Self {
@@ -60,12 +59,15 @@ impl<'a> ClientSession<'a> {
         }
     }
     // returns whether a complete packet has been read.
-    pub fn read<R: BufRead>(&mut self,
-                            config: &Config,
-                            stream: &mut R,
-                            buffer: &mut CryptoBuf,
-                            buffer2: &mut CryptoBuf)
-                            -> Result<bool, Error> {
+    pub fn read<R: BufRead, C:super::SSHHandler>(
+        &mut self,
+        config: &Config,
+        client: &mut C,
+        stream: &mut R,
+        buffer: &mut CryptoBuf,
+        buffer2: &mut CryptoBuf)
+        -> Result<bool, Error> {
+
         println!("read");
         let state = std::mem::replace(&mut self.state, None);
         match state {
@@ -392,7 +394,14 @@ impl<'a> ClientSession<'a> {
                                         if !newkeys.sent {
                                             enc.rekey = Some(Kex::NewKeys(newkeys));
                                         } else {
+
+                                            enc.exchange = Some(newkeys.exchange);
+                                            enc.kex = newkeys.kex;
+                                            enc.key = newkeys.key;
+                                            enc.cipher = newkeys.cipher;
+                                            enc.mac = newkeys.mac;
                                             is_newkeys = true
+
                                         }
                                     } else {
                                         enc.rekey = Some(Kex::NewKeys(newkeys))
@@ -413,6 +422,26 @@ impl<'a> ClientSession<'a> {
                                 },
                                 None => {
                                     // standard response
+                                    if buf[0] == msg::CHANNEL_DATA {
+
+                                        let channel_num = BigEndian::read_u32(&buf[1..]);
+                                        if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
+
+                                            let len = BigEndian::read_u32(&buf[5..]) as usize;
+                                            let data = &buf[9..9 + len];
+                                            buffer.clear();
+                                            let data = {
+                                                let server_buf = ChannelBuf {
+                                                    buffer:buffer,
+                                                    recipient_channel: channel.recipient_channel,
+                                                    sent_seqn: &mut self.buffers.write.seqn,
+                                                    write_buffer: &mut self.buffers.write.buffer,
+                                                    cipher: &mut enc.cipher
+                                                };
+                                                client.data(&data, server_buf)
+                                            };
+                                        }
+                                    }
                                 },
                             }
                             read_complete = true;
@@ -659,27 +688,58 @@ impl<'a> ClientSession<'a> {
     }
 
     pub fn msg<W:Write>(&mut self, stream:&mut W, buffer:&mut CryptoBuf, msg:&[u8], channel:u32) -> Result<bool,Error> {
-
+       
         match self.state {
             Some(ServerState::Encrypted(ref mut enc)) => {
-                match enc.state {
-                    Some(EncryptedState::ChannelOpened(_)) => {
+                println!("encrypted, {:?} {:?}", enc.state, enc.rekey);
 
-                        let c = enc.channels.get(&channel).unwrap();
-                        buffer.clear();
-                        buffer.push(msg::CHANNEL_DATA);
-                        buffer.push_u32_be(c.recipient_channel);
-                        buffer.extend_ssh_string(msg);
-                        println!("{:?} {:?}", buffer.as_slice(), self.buffers.write.seqn);
-                        enc.cipher.write_client_packet(self.buffers.write.seqn,
-                                                       buffer.as_slice(),
-                                                       &mut self.buffers.write.buffer);
-                        println!("buf = {:?}", self.buffers.write.buffer.as_slice());
-                        self.buffers.write.seqn += 1;
-                        try!(self.buffers.write_all(stream));
-                        Ok(true)
+                match std::mem::replace(&mut enc.rekey, None) {
+                    Some(Kex::NewKeys(mut newkeys)) => {
+                        println!("newkeys {:?}", newkeys);
+                        if !newkeys.sent {
+                            enc.cipher.write_client_packet(self.buffers.write.seqn, &[msg::NEWKEYS],
+                                                           &mut self.buffers.write.buffer);
+                            try!(self.buffers.write_all(stream));
+                            self.buffers.write.seqn += 1;
+                            newkeys.sent = true;
+                        }
+                        if !newkeys.received {
+                            enc.rekey = Some(Kex::NewKeys(newkeys))
+                        } else {
+                            enc.exchange = Some(newkeys.exchange);
+                            enc.kex = newkeys.kex;
+                            enc.key = newkeys.key;
+                            enc.cipher = newkeys.cipher;
+                            enc.mac = newkeys.mac;
+                        }
                     },
-                    _ => Ok(false)
+                    x => enc.rekey = x
+                }
+
+                if enc.rekey.is_none() {
+
+                    match enc.state {
+                        Some(EncryptedState::ChannelOpened(_)) => {
+
+                            let c = enc.channels.get(&channel).unwrap();
+                            buffer.clear();
+                            buffer.push(msg::CHANNEL_DATA);
+                            buffer.push_u32_be(c.recipient_channel);
+                            buffer.extend_ssh_string(msg);
+                            println!("{:?} {:?}", buffer.as_slice(), self.buffers.write.seqn);
+                            enc.cipher.write_client_packet(self.buffers.write.seqn,
+                                                           buffer.as_slice(),
+                                                           &mut self.buffers.write.buffer);
+                            println!("buf = {:?}", self.buffers.write.buffer.as_slice());
+                            self.buffers.write.seqn += 1;
+                            try!(self.buffers.write_all(stream));
+                            Ok(true)
+                        },
+                        _ => Ok(false)
+                    }
+
+                } else {
+                    Ok(false)
                 }
             },
             _ => Ok(false)
