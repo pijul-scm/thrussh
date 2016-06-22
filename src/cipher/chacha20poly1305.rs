@@ -54,15 +54,11 @@ impl super::CipherT for Cipher {
                 &nonce,
                 &self.k1);
 
-            //println!("chacha20: packet length: {:?}", &len[..]);
-
             read_buffer.len = BigEndian::read_u32(&len) as usize + poly1305::TAGBYTES;
         }
         // - Compute the Poly1305 auth on the first (4+length) first bytes of the packet.
         if try!(super::super::read(stream, &mut read_buffer.buffer, read_buffer.len, &mut read_buffer.bytes)) {
 
-            // println!("read_buffer {:?}", read_buffer);
-            // try!(stream.read_exact(&mut buffer[4..]));
             let mut poly_key = [0;32];
             chacha20::stream_xor_inplace(
                 &mut poly_key,
@@ -80,14 +76,7 @@ impl super::CipherT for Cipher {
                     &poly_key
                 );
             }
-            /*
-            println!("computing tag on {:?} with key {:?}",
-                     &read_buffer_slice[0 .. 4 + *read_len - poly1305::TAGBYTES],
-                     poly_key
-            );
-            */
-            
-            // println!("read buffer before chacha20: {:?}", &read_buffer);
+
             // - Constant-time-compare it with the Poly1305 at the end of the packet (right after the 4+length first bytes).
             if sodium::memcmp(
                 tag.as_bytes(),
@@ -105,13 +94,9 @@ impl super::CipherT for Cipher {
 
                 }
                 let padding = read_buffer_slice[4] as usize;
-                // println!("read packet = {:?}", &read_buffer_slice[5..(5+ *read_len - poly1305::TAGBYTES - padding - 1)]);
-                //println!("chacha20: packet({:?}): {:?}", read_buffer_slice.len(), read_buffer_slice);
-                //println!("padding len = {:?}", padding);
                 Ok(Some(&read_buffer_slice[5..(5+ read_buffer.len - poly1305::TAGBYTES - padding - 1)]))
 
             } else {
-                //println!("should be {:?}, was {:?}", tag.as_bytes(), &read_buffer_slice[4 + *read_len - poly1305::TAGBYTES..]);
                 Err(Error::PacketAuth)
             }
         } else {
