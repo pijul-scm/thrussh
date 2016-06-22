@@ -303,7 +303,6 @@ impl<'a> ClientSession<'a> {
                         // Check whether we're receiving a confirmation message.
                         if let Some(buf) = try!(enc.cipher.read_server_packet(stream,&mut self.buffers.read)) {
 
-
                             println!("channel_confirmation? {:?}", buf);
                             if buf[0] == msg::CHANNEL_OPEN_CONFIRMATION {
 
@@ -337,20 +336,19 @@ impl<'a> ClientSession<'a> {
                         };
                         
                         if read_complete {
-                            self.buffers.read.seqn += 1;
-                            self.buffers.read.clear();
+                            self.buffers.read.clear_incr();
                         }
                     }
                     state => {
                         println!("read state {:?}", state);
+                        let mut is_newkeys = false;
                         if let Some(buf) = try!(enc.cipher.read_server_packet(stream,&mut self.buffers.read)) {
 
-                            println!("msg: {:?}", buf);
+                            println!("msg: {:?} {:?}", buf, enc.rekey);
+                            match std::mem::replace(&mut enc.rekey, None) {
+                                Some(Kex::KexInit(mut kexinit)) => {
 
-                            if buf[0] == msg::KEXINIT {
-
-                                match std::mem::replace(&mut enc.rekey, None) {
-                                    Some(Kex::KexInit(mut kexinit)) => {
+                                    if buf[0] == msg::KEXINIT {
                                         debug!("received KEXINIT");
                                         if kexinit.algo.is_none() {
                                             kexinit.algo = Some(try!(negociation::client_read_kex(buf, &config.keys)));
@@ -373,57 +371,60 @@ impl<'a> ClientSession<'a> {
                                         } else {
                                             enc.rekey = Some(Kex::KexInit(kexinit));
                                         }
-                                    },
-                                    Some(Kex::KexDhDone(mut kexdhdone)) => {
-                                        
+                                    } else {
+                                        enc.rekey = Some(Kex::KexInit(kexinit))
+                                    }
+                                },
+                                Some(Kex::KexDhDone(mut kexdhdone)) => {
+                                    if buf[0] == msg::KEX_ECDH_REPLY {
                                         let hash = try!(kexdhdone.client_compute_exchange_hash(buf, buffer));
                                         let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2);
                                         enc.rekey = Some(Kex::NewKeys(new_keys));
-                                    },
-                                    Some(Kex::NewKeys(mut newkeys)) => {
+                                    } else {
+                                        enc.rekey = Some(Kex::KexDhDone(kexdhdone))
+                                    }
+                                },
+                                Some(Kex::NewKeys(mut newkeys)) => {
 
-                                        if buf[0] == msg::NEWKEYS {
+                                    if buf[0] == msg::NEWKEYS {
 
-                                            newkeys.received = true;
-
-                                            if !newkeys.sent {
-                                                enc.rekey = Some(Kex::NewKeys(newkeys));
-                                            }
+                                        newkeys.received = true;
+                                        if !newkeys.sent {
+                                            enc.rekey = Some(Kex::NewKeys(newkeys));
+                                        } else {
+                                            is_newkeys = true
                                         }
-                                    },
-                                    Some(state) => {
-                                        enc.rekey = Some(state);
+                                    } else {
+                                        enc.rekey = Some(Kex::NewKeys(newkeys))
                                     }
-                                    None => {
-                                        // The server is initiating a rekeying.
-                                        let mut kexinit = KexInit::rekey(
-                                            std::mem::replace(&mut enc.exchange, None).unwrap(),
-                                            try!(super::negociation::read_kex(buf, &config.keys)),
-                                            &enc.session_id
-                                        );
-                                        kexinit.exchange.server_kex_init.extend(buf);
-                                        enc.rekey = Some(try!(kexinit.kexinit()));
-                                    }
+                                },
+                                Some(state) => {
+                                    enc.rekey = Some(state);
                                 }
-                            } else {
-
-                                match enc.rekey {
-                                    None => {
-                                        // business as usual
-                                    },
-                                    Some(_) => {
-
-                                    }
-                                }
+                                None if buf[0] == msg::KEXINIT => {
+                                    // The server is initiating a rekeying.
+                                    let mut kexinit = KexInit::rekey(
+                                        std::mem::replace(&mut enc.exchange, None).unwrap(),
+                                        try!(super::negociation::read_kex(buf, &config.keys)),
+                                        &enc.session_id
+                                    );
+                                    kexinit.exchange.server_kex_init.extend(buf);
+                                    enc.rekey = Some(try!(kexinit.kexinit()));
+                                },
+                                None => {
+                                    // standard response
+                                },
                             }
-                            read_complete = true
+                            read_complete = true;
                         } else {
                             read_complete = false
                         };
-
                         if read_complete {
-                            self.buffers.read.seqn += 1;
-                            self.buffers.read.clear();
+                            if is_newkeys {
+                                self.buffers.read.bytes = 0;
+                                self.buffers.write.bytes = 0;
+                            }
+                            self.buffers.read.clear_incr();
                         }
                         enc.state = state;
                     }
@@ -442,13 +443,12 @@ impl<'a> ClientSession<'a> {
                            buffer: &mut CryptoBuf,
                            buffer2: &mut CryptoBuf)
                            -> Result<bool, Error> {
-        println!("write");
+        println!("write, buffer: {:?}", self.buffers.write);
         // Finish pending writes, if any.
         if ! try!(self.buffers.write_all(stream)) {
             // If there are still bytes to write.
             return Ok(true);
         }
-        self.buffers.write.clear();
 
         let state = std::mem::replace(&mut self.state, None);
         match state {
@@ -550,7 +550,7 @@ impl<'a> ClientSession<'a> {
                 println!("encrypted");
 
                 self.try_rekey(&mut enc, &config);
-
+                
                 let state = std::mem::replace(&mut enc.state, None);
                 match state {
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
@@ -566,69 +566,8 @@ impl<'a> ClientSession<'a> {
                     },
                     state => {
                         match std::mem::replace(&mut enc.rekey, None) {
-                            Some(Kex::KexInit(mut kexinit)) => {
-
-                                if !kexinit.sent {
-                                    buffer.clear();
-                                    negociation::write_kex(&config.keys, buffer);
-                                    kexinit.exchange.client_kex_init.extend(buffer.as_slice());
-
-                                    enc.cipher.write_client_packet(self.buffers.write.seqn, buffer.as_slice(),
-                                                                   &mut self.buffers.write.buffer);
-                                    
-                                    self.buffers.write.seqn += 1;
-                                    try!(self.buffers.write_all(stream));
-                                    kexinit.sent = true;
-                                }
-                                if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
-                                    enc.rekey = Some(Kex::KexDh(KexDh {
-                                        exchange: kexinit.exchange,
-                                        kex: kex,
-                                        key: key,
-                                        cipher: cipher,
-                                        mac: mac,
-                                        follows: follows,
-                                        session_id: kexinit.session_id,
-                                    }))
-                                } else {
-                                    enc.rekey = Some(Kex::KexInit(kexinit))
-                                }
-                            },
-                            Some(Kex::KexDh(mut kexdh)) => {
-                                
-                                buffer.clear();
-                                let kex = try!(kexdh.kex.client_dh(&mut kexdh.exchange, buffer));
-                                
-                                enc.cipher.write_client_packet(self.buffers.write.seqn, buffer.as_slice(),
-                                                               &mut self.buffers.write.buffer);
-                                self.buffers.write.seqn += 1;
-                                try!(self.buffers.write_all(stream));
-
-                                enc.rekey = Some(Kex::KexDhDone(KexDhDone {
-                                    exchange: kexdh.exchange,
-                                    kex: kex,
-                                    key: kexdh.key,
-                                    cipher: kexdh.cipher,
-                                    mac: kexdh.mac,
-                                    follows: kexdh.follows,
-                                    session_id: kexdh.session_id,
-                                }));
-                            },
-                            Some(Kex::NewKeys(mut newkeys)) => {
-
-                                if !newkeys.sent {
-                                    enc.cipher.write_client_packet(self.buffers.write.seqn, &[msg::NEWKEYS],
-                                                                         &mut self.buffers.write.buffer);
-                                    self.buffers.write.seqn += 1;
-                                    newkeys.sent = true;
-                                }
-                                if !newkeys.received {
-                                    try!(self.buffers.write_all(stream));
-                                    self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)))
-                                }
-                            },
-                            Some(state) => {
-                                enc.rekey = Some(state)
+                            Some(rekey) => {
+                                try!(enc.client_write_rekey(stream, &mut self.buffers, rekey, config, buffer))
                             }
                             None => {},
                         }

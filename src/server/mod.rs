@@ -214,8 +214,6 @@ impl ServerSession {
             // If there are still bytes to write.
             return Ok(true);
         }
-        self.buffers.write.buffer.clear();
-        self.buffers.write.len = 0;
 
         let state = std::mem::replace(&mut self.state, None);
 

@@ -115,10 +115,11 @@ impl SSHBuffers {
     }
     // Returns true iff the write buffer has been completely written.
     pub fn write_all<W: std::io::Write>(&mut self, stream: &mut W) -> Result<bool, Error> {
-        // println!("write_all");
+        println!("write_all, self = {:?}", self);
         while self.write.len < self.write.buffer.len() {
             match self.write.buffer.write_all_from(self.write.len, stream) {
                 Ok(s) => {
+                    println!("written {:?} bytes", s);
                     self.write.len += s;
                     self.write.bytes += s;
                     try!(stream.flush());
@@ -132,7 +133,8 @@ impl SSHBuffers {
                 }
             }
         }
-        // println!("flushed");
+        self.write.clear();
+        self.write.len = 0;
         Ok(true)
     }
 
