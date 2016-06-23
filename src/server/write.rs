@@ -34,26 +34,6 @@ impl ServerSession {
     }
 
 
-    pub fn server_reject_auth_request(&mut self,
-                                      enc:&mut Encrypted,
-                                      buffer: &mut CryptoBuf,
-                                      auth_request: &AuthRequest) {
-        buffer.clear();
-        buffer.push(msg::USERAUTH_FAILURE);
-
-        buffer.extend_list(auth_request.methods);
-        buffer.push(if auth_request.partial_success {
-            1
-        } else {
-            0
-        });
-
-        enc.cipher.write_server_packet(self.buffers.write.seqn, buffer.as_slice(), &mut self.buffers.write.buffer);
-
-        self.buffers.write.seqn += 1;
-    }
-
-
     pub fn server_send_pk_ok(&mut self,
                              enc: &mut Encrypted,
                              buffer: &mut CryptoBuf,
@@ -130,51 +110,25 @@ impl Encrypted {
                                         &mut write_buffer.buffer);
         write_buffer.seqn += 1;
         self.state = Some(EncryptedState::WaitingChannelOpen);
-
     }
 
-    pub fn server_verify_signature(&mut self, buf:&[u8], buffer:&mut CryptoBuf, auth_request: AuthRequest) -> EncryptedState {
-        // https://tools.ietf.org/html/rfc4252#section-5
-        let mut r = buf.reader(1);
-        let user_name = r.read_string().unwrap();
-        let service_name = r.read_string().unwrap();
-        let method = r.read_string().unwrap();
-        let is_probe = r.read_byte().unwrap() == 0;
-        // TODO: check that the user is the same (maybe?)
-        if service_name == b"ssh-connection" && method == b"publickey" && !is_probe {
+    pub fn server_reject_auth_request(&mut self,
+                                      buffer: &mut CryptoBuf,
+                                      auth_request: AuthRequest,
+                                      write_buffer:&mut super::super::SSHBuffer) {
+        buffer.clear();
+        buffer.push(msg::USERAUTH_FAILURE);
 
-            let algo = r.read_string().unwrap();
-            let key = r.read_string().unwrap();
-
-            let pos0 = r.position;
-            if algo == b"ssh-ed25519" {
-
-                let key = {
-                    let mut k = key.reader(0);
-                    k.read_string(); // should be equal to algo.
-                    sodium::ed25519::PublicKey::copy_from_slice(k.read_string().unwrap())
-                };
-                let signature = r.read_string().unwrap();
-                let mut s = signature.reader(0);
-                let algo_ = s.read_string().unwrap();
-                let sig = sodium::ed25519::Signature::copy_from_slice(s.read_string().unwrap());
-
-                buffer.clear();
-                buffer.extend_ssh_string(self.session_id.as_bytes());
-                buffer.extend(&buf[0..pos0]);
-                // Verify signature.
-                if sodium::ed25519::verify_detached(&sig, buffer.as_slice(), &key) {
-                    EncryptedState::AuthRequestSuccess(auth_request)
-                } else {
-                    EncryptedState::RejectAuthRequest(auth_request)
-                }
-            } else {
-                EncryptedState::RejectAuthRequest(auth_request)
-            }
+        buffer.extend_list(auth_request.methods);
+        buffer.push(if auth_request.partial_success {
+            1
         } else {
-            EncryptedState::RejectAuthRequest(auth_request)
-        }
+            0
+        });
+
+        self.cipher.write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+
+        write_buffer.seqn += 1;
+        self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
     }
-
-
 }
