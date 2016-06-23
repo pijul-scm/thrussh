@@ -1,10 +1,9 @@
 use byteorder::{ByteOrder, BigEndian};
-use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, KexDh, KexDhDone, EncryptedState, ChannelBuf};
+use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, KexDhDone, EncryptedState, ChannelBuf};
 use super::encoding::*;
 use super::key;
 use super::msg;
 use super::auth;
-use super::negociation;
 use std::io::{Write,BufRead};
 use std;
 use time;
@@ -83,130 +82,16 @@ impl<'a> ClientSession<'a> {
                     Ok(false)
                 }
             },
-            Some(ServerState::VersionOk(mut exchange)) => {
-                println!("read: {:?}", exchange);
-                // Have we received the version id?
-                if exchange.server_id.len() == 0 {
-                    let server_id = try!(self.buffers.read_ssh_id(stream));
-                    println!("server_id = {:?}", server_id);
-                    if let Some(server_id) = server_id {
-                        exchange.server_id.extend(server_id);
-                    } else {
-                        self.state = Some(ServerState::VersionOk(exchange));
-                        return Ok(false)
-                    }
-                }
-
-                if exchange.client_id.len() > 0 {
-                    self.state = Some(ServerState::Kex(Kex::KexInit(KexInit {
-                        exchange: exchange,
-                        algo: None,
-                        sent: false,
-                        session_id: None,
-                    })));
-                } else {
-                    self.state = Some(ServerState::VersionOk(exchange));
-                }
-                Ok(true)
-            },
-            Some(ServerState::Kex(Kex::KexInit(mut kexinit))) => {
-                // Have we determined the algorithm yet?
-                let mut received = false;
-                if kexinit.algo.is_none() {
-                    if self.buffers.read.len == 0 {
-                        try!(self.buffers.set_clear_len(stream));
-                    }
-                    if try!(self.buffers.read(stream)) {
-                        {
-                            let payload = self.buffers.get_current_payload();
-                            if payload[0] == msg::KEXINIT {
-                                kexinit.algo = Some(try!(negociation::client_read_kex(payload, &config.keys)));
-                                kexinit.exchange.server_kex_init.extend(payload);
-                            } else {
-                                println!("unknown packet, expecting KEXINIT, received {:?}", payload);
-                            }
-                        }
-                        self.buffers.read.seqn += 1;
-                        self.buffers.read.clear();
-                        received = true;
-                    }
-                }
-
-                if kexinit.sent {
-                    if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
-                        self.state = Some(ServerState::Kex(Kex::KexDh(KexDh {
-                            exchange: kexinit.exchange,
-                            kex: kex,
-                            key: key,
-                            cipher: cipher,
-                            mac: mac,
-                            follows: follows,
-                            session_id: kexinit.session_id,
-                        })))
-                    } else {
-                        self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
-                    }
-                } else {
-                    self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
-                }
-                Ok(received)
-            }
+            Some(ServerState::VersionOk(exchange)) => self.client_version_ok(stream, exchange),
+            Some(ServerState::Kex(Kex::KexInit(kexinit))) => self.client_kexinit(stream, kexinit, &config.keys),
             Some(ServerState::Kex(Kex::KexDh(kexdh))) => {
                 // This is a writing state from the client.
-                println!("kexdh");
+                debug!("reading kexdh");
                 self.state = Some(ServerState::Kex(Kex::KexDh(kexdh)));
                 Ok(true)
             }
-            Some(ServerState::Kex(Kex::KexDhDone(mut kexdhdone))) => {
-
-                println!("kexdhdone");
-                // We've sent ECDH_INIT, waiting for ECDH_REPLY
-                if self.buffers.read.len == 0 {
-                    try!(self.buffers.set_clear_len(stream));
-                }
-
-                if try!(self.buffers.read(stream)) {
-                    let hash = try!(kexdhdone.client_compute_exchange_hash(self.buffers.get_current_payload(), buffer));
-                    let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2);
-
-                    self.state = Some(ServerState::Kex(Kex::NewKeys(new_keys)));
-                    self.buffers.read.seqn += 1;
-                    self.buffers.read.clear();
-
-                    Ok(true)
-                } else {
-                    self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
-                    Ok(false)
-                }
-
-            },
-            Some(ServerState::Kex(Kex::NewKeys(mut newkeys))) => {
-                if self.buffers.read.len == 0 {
-                    try!(self.buffers.set_clear_len(stream));
-                }
-                if try!(self.buffers.read(stream)) {
-
-                    {
-                        let payload = self.buffers.get_current_payload();
-                        if payload[0] == msg::NEWKEYS {
-
-                            newkeys.received = true;
-
-                            if newkeys.sent {
-                                self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest)));
-                            } else {
-                                self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
-                            }
-                        }
-                    }
-                    self.buffers.read.seqn += 1;
-                    self.buffers.read.clear();
-
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            }
+            Some(ServerState::Kex(Kex::KexDhDone(kexdhdone))) => self.client_kexdhdone(stream, kexdhdone, buffer, buffer2),
+            Some(ServerState::Kex(Kex::NewKeys(newkeys))) => self.client_newkeys(stream, newkeys),
             Some(ServerState::Encrypted(mut enc)) => {
                 println!("encrypted state");
                 self.try_rekey(&mut enc, &config);
@@ -216,34 +101,7 @@ impl<'a> ClientSession<'a> {
 
                 match state {
                     Some(EncryptedState::ServiceRequest) => {
-                        println!("service request");
-                        if let Some(buf) = try!(enc.cipher.read_server_packet(stream, &mut self.buffers.read)) {
-
-                            println!("buf= {:?}",buf);
-                            if buf[0] == msg::SERVICE_ACCEPT {
-                                println!("request success");
-                                let auth_request = auth::AuthRequest {
-                                    methods: auth::Methods::all(),
-                                    partial_success: false,
-                                    public_key: CryptoBuf::new(),
-                                    public_key_algorithm: CryptoBuf::new(),
-                                    public_key_is_ok: false,
-                                    sent_pk_ok: false,
-                                };
-                                enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
-                            } else {
-                                println!("other message");
-                                enc.state = Some(EncryptedState::ServiceRequest);
-                            }
-                            read_complete = true
-                        } else {
-                            read_complete = false
-                        };
-
-                        if read_complete {
-                            self.buffers.read.seqn += 1;
-                            self.buffers.read.clear();
-                        }
+                        read_complete = try!(enc.client_service_request(stream, &mut self.buffers.read))
                     },
                     Some(EncryptedState::AuthRequestSuccess(mut auth_request)) => {
 
