@@ -77,7 +77,7 @@ impl Reader for [u8] {
     }
 }
 
-pub struct Position<'a> { s:&'a[u8], position: usize }
+pub struct Position<'a> { s:&'a[u8], pub position: usize }
 impl<'a> Position<'a> {
     pub fn read_string(&mut self) -> Option<&'a[u8]> {
 
@@ -94,6 +94,15 @@ impl<'a> Position<'a> {
         if self.position + 4 <= self.s.len() {
             let u = BigEndian::read_u32(&self.s[self.position..]);
             self.position += 4;
+            Some(u)
+        } else {
+            None
+        }
+    }
+    pub fn read_byte(&mut self) -> Option<u8> {
+        if self.position+1 <= self.s.len() {
+            let u = self.s[self.position];
+            self.position += 1;
             Some(u)
         } else {
             None

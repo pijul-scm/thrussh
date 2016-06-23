@@ -155,8 +155,7 @@ impl Encrypted {
                 debug!("receiving signature, {:?}", buf);
                 if buf[0] == msg::USERAUTH_REQUEST {
                     // check signature.
-                    self.state = Some(auth_request.verify_signature(buf, self.session_id.as_bytes(), buffer))
-
+                    self.state = Some(self.server_verify_signature(buf, buffer, auth_request));
                 } else {
                     self.state = Some(EncryptedState::RejectAuthRequest(auth_request))
                 }

@@ -325,3 +325,111 @@ impl ServerSession {
         }
     }
 }
+
+
+use byteorder::{ByteOrder,BigEndian, ReadBytesExt};
+
+impl AuthRequest {
+    
+    pub fn read_auth_request<A:Authenticate>(mut self, auth:&A, buf:&[u8]) -> EncryptedState {
+        // https://tools.ietf.org/html/rfc4252#section-5
+        let mut pos = 1;
+        let next = |pos:&mut usize| {
+            let name_len = BigEndian::read_u32(&buf[*pos..]) as usize;
+            *pos += 4;
+            let name = &buf[*pos..(*pos+name_len)];
+            *pos += name_len;
+            name
+        };
+
+        let name = next(&mut pos);
+        let name = std::str::from_utf8(name).unwrap();
+        let service_name = next(&mut pos);
+        let method = next(&mut pos);
+        debug!("name: {:?} {:?} {:?}",
+               name, std::str::from_utf8(service_name),
+               std::str::from_utf8(method));
+
+        if service_name == b"ssh-connection" {
+
+            if method == b"password" {
+
+                // let x = buf[pos];
+                // println!("is false? {:?}", x);
+                pos+=1;
+                let password = next(&mut pos);
+                let password = std::str::from_utf8(password).unwrap();
+                let method = Method::Password {
+                    user: name,
+                    password: password
+                };
+                match auth.auth(self.methods, &method) {
+                    Auth::Success => {
+                        
+                        EncryptedState::AuthRequestSuccess(self)
+                    },
+                    Auth::Reject { remaining_methods, partial_success } => {
+                        self.methods = remaining_methods;
+                        self.partial_success = partial_success;
+
+                        EncryptedState::RejectAuthRequest(self)
+                    },
+                }
+
+            } else if method == b"publickey" {
+
+                // let is_not_probe = buf[pos];
+                pos+=1;
+                let pubkey_algo = next(&mut pos);
+                let pubkey = next(&mut pos);
+
+                let pubkey_ = match pubkey_algo {
+                    b"ssh-ed25519" => {
+                        let len = BigEndian::read_u32(pubkey) as usize;
+                        let publen = BigEndian::read_u32(&pubkey[len+4 .. ]) as usize;
+                        key::PublicKey::Ed25519(
+                            sodium::ed25519::PublicKey::copy_from_slice(&pubkey[len + 8 .. len+8+publen])
+                        )
+                    },
+                    _ => unimplemented!()
+                };
+                let method = Method::Pubkey {
+                    user: name,
+                    // algo: std::str::from_utf8(pubkey_algo).unwrap(),
+                    pubkey: pubkey_,
+                    seckey: None
+                };
+
+                match auth.auth(self.methods, &method) {
+                    Auth::Success => {
+                        
+
+                        // Public key ?
+                        self.public_key.extend(pubkey);
+                        self.public_key_algorithm.extend(pubkey_algo);
+
+                        EncryptedState::WaitingSignature(self)
+                        
+                    },
+                    Auth::Reject { remaining_methods, partial_success } => {
+
+                        self.methods = remaining_methods;
+                        self.partial_success = partial_success;
+
+                        EncryptedState::RejectAuthRequest(self)
+                            
+                    },
+                }
+            } else {
+                // Other methods of the base specification are insecure or optional.
+                EncryptedState::RejectAuthRequest(self)
+            }
+        } else {
+            // Unknown service
+            unimplemented!()
+        }
+
+    }
+
+
+}
