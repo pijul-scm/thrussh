@@ -199,7 +199,8 @@ impl<'a> ClientSession<'a> {
         let state = std::mem::replace(&mut self.state, None);
         match state {
             None => {
-                try!(self.buffers.send_ssh_id(stream, config.client_id.as_bytes()));
+                self.buffers.send_ssh_id(config.client_id.as_bytes());
+                try!(self.buffers.write_all(stream));
                 let mut exchange = Exchange::new();
                 exchange.client_id.extend(config.client_id.as_bytes());
                 debug!("sent!: {:?}", exchange);
@@ -210,7 +211,8 @@ impl<'a> ClientSession<'a> {
                 println!("read: {:?}", exchange);
                 // Have we received the version id?
                 if exchange.client_id.len() == 0 {
-                    try!(self.buffers.send_ssh_id(stream, config.client_id.as_bytes()));
+                    self.buffers.send_ssh_id(config.client_id.as_bytes());
+                    try!(self.buffers.write_all(stream));
                     exchange.client_id.extend(config.client_id.as_bytes());
                 }
 

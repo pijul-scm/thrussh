@@ -15,7 +15,7 @@ impl ServerSession {
 
     pub fn server_read_cleartext_kexinit<R: BufRead>(&mut self,
                                                      stream: &mut R,
-                                                     mut kexinit: KexInit,
+                                                     kexinit: &mut KexInit,
                                                      keys: &[key::Algorithm])
                                                      -> Result<bool, Error> {
         if kexinit.algo.is_none() {
@@ -30,15 +30,12 @@ impl ServerSession {
                     kexinit.exchange.client_kex_init.extend(payload);
                 }
                 self.buffers.read.clear_incr();
-                self.state = Some(ServerState::Kex(try!(kexinit.kexinit())));
                 Ok(true)
             } else {
                 // A complete packet could not be read, we need to read more.
-                self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
                 Ok(false)
             }
         } else {
-            self.state = Some(ServerState::Kex(try!(kexinit.kexinit())));
             Ok(true)
         }
     }

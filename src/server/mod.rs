@@ -130,19 +130,41 @@ impl ServerSession {
         // println!("state: {:?}", state);
         match state {
             None => {
-                let client_id = try!(self.buffers.read_ssh_id(stream));
-                if let Some(client_id) = client_id {
-                    let mut exchange = Exchange::new();
-                    exchange.client_id.extend(client_id);
-                    debug!("client id, exchange = {:?}", exchange);
-                    self.state = Some(ServerState::VersionOk(exchange));
-                    Ok(true)
-                } else {
-                    Ok(false)
+                let mut exchange;
+                {
+                    let client_id = try!(self.buffers.read_ssh_id(stream));
+                    if let Some(client_id) = client_id {
+                        exchange = Exchange::new();
+                        exchange.client_id.extend(client_id);
+                        debug!("client id, exchange = {:?}", exchange);
+                    } else {
+                        return Ok(false)
+                    }
                 }
+                // Preparing the response
+                self.buffers.send_ssh_id(config.server_id.as_bytes());
+                exchange.server_id.extend(config.server_id.as_bytes());
+
+                self.state = Some(ServerState::Kex(Kex::KexInit(KexInit {
+                    exchange: exchange,
+                    algo: None,
+                    sent: false,
+                    session_id: None,
+                })));
+                Ok(true)
             },
 
-            Some(ServerState::Kex(Kex::KexInit(kexinit))) => self.server_read_cleartext_kexinit(stream, kexinit, &config.keys),
+            Some(ServerState::Kex(Kex::KexInit(mut kexinit))) => {
+                let result = try!(self.server_read_cleartext_kexinit(stream, &mut kexinit, &config.keys));
+                if result {
+                    self.state = Some(self.buffers.cleartext_write_kex_init(&config.keys,
+                                                                            true, // is_server
+                                                                            kexinit));
+                } else {
+                    self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)))
+                }
+                Ok(result)
+            },
 
             Some(ServerState::Kex(Kex::KexDh(kexdh))) => self.server_read_cleartext_kexdh(stream, kexdh, buffer, buffer2),
 
@@ -220,31 +242,8 @@ impl ServerSession {
             return Ok(true);
         }
 
-        let state = std::mem::replace(&mut self.state, None);
-
-        match state {
-            Some(ServerState::VersionOk(mut exchange)) => {
-
-                try!(self.buffers.send_ssh_id(stream, config.server_id.as_bytes()));
-                exchange.server_id.extend(config.server_id.as_bytes());
-                debug!("sent id, exchange = {:?}", exchange);
-
-                self.state = Some(ServerState::Kex(Kex::KexInit(KexInit {
-                    exchange: exchange,
-                    algo: None,
-                    sent: false,
-                    session_id: None,
-                })));
-                Ok(true)
-            }
-            Some(ServerState::Kex(Kex::KexInit(kexinit))) => {
-
-                self.state = Some(self.buffers.cleartext_write_kex_init(&config.keys,
-                                                                        true, // is_server
-                                                                        kexinit));
-                Ok(true)
-            }
-            Some(ServerState::Encrypted(mut enc)) => {
+        match self.state {
+            Some(ServerState::Encrypted(ref mut enc)) => {
                 debug!("write: encrypted {:?} {:?}", enc.state, enc.rekey);
                 if enc.rekey.is_none() {
                     let state = std::mem::replace(&mut enc.state, None);
@@ -258,12 +257,9 @@ impl ServerSession {
                         state => enc.state = state,
                     }
                 }
-                self.state = Some(ServerState::Encrypted(enc));
                 Ok(true)
             }
-            session => {
-                // println!("write: unhandled {:?}", session);
-                self.state = session;
+            _ => {
                 Ok(true)
             }
         }

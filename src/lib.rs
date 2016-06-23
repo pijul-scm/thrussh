@@ -181,12 +181,10 @@ impl SSHBuffers {
         stream.consume(i+2);
         Ok(Some(&self.read.buffer.as_slice()[0..i]))
     }
-    pub fn send_ssh_id<W:std::io::Write>(&mut self, stream:&mut W, id:&[u8]) -> Result<(), Error> {
+    pub fn send_ssh_id(&mut self, id:&[u8]) {
         self.write.buffer.extend(id);
         self.write.buffer.push(b'\r');
         self.write.buffer.push(b'\n');
-        try!(self.write_all(stream));
-        Ok(())
     }
     pub fn cleartext_write_kex_init(
         &mut self,
