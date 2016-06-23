@@ -13,6 +13,8 @@ use time;
 
 mod write;
 use self::write::*;
+mod read;
+use self::read::*;
 
 #[derive(Debug)]
 pub struct Config {
@@ -348,67 +350,8 @@ impl<'a> ClientSession<'a> {
 
                             println!("msg: {:?} {:?}", buf, enc.rekey);
                             match std::mem::replace(&mut enc.rekey, None) {
-                                Some(Kex::KexInit(mut kexinit)) => {
-
-                                    if buf[0] == msg::KEXINIT {
-                                        debug!("received KEXINIT");
-                                        if kexinit.algo.is_none() {
-                                            kexinit.algo = Some(try!(negociation::client_read_kex(buf, &config.keys)));
-                                            kexinit.exchange.server_kex_init.extend(buf);
-                                        }
-                                        if kexinit.sent {
-                                            if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
-                                                enc.rekey = Some(Kex::KexDh(KexDh {
-                                                    exchange: kexinit.exchange,
-                                                    kex: kex,
-                                                    key: key,
-                                                    cipher: cipher,
-                                                    mac: mac,
-                                                    follows: follows,
-                                                    session_id: kexinit.session_id,
-                                                }))
-                                            } else {
-                                                enc.rekey = Some(Kex::KexInit(kexinit));
-                                            }
-                                        } else {
-                                            enc.rekey = Some(Kex::KexInit(kexinit));
-                                        }
-                                    } else {
-                                        enc.rekey = Some(Kex::KexInit(kexinit))
-                                    }
-                                },
-                                Some(Kex::KexDhDone(mut kexdhdone)) => {
-                                    if buf[0] == msg::KEX_ECDH_REPLY {
-                                        let hash = try!(kexdhdone.client_compute_exchange_hash(buf, buffer));
-                                        let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2);
-                                        enc.rekey = Some(Kex::NewKeys(new_keys));
-                                    } else {
-                                        enc.rekey = Some(Kex::KexDhDone(kexdhdone))
-                                    }
-                                },
-                                Some(Kex::NewKeys(mut newkeys)) => {
-
-                                    if buf[0] == msg::NEWKEYS {
-
-                                        newkeys.received = true;
-                                        if !newkeys.sent {
-                                            enc.rekey = Some(Kex::NewKeys(newkeys));
-                                        } else {
-
-                                            enc.exchange = Some(newkeys.exchange);
-                                            enc.kex = newkeys.kex;
-                                            enc.key = newkeys.key;
-                                            enc.cipher = newkeys.cipher;
-                                            enc.mac = newkeys.mac;
-                                            is_newkeys = true
-
-                                        }
-                                    } else {
-                                        enc.rekey = Some(Kex::NewKeys(newkeys))
-                                    }
-                                },
-                                Some(state) => {
-                                    enc.rekey = Some(state);
+                                Some(rekey) => {
+                                    is_newkeys = try!(enc.client_rekey(buf, rekey, &config.keys, buffer, buffer2))
                                 }
                                 None if buf[0] == msg::KEXINIT => {
                                     // The server is initiating a rekeying.
