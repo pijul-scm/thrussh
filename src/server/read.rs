@@ -368,4 +368,85 @@ impl Encrypted {
             self.server_reject_auth_request(buffer, auth_request, write_buffer)
         }
     }
+
+    pub fn server_read_rekey(&mut self, buf:&[u8], keys:&[key::Algorithm]) -> Result<bool, Error> {
+        if buf[0] == msg::KEXINIT {
+            match std::mem::replace(&mut self.rekey, None) {
+                Some(Kex::KexInit(mut kexinit)) => {
+                    debug!("received KEXINIT");
+                    if kexinit.algo.is_none() {
+                        kexinit.algo = Some(try!(negociation::read_kex(buf, keys)));
+                    }
+                    kexinit.exchange.client_kex_init.extend(buf);
+                    self.rekey = Some(try!(kexinit.kexinit()));
+                    Ok(true)
+                },
+                None => {
+                    // start a rekeying
+                    let mut kexinit = KexInit::rekey(
+                        std::mem::replace(&mut self.exchange, None).unwrap(),
+                        try!(negociation::read_kex(buf, &keys)),
+                        &self.session_id
+                    );
+                    kexinit.exchange.client_kex_init.extend(buf);
+                    self.rekey = Some(try!(kexinit.kexinit()));
+                    Ok(true)
+                },
+                _ => {
+                    // Error, maybe?
+                    // unimplemented!()
+                    Ok(true)
+                }
+            }
+        } else {
+
+            let packet_matches = match self.rekey {
+                Some(Kex::KexDh(_)) if buf[0] == msg::KEX_ECDH_INIT => true,
+                Some(Kex::NewKeys(_)) if buf[0] == msg::NEWKEYS => true,
+                _ => false
+            };
+            debug!("packet_matches: {:?}", packet_matches);
+            if packet_matches {
+                let rekey = std::mem::replace(&mut self.rekey, None);
+                match rekey {
+                    Some(Kex::KexDh(mut kexdh)) => {
+                        debug!("KexDH");
+                        let kex = {
+                            kexdh.exchange.client_ephemeral.extend(&buf[5..]);
+                            try!(kexdh.kex.server_dh(&mut kexdh.exchange, buf))
+                        };
+                        self.rekey = Some(Kex::KexDhDone(KexDhDone {
+                            exchange: kexdh.exchange,
+                            kex: kex,
+                            key: kexdh.key,
+                            cipher: kexdh.cipher,
+                            mac: kexdh.mac,
+                            follows: kexdh.follows,
+                            session_id: kexdh.session_id,
+                        }));
+                        Ok(true)
+                    },
+                    Some(Kex::NewKeys(kexinit)) => {
+                        debug!("NewKeys");
+                        if buf[0] == msg::NEWKEYS {
+                            self.exchange = Some(kexinit.exchange);
+                            self.kex = kexinit.kex;
+                            self.key = kexinit.key;
+                            self.cipher = kexinit.cipher;
+                            self.mac = kexinit.mac;
+                        } else {
+                            self.rekey = Some(Kex::NewKeys(kexinit))
+                        }
+                        Ok(true)
+                    },
+                    _ => {
+                        Ok(true)
+                    }
+                }
+            } else {
+                Ok(false)
+            }
+        }
+    }
+
 }

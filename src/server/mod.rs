@@ -265,7 +265,7 @@ impl ServerSession {
                         // If we are currently in the process of
                         // rekeying, send these packets first (it's
                         // not allowed to send any other packet).
-                        try!(enc.server_write_rekey(stream, buffer, buffer2, &mut self.buffers, &config.keys, rekey))
+                        try!(enc.server_write_rekey(buffer, buffer2, &mut self.buffers, &config.keys, rekey))
                     },
                     None => {
                         let state = std::mem::replace(&mut enc.state, None);
