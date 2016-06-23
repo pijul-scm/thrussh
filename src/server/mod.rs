@@ -202,10 +202,9 @@ impl ServerSession {
 
     // Returns whether the connexion is still alive.
 
-    pub fn write<W: Write, A: auth::Authenticate, S:SSHHandler>(
+    pub fn write<W: Write, A: auth::Authenticate>(
         &mut self,
         config: &Config<A>,
-        server: &mut S,
         stream: &mut W,
         buffer: &mut CryptoBuf,
         buffer2: &mut CryptoBuf)

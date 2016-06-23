@@ -8,7 +8,7 @@ use super::super::encoding::Reader;
 use rand::{thread_rng, Rng};
 use std;
 use std::io::BufRead;
-use byteorder::{ByteOrder, BigEndian, ReadBytesExt};
+use byteorder::{ByteOrder, ReadBytesExt};
 
 
 impl ServerSession {
@@ -123,8 +123,8 @@ impl Encrypted {
         match state {
             Some(EncryptedState::WaitingServiceRequest) if buf[0] == msg::SERVICE_REQUEST => {
 
-                let len = BigEndian::read_u32(&buf[1..]) as usize;
-                let request = &buf[5..(5 + len)];
+                let mut r = buf.reader(1);
+                let request = r.read_string().unwrap();
                 debug!("request: {:?}", std::str::from_utf8(request));
                 debug!("decrypted {:?}", buf);
                 if request == b"ssh-userauth" {
@@ -189,11 +189,11 @@ impl Encrypted {
                 debug!("buf: {:?}", buf);
                 if buf[0] == msg::CHANNEL_DATA {
 
-                    let channel_num = BigEndian::read_u32(&buf[1..]);
+                    let mut r = buf.reader(1);
+                    let channel_num = r.read_u32().unwrap();
                     if let Some(ref mut channel) = self.channels.get_mut(&channel_num) {
 
-                        let len = BigEndian::read_u32(&buf[5..]) as usize;
-                        let data = &buf[9..9 + len];
+                        let data = r.read_string().unwrap();
                         buffer.clear();
 
                         let data = {
