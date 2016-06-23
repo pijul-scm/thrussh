@@ -236,28 +236,9 @@ impl<'a> ClientSession<'a> {
                 try!(self.buffers.write_all(stream));
                 Ok(true)
             },
-            Some(ServerState::Kex(Kex::KexDh(mut kexdh))) => {
-
-                self.buffers.write.buffer.extend(b"\0\0\0\0\0");
-
-                let kex = try!(kexdh.kex.client_dh(&mut kexdh.exchange, &mut self.buffers.write.buffer));
-
-                super::complete_packet(&mut self.buffers.write.buffer, 0);
-                self.buffers.write.seqn += 1;
-                try!(self.buffers.write_all(stream));
-
-                self.state = Some(ServerState::Kex(Kex::KexDhDone(KexDhDone {
-                    exchange: kexdh.exchange,
-                    kex: kex,
-                    key: kexdh.key,
-                    cipher: kexdh.cipher,
-                    mac: kexdh.mac,
-                    follows: kexdh.follows,
-                    session_id: kexdh.session_id,
-                })));
-                Ok(true)
-
-            },
+            Some(ServerState::Kex(Kex::KexDh(kexdh))) => {
+                unreachable!() // skipped by the read function
+            }
             Some(ServerState::Kex(Kex::KexDhDone(kexdhdone))) => {
                 // We're waiting for ECDH_REPLY from server, nothing to write.
                 self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));

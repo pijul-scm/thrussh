@@ -58,22 +58,26 @@ impl<'a> super::ClientSession<'a> {
             }
         }
 
-        if kexinit.sent {
-            if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
-                self.state = Some(ServerState::Kex(Kex::KexDh(KexDh {
-                    exchange: kexinit.exchange,
-                    kex: kex,
-                    key: key,
-                    cipher: cipher,
-                    mac: mac,
-                    follows: follows,
-                    session_id: kexinit.session_id,
-                })))
-            } else {
-                self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
-            }
+
+        if let Some((mut kex, key, cipher, mac, follows)) = kexinit.algo {
+
+            self.buffers.write.buffer.extend(b"\0\0\0\0\0");
+            ////
+            let kex = try!(kex.client_dh(&mut kexinit.exchange, &mut self.buffers.write.buffer));
+
+            super::super::complete_packet(&mut self.buffers.write.buffer, 0);
+            self.buffers.write.seqn += 1;
+            self.state = Some(ServerState::Kex(Kex::KexDhDone(KexDhDone {
+                exchange: kexinit.exchange,
+                kex: kex,
+                key: key,
+                cipher: cipher,
+                mac: mac,
+                follows: follows,
+                session_id: kexinit.session_id,
+            })));
         } else {
-            self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
+            self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)))
         }
         Ok(received)
 
