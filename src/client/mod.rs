@@ -103,50 +103,8 @@ impl<'a> ClientSession<'a> {
                     Some(EncryptedState::ServiceRequest) => {
                         read_complete = try!(enc.client_service_request(stream, &mut self.buffers.read))
                     },
-                    Some(EncryptedState::AuthRequestSuccess(mut auth_request)) => {
-
-                        // We're waiting for success.
-                        
-                        if let Some(buf) = try!(enc.cipher.read_server_packet(stream,&mut self.buffers.read)) {
-
-                                println!("line {}, buf = {:?}", line!(), buf);
-
-                                if buf[0] == msg::USERAUTH_SUCCESS {
-
-                                    enc.state = Some(EncryptedState::WaitingChannelOpen)
-
-                                } else if buf[0] == msg::USERAUTH_FAILURE {
-
-                                    let mut r = buf.reader(1);
-                                    let remaining_methods = r.read_string().unwrap();
-
-                                    auth_request.methods.keep_remaining(remaining_methods.split(|&c| c==b','));
-
-                                    enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
-
-                                } else if buf[0] == msg::USERAUTH_PK_OK {
-
-                                    auth_request.public_key_is_ok = true;
-                                    enc.state = Some(EncryptedState::WaitingSignature(auth_request))
-
-                                } else {
-                                    println!("unknown message: {:?}", buf);
-                                    enc.state = Some(EncryptedState::AuthRequestSuccess(auth_request))
-                                }
-                                read_complete = true
-
-                            } else {
-
-                                read_complete = false
-
-                            }
-
-
-                        if read_complete {
-                            self.buffers.read.seqn += 1;
-                            self.buffers.read.clear();
-                        }
-                        
+                    Some(EncryptedState::AuthRequestSuccess(auth_request)) => {
+                        read_complete = try!(enc.client_auth_request_success(stream, auth_request, &mut self.buffers.read))
                     },
                     Some(EncryptedState::WaitingSignature(auth_request)) => {
                         // The server is waiting for our authentication signature (also USERAUTH_REQUEST).
@@ -158,46 +116,8 @@ impl<'a> ClientSession<'a> {
                         enc.state = Some(EncryptedState::WaitingChannelOpen);
                         read_complete = false
                     },
-                    Some(EncryptedState::ChannelOpenConfirmation(mut channels)) => {
-
-                        // Check whether we're receiving a confirmation message.
-                        if let Some(buf) = try!(enc.cipher.read_server_packet(stream,&mut self.buffers.read)) {
-
-                            println!("channel_confirmation? {:?}", buf);
-                            if buf[0] == msg::CHANNEL_OPEN_CONFIRMATION {
-
-                                let id_send = BigEndian::read_u32(&buf[1..]);
-                                let id_recv = BigEndian::read_u32(&buf[5..]);
-                                let window = BigEndian::read_u32(&buf[9..]);
-                                let max_packet = BigEndian::read_u32(&buf[13..]);
-
-                                if channels.sender_channel == id_send {
-
-                                    channels.recipient_channel = id_recv;
-                                    channels.initial_window_size = std::cmp::min(window, channels.initial_window_size);
-                                    channels.maximum_packet_size = std::cmp::min(max_packet, channels.maximum_packet_size);
-
-                                    println!("id_send = {:?}", id_send);
-                                    enc.channels.insert(channels.sender_channel, channels);
-
-                                    enc.state = Some(EncryptedState::ChannelOpened(id_send));
-
-                                } else {
-
-                                    unimplemented!()
-                                }
-                            } else {
-                                enc.state = Some(EncryptedState::ChannelOpenConfirmation(channels));
-                            }
-                            read_complete = true
-                        } else {
-                            enc.state = Some(EncryptedState::ChannelOpenConfirmation(channels));
-                            read_complete = false
-                        };
-                        
-                        if read_complete {
-                            self.buffers.read.clear_incr();
-                        }
+                    Some(EncryptedState::ChannelOpenConfirmation(channels)) => {
+                        read_complete = try!(enc.client_channel_open_confirmation(stream, channels, &mut self.buffers.read))
                     }
                     state => {
                         println!("read state {:?}", state);

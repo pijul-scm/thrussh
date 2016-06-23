@@ -2,6 +2,9 @@ use super::super::*;
 use super::super::msg;
 use super::super::negociation;
 use std::io::BufRead;
+use auth::AuthRequest;
+use encoding::Reader;
+use std;
 
 impl<'a> super::ClientSession<'a> {
     pub fn client_version_ok<R:BufRead>(&mut self, stream:&mut R, mut exchange: Exchange) -> Result<bool, Error> {
@@ -230,6 +233,95 @@ impl Encrypted {
         if read_complete {
             read_buffer.seqn += 1;
             read_buffer.clear();
+        }
+        Ok(read_complete)
+    }
+
+    pub fn client_auth_request_success<R:BufRead>(&mut self, stream:&mut R, mut auth_request:AuthRequest, read_buffer:&mut SSHBuffer) -> Result<bool, Error> {
+        // We're waiting for success.
+        let read_complete;
+        if let Some(buf) = try!(self.cipher.read_server_packet(stream,read_buffer)) {
+
+            println!("line {}, buf = {:?}", line!(), buf);
+
+            if buf[0] == msg::USERAUTH_SUCCESS {
+
+                self.state = Some(EncryptedState::WaitingChannelOpen)
+
+            } else if buf[0] == msg::USERAUTH_FAILURE {
+
+                let mut r = buf.reader(1);
+                let remaining_methods = r.read_string().unwrap();
+
+                auth_request.methods.keep_remaining(remaining_methods.split(|&c| c==b','));
+
+                self.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
+
+            } else if buf[0] == msg::USERAUTH_PK_OK {
+
+                auth_request.public_key_is_ok = true;
+                self.state = Some(EncryptedState::WaitingSignature(auth_request))
+
+            } else {
+                println!("unknown message: {:?}", buf);
+                self.state = Some(EncryptedState::AuthRequestSuccess(auth_request))
+            }
+            read_complete = true
+
+        } else {
+
+            read_complete = false
+
+        }
+
+
+        if read_complete {
+            read_buffer.seqn += 1;
+            read_buffer.clear();
+        }
+        Ok(read_complete)
+    }
+
+    pub fn client_channel_open_confirmation<R:BufRead>(&mut self, stream:&mut R, mut channels: ChannelParameters, read_buffer:&mut SSHBuffer) -> Result<bool, Error> {
+        // Check whether we're receiving a confirmation message.
+        let read_complete;
+
+        if let Some(buf) = try!(self.cipher.read_server_packet(stream, read_buffer)) {
+
+            println!("channel_confirmation? {:?}", buf);
+            if buf[0] == msg::CHANNEL_OPEN_CONFIRMATION {
+                let mut reader = buf.reader(1);
+                let id_send = reader.read_u32().unwrap();
+                let id_recv = reader.read_u32().unwrap();
+                let window = reader.read_u32().unwrap();
+                let max_packet = reader.read_u32().unwrap();
+
+                if channels.sender_channel == id_send {
+
+                    channels.recipient_channel = id_recv;
+                    channels.initial_window_size = std::cmp::min(window, channels.initial_window_size);
+                    channels.maximum_packet_size = std::cmp::min(max_packet, channels.maximum_packet_size);
+
+                    println!("id_send = {:?}", id_send);
+                    self.channels.insert(channels.sender_channel, channels);
+
+                    self.state = Some(EncryptedState::ChannelOpened(id_send));
+
+                } else {
+
+                    unimplemented!()
+                }
+            } else {
+                self.state = Some(EncryptedState::ChannelOpenConfirmation(channels));
+            }
+            read_complete = true
+        } else {
+            self.state = Some(EncryptedState::ChannelOpenConfirmation(channels));
+            read_complete = false
+        };
+        
+        if read_complete {
+            read_buffer.clear_incr();
         }
         Ok(read_complete)
     }
