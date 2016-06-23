@@ -5,7 +5,6 @@ use std;
 use super::*;
 pub use super::auth::*;
 use super::msg;
-use super::cipher;
 
 #[derive(Debug)]
 pub struct Config<Auth> {
@@ -105,10 +104,10 @@ impl ServerSession {
         server:&mut S,
         config: &Config<A>,
         stream: &mut R,
-        buffer: &mut CryptoBuf,
-        buffer2: &mut CryptoBuf)
+        buffer: &mut CryptoBuf)
         -> Result<bool, Error> {
 
+        
         let state = std::mem::replace(&mut self.state, None);
         // println!("state: {:?}", state);
         match state {
@@ -127,7 +126,7 @@ impl ServerSession {
 
             Some(ServerState::Kex(Kex::KexInit(kexinit))) => self.server_read_cleartext_kexinit(stream, kexinit, &config.keys),
 
-            Some(ServerState::Kex(Kex::KexDh(kexdh))) => self.server_read_cleartext_kexdh(stream, buffer, buffer2, kexdh),
+            Some(ServerState::Kex(Kex::KexDh(kexdh))) => self.server_read_cleartext_kexdh(stream, kexdh),
 
             Some(ServerState::Kex(Kex::NewKeys(newkeys))) => self.server_read_cleartext_newkeys(stream, newkeys),
 

@@ -42,7 +42,7 @@ impl ServerSession {
             Ok(true)
         }
     }
-    pub fn server_read_cleartext_kexdh<R: BufRead>(&mut self, stream:&mut R, buffer: &mut CryptoBuf, buffer2:&mut CryptoBuf, mut kexdh:KexDh) -> Result<bool, Error> {
+    pub fn server_read_cleartext_kexdh<R: BufRead>(&mut self, stream:&mut R, mut kexdh:KexDh) -> Result<bool, Error> {
 
         if self.buffers.read.len == 0 {
             try!(self.buffers.set_clear_len(stream));

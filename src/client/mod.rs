@@ -1,20 +1,18 @@
 use byteorder::{ByteOrder, BigEndian};
-use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, KexDh, KexDhDone, EncryptedState, ChannelParameters, ChannelBuf};
+use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, KexDh, KexDhDone, EncryptedState, ChannelBuf};
 use super::encoding::*;
 use super::key;
 use super::msg;
 use super::auth;
 use super::negociation;
-use rand;
-use rand::Rng;
 use std::io::{Write,BufRead};
 use std;
 use time;
 
 mod write;
-use self::write::*;
+// use self::write::*;
 mod read;
-use self::read::*;
+// use self::read::*;
 
 #[derive(Debug)]
 pub struct Config {
@@ -373,16 +371,14 @@ impl<'a> ClientSession<'a> {
                                             let len = BigEndian::read_u32(&buf[5..]) as usize;
                                             let data = &buf[9..9 + len];
                                             buffer.clear();
-                                            let data = {
-                                                let server_buf = ChannelBuf {
-                                                    buffer:buffer,
-                                                    recipient_channel: channel.recipient_channel,
-                                                    sent_seqn: &mut self.buffers.write.seqn,
-                                                    write_buffer: &mut self.buffers.write.buffer,
-                                                    cipher: &mut enc.cipher
-                                                };
-                                                client.data(&data, server_buf)
+                                            let server_buf = ChannelBuf {
+                                                buffer:buffer,
+                                                recipient_channel: channel.recipient_channel,
+                                                sent_seqn: &mut self.buffers.write.seqn,
+                                                write_buffer: &mut self.buffers.write.buffer,
+                                                cipher: &mut enc.cipher
                                             };
+                                            try!(client.data(&data, server_buf))
                                         }
                                     }
                                 },
@@ -526,7 +522,7 @@ impl<'a> ClientSession<'a> {
                 let state = std::mem::replace(&mut enc.state, None);
                 match state {
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
-                        try!(enc.client_waiting_auth_request(stream, &mut self.buffers, auth_request, &self.auth_method, config, buffer, buffer2))
+                        try!(enc.client_waiting_auth_request(stream, &mut self.buffers, auth_request, &self.auth_method, buffer))
                     },
 
                     Some(EncryptedState::WaitingSignature(auth_request)) => {

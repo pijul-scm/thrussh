@@ -1,10 +1,5 @@
-use super::*;
 use super::super::*;
-use std::io::{Write};
 use super::super::msg;
-use super::super::auth::{AuthRequest,Method};
-use rand;
-use rand::Rng;
 use super::super::negociation;
 
 impl Encrypted {

@@ -1,8 +1,7 @@
-use super::*;
 use super::super::*;
 use std::io::{Write};
 use super::super::msg;
-use super::super::auth::{AuthRequest,Method};
+use super::super::auth::{AuthRequest};
 use rand;
 use rand::Rng;
 use super::super::negociation;
@@ -44,7 +43,7 @@ impl Encrypted {
         Ok(())
     }
 
-    pub fn client_waiting_auth_request<W:Write>(&mut self, stream:&mut W, buffers:&mut SSHBuffers, auth_request:AuthRequest, auth_method:&Option<auth::Method>, config:&super::Config, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<(),Error> {
+    pub fn client_waiting_auth_request<W:Write>(&mut self, stream:&mut W, buffers:&mut SSHBuffers, auth_request:AuthRequest, auth_method:&Option<auth::Method>, buffer:&mut CryptoBuf) -> Result<(),Error> {
         // The server is waiting for our USERAUTH_REQUEST.
         buffer.clear();
         buffer.push(msg::USERAUTH_REQUEST);
