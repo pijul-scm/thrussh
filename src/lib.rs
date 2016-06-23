@@ -188,16 +188,15 @@ impl SSHBuffers {
         try!(self.write_all(stream));
         Ok(())
     }
-    pub fn cleartext_write_kex_init<W: Write>(
+    pub fn cleartext_write_kex_init(
         &mut self,
         keys: &[key::Algorithm],
         is_server: bool,
-        mut kexinit: KexInit,
-        stream: &mut W)
-        -> Result<ServerState, Error> {
+        mut kexinit: KexInit) -> ServerState {
 
         if !kexinit.sent {
             // println!("kexinit");
+            let pos = self.write.buffer.len();
             self.write.buffer.extend(b"\0\0\0\0\0");
             negociation::write_kex(&keys, &mut self.write.buffer);
 
@@ -210,13 +209,12 @@ impl SSHBuffers {
                 }
             }
 
-            complete_packet(&mut self.write.buffer, 0);
+            complete_packet(&mut self.write.buffer, pos);
             self.write.seqn += 1;
-            try!(self.write_all(stream));
             kexinit.sent = true;
         }
         if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
-            Ok(ServerState::Kex(Kex::KexDh(KexDh {
+            ServerState::Kex(Kex::KexDh(KexDh {
                 exchange: kexinit.exchange,
                 kex: kex,
                 key: key,
@@ -224,9 +222,9 @@ impl SSHBuffers {
                 mac: mac,
                 follows: follows,
                 session_id: kexinit.session_id,
-            })))
+            }))
         } else {
-            Ok(ServerState::Kex(Kex::KexInit(kexinit)))
+            ServerState::Kex(Kex::KexInit(kexinit))
         }
 
     }

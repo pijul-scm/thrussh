@@ -227,11 +227,11 @@ impl<'a> ClientSession<'a> {
                 Ok(true)
             },
             Some(ServerState::Kex(Kex::KexInit(kexinit))) => {
-                self.state = Some(try!(self.buffers.cleartext_write_kex_init(
+                self.state = Some(self.buffers.cleartext_write_kex_init(
                     &config.keys,
                     false, // is_server
-                    kexinit,
-                    stream)));
+                    kexinit));
+                try!(self.buffers.write_all(stream));
                 Ok(true)
             },
             Some(ServerState::Kex(Kex::KexDh(mut kexdh))) => {
