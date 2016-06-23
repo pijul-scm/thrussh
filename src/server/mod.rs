@@ -272,11 +272,6 @@ impl ServerSession {
                         match state {
 
                             Some(EncryptedState::ServiceRequest) => {
-                                let auth_request = self.server_accept_service(config.auth_banner,
-                                                                              config.methods,
-                                                                              &mut enc,
-                                                                              buffer);
-                                enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
                                 try!(self.buffers.write_all(stream));
                             }
 

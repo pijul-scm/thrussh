@@ -33,39 +33,6 @@ impl ServerSession {
         self.buffers.write.seqn += 1;
     }
 
-    pub fn server_accept_service(&mut self,
-                                 banner: Option<&str>,
-                                 methods: auth::Methods,
-                                 enc: &mut Encrypted,
-                                 buffer: &mut CryptoBuf)
-                                 -> AuthRequest {
-        buffer.clear();
-        buffer.push(msg::SERVICE_ACCEPT);
-        buffer.extend_ssh_string(b"ssh-userauth");
-        enc.cipher.write_server_packet(self.buffers.write.seqn, buffer.as_slice(), &mut self.buffers.write.buffer);
-        self.buffers.write.seqn += 1;
-
-        if let Some(ref banner) = banner {
-
-            buffer.clear();
-            buffer.push(msg::USERAUTH_BANNER);
-            buffer.extend_ssh_string(banner.as_bytes());
-            buffer.extend_ssh_string(b"");
-
-            enc.cipher
-               .write_server_packet(self.buffers.write.seqn, buffer.as_slice(), &mut self.buffers.write.buffer);
-            self.buffers.write.seqn += 1;
-        }
-
-        AuthRequest {
-            methods: methods,
-            partial_success: false, // not used immediately anway.
-            public_key: CryptoBuf::new(),
-            public_key_algorithm: CryptoBuf::new(),
-            sent_pk_ok: false,
-            public_key_is_ok: false
-        }
-    }
 
     pub fn server_reject_auth_request(&mut self,
                                       enc:&mut Encrypted,

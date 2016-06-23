@@ -128,8 +128,15 @@ impl Encrypted {
                 debug!("request: {:?}", std::str::from_utf8(request));
                 debug!("decrypted {:?}", buf);
                 if request == b"ssh-userauth" {
-                    self.state = Some(EncryptedState::ServiceRequest)
+
+                    let auth_request = self.server_accept_service(config.auth_banner,
+                                                                  config.methods,
+                                                                  buffer,
+                                                                  write_buffer);
+                    self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+
                 } else {
+
                     self.state = Some(EncryptedState::WaitingServiceRequest)
                 }
             }
