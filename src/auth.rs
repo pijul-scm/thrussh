@@ -1,7 +1,6 @@
 use std::ops::Sub;
 use super::key;
-use super::{CryptoBuf,EncryptedState};
-use super::sodium;
+use super::{CryptoBuf};
 use super::encoding;
 
 #[derive(Clone,Debug,Copy,PartialEq,Eq)]

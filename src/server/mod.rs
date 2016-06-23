@@ -263,42 +263,18 @@ impl ServerSession {
                 match rekey_state {
                     Some(rekey) => {
                         // If we are currently in the process of
-                        // rekeying, send these packets first.  We can
-                        // choose anyway.
+                        // rekeying, send these packets first (it's
+                        // not allowed to send any other packet).
                         try!(enc.server_write_rekey(stream, buffer, buffer2, &mut self.buffers, &config.keys, rekey))
                     },
                     None => {
                         let state = std::mem::replace(&mut enc.state, None);
                         match state {
-
-                            Some(EncryptedState::ServiceRequest) => {
-                                try!(self.buffers.write_all(stream));
-                            }
-
-                            Some(EncryptedState::RejectAuthRequest(auth_request)) => {
-                                try!(self.buffers.write_all(stream));
-                            }
-
-                            Some(EncryptedState::WaitingSignature(mut auth_request)) => {
-                                self.server_send_pk_ok(&mut enc, buffer, &mut auth_request);
-                                enc.state = Some(EncryptedState::WaitingSignature(auth_request));
-                                try!(self.buffers.write_all(stream));
-                            }
-                            
-                            Some(EncryptedState::AuthRequestSuccess(_)) => {
-                                try!(self.buffers.write_all(stream));
-                            }
-
                             Some(EncryptedState::ChannelOpenConfirmation(channel)) => {
-                                // The write buffer was already filled.
-                                try!(self.buffers.write_all(stream));
+                                // The write buffer was already filled and written above.
                                 let sender_channel = channel.sender_channel;
                                 enc.channels.insert(sender_channel, channel);
                                 enc.state = Some(EncryptedState::ChannelOpened(sender_channel));
-                                try!(self.buffers.write_all(stream));
-                            }
-                            Some(EncryptedState::ChannelOpened(recipient_channel)) => {
-                                enc.state = Some(EncryptedState::ChannelOpened(recipient_channel))
                             }
                             state => enc.state = state,
                         }
@@ -315,7 +291,3 @@ impl ServerSession {
         }
     }
 }
-
-
-use byteorder::{ByteOrder,BigEndian, ReadBytesExt};
-

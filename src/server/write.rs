@@ -1,7 +1,7 @@
 use super::super::msg;
 use super::super::kex;
 use super::*;
-use super::super::{CryptoBuf, KexDhDone, Encrypted, ChannelParameters, complete_packet};
+use super::super::{CryptoBuf, KexDhDone, Encrypted, ChannelParameters, EncryptedState, complete_packet};
 use super::super::auth;
 
 impl ServerSession {
@@ -32,26 +32,7 @@ impl ServerSession {
         complete_packet(&mut self.buffers.write.buffer, pos);
         self.buffers.write.seqn += 1;
     }
-
-
-    pub fn server_send_pk_ok(&mut self,
-                             enc: &mut Encrypted,
-                             buffer: &mut CryptoBuf,
-                             auth_request: &mut AuthRequest) {
-        buffer.clear();
-        buffer.push(msg::USERAUTH_PK_OK);
-        buffer.extend_ssh_string(auth_request.public_key_algorithm.as_slice());
-        buffer.extend_ssh_string(auth_request.public_key.as_slice());
-        enc.cipher
-            .write_server_packet(self.buffers.write.seqn, buffer.as_slice(), &mut self.buffers.write.buffer);
-        self.buffers.write.seqn += 1;
-        auth_request.sent_pk_ok = true;
-    }
 }
-
-use super::super::EncryptedState;
-use sodium;
-use encoding::Reader;
 
 impl Encrypted {
     pub fn server_confirm_channel_open(&mut self,
@@ -130,5 +111,18 @@ impl Encrypted {
 
         write_buffer.seqn += 1;
         self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+    }
+    pub fn server_send_pk_ok(&mut self,
+                             buffer: &mut CryptoBuf,
+                             auth_request: &mut AuthRequest,
+                             write_buffer: &mut super::super::SSHBuffer) {
+        buffer.clear();
+        buffer.push(msg::USERAUTH_PK_OK);
+        buffer.extend_ssh_string(auth_request.public_key_algorithm.as_slice());
+        buffer.extend_ssh_string(auth_request.public_key.as_slice());
+        self.cipher
+            .write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+        write_buffer.seqn += 1;
+        auth_request.sent_pk_ok = true;
     }
 }

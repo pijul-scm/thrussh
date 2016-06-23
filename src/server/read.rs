@@ -299,6 +299,7 @@ impl Encrypted {
                         // Public key ?
                         auth_request.public_key.extend(pubkey);
                         auth_request.public_key_algorithm.extend(pubkey_algo);
+                        self.server_send_pk_ok(buffer, &mut auth_request, write_buffer);
                         self.state = Some(EncryptedState::WaitingSignature(auth_request))
                         
                     },
@@ -345,7 +346,8 @@ impl Encrypted {
                 };
                 let signature = r.read_string().unwrap();
                 let mut s = signature.reader(0);
-                let algo_ = s.read_string().unwrap();
+                // let algo_ =
+                s.read_string().unwrap();
                 let sig = sodium::ed25519::Signature::copy_from_slice(s.read_string().unwrap());
 
                 buffer.clear();
