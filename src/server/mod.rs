@@ -18,6 +18,23 @@ pub struct Config<Auth> {
     pub rekey_time_limit_s: f64
 }
 
+impl<A> Config<A> {
+    pub fn default(a:A, keys:Vec<key::Algorithm>) -> Config<A> {
+        Config {
+            // Must begin with "SSH-2.0-".
+            server_id: "SSH-2.0-SSH.rs_0.1".to_string(),
+            methods: auth::Methods::all(),
+            auth_banner: Some("SSH Authentication\r\n"), // CRLF separated lines.
+            keys: keys.to_vec(),
+            auth: a,
+            // Following the recommendations of https://tools.ietf.org/html/rfc4253#section-9
+            rekey_write_limit: 1<<30, // 1 Gb
+            rekey_read_limit: 1<<30, // 1Gb
+            rekey_time_limit_s: 3600.0
+        }
+    }
+}
+
 pub struct ServerSession {
     buffers: super::SSHBuffers,
     state: Option<ServerState>,

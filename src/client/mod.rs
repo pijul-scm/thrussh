@@ -67,7 +67,7 @@ impl<'a> ClientSession<'a> {
         buffer2: &mut CryptoBuf)
         -> Result<bool, Error> {
 
-        println!("read");
+        debug!("read");
         let state = std::mem::replace(&mut self.state, None);
         match state {
             None => {
@@ -93,7 +93,7 @@ impl<'a> ClientSession<'a> {
             Some(ServerState::Kex(Kex::KexDhDone(kexdhdone))) => self.client_kexdhdone(stream, kexdhdone, buffer, buffer2),
             Some(ServerState::Kex(Kex::NewKeys(newkeys))) => self.client_newkeys(stream, newkeys),
             Some(ServerState::Encrypted(mut enc)) => {
-                println!("encrypted state");
+                debug!("encrypted state");
                 self.try_rekey(&mut enc, &config);
                 let state = std::mem::replace(&mut enc.state, None);
 
@@ -120,7 +120,7 @@ impl<'a> ClientSession<'a> {
                         read_complete = try!(enc.client_channel_open_confirmation(stream, channels, &mut self.buffers.read))
                     }
                     state => {
-                        println!("read state {:?}", state);
+                        debug!("read state {:?}", state);
                         let mut is_newkeys = false;
                         if let Some(buf) = try!(enc.cipher.read_server_packet(stream,&mut self.buffers.read)) {
 
@@ -189,7 +189,7 @@ impl<'a> ClientSession<'a> {
                            buffer: &mut CryptoBuf,
                            buffer2: &mut CryptoBuf)
                            -> Result<bool, Error> {
-        println!("write, buffer: {:?}", self.buffers.write);
+        debug!("write, buffer: {:?}", self.buffers.write);
         // Finish pending writes, if any.
         if ! try!(self.buffers.write_all(stream)) {
             // If there are still bytes to write.
@@ -202,7 +202,7 @@ impl<'a> ClientSession<'a> {
                 try!(self.buffers.send_ssh_id(stream, config.client_id.as_bytes()));
                 let mut exchange = Exchange::new();
                 exchange.client_id.extend(config.client_id.as_bytes());
-                println!("sent!: {:?}", exchange);
+                debug!("sent!: {:?}", exchange);
                 self.state = Some(ServerState::VersionOk(exchange));
                 Ok(true)
             },
@@ -283,7 +283,7 @@ impl<'a> ClientSession<'a> {
                     encrypted.cipher.write_client_packet(self.buffers.write.seqn, buffer.as_slice(), &mut self.buffers.write.buffer);
                     self.buffers.write.seqn += 1;
                     try!(self.buffers.write_all(stream));
-                    println!("sending SERVICE_REQUEST");
+                    debug!("sending SERVICE_REQUEST");
                     self.state = Some(ServerState::Encrypted(encrypted));
                 } else {
                     try!(self.buffers.write_all(stream));
@@ -293,7 +293,7 @@ impl<'a> ClientSession<'a> {
 
             }
             Some(ServerState::Encrypted(mut enc)) => {
-                println!("encrypted");
+                debug!("encrypted");
 
                 self.try_rekey(&mut enc, &config);
                 
@@ -328,7 +328,7 @@ impl<'a> ClientSession<'a> {
         
     }
 
-    pub fn try_rekey(&mut self, enc: &mut super::Encrypted, config:&Config) {
+    fn try_rekey(&mut self, enc: &mut super::Encrypted, config:&Config) {
         if enc.rekey.is_none() &&
             (self.buffers.write.bytes >= config.rekey_write_limit
              || self.buffers.read.bytes >= config.rekey_read_limit
@@ -408,11 +408,11 @@ impl<'a> ClientSession<'a> {
        
         match self.state {
             Some(ServerState::Encrypted(ref mut enc)) => {
-                println!("encrypted, {:?} {:?}", enc.state, enc.rekey);
+                debug!("msg, encrypted, {:?} {:?}", enc.state, enc.rekey);
 
                 match std::mem::replace(&mut enc.rekey, None) {
                     Some(Kex::NewKeys(mut newkeys)) => {
-                        println!("newkeys {:?}", newkeys);
+                        debug!("newkeys {:?}", newkeys);
                         if !newkeys.sent {
                             enc.cipher.write_client_packet(self.buffers.write.seqn, &[msg::NEWKEYS],
                                                            &mut self.buffers.write.buffer);
@@ -443,11 +443,11 @@ impl<'a> ClientSession<'a> {
                             buffer.push(msg::CHANNEL_DATA);
                             buffer.push_u32_be(c.recipient_channel);
                             buffer.extend_ssh_string(msg);
-                            println!("{:?} {:?}", buffer.as_slice(), self.buffers.write.seqn);
+                            debug!("{:?} {:?}", buffer.as_slice(), self.buffers.write.seqn);
                             enc.cipher.write_client_packet(self.buffers.write.seqn,
                                                            buffer.as_slice(),
                                                            &mut self.buffers.write.buffer);
-                            println!("buf = {:?}", self.buffers.write.buffer.as_slice());
+                            debug!("buf = {:?}", self.buffers.write.buffer.as_slice());
                             self.buffers.write.seqn += 1;
                             try!(self.buffers.write_all(stream));
                             Ok(true)
