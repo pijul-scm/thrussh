@@ -127,78 +127,30 @@ impl Encrypted {
         auth_request.sent_pk_ok = true;
     }
 
+    pub fn write_kexinit(&mut self, keys:&[key::Algorithm], kexinit:&mut KexInit, buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) {
+        buffer.clear();
+        negociation::write_kex(keys, buffer);
+        kexinit.exchange.server_kex_init.extend(buffer.as_slice());
+        self.cipher.write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+        write_buffer.seqn += 1;
+    }
 
-
+    /*
     pub fn server_write_rekey(&mut self, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf, buffers:&mut SSHBuffers, keys:&[key::Algorithm], rekey: Kex) -> Result<(),Error> {
         match rekey {
-            Kex::KexInit(mut kexinit) => {
-                if !kexinit.sent {
-                    debug!("sending kexinit");
-                    buffer.clear();
-                    negociation::write_kex(keys, buffer);
-                    kexinit.exchange.server_kex_init.extend(buffer.as_slice());
+            Kex::KexInit(mut kexinit) => unreachable!(),
 
-                    self.cipher.write_server_packet(buffers.write.seqn, buffer.as_slice(), &mut buffers.write.buffer);
-                    buffers.write.seqn += 1;
-                    kexinit.sent = true;
-                }
-                if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
-                    debug!("rekey ok");
-                    self.rekey = Some(Kex::KexDh(KexDh {
-                        exchange: kexinit.exchange,
-                        kex: kex,
-                        key: key,
-                        cipher: cipher,
-                        mac: mac,
-                        follows: follows,
-                        session_id: kexinit.session_id,
-                    }))
-                } else {
-                    debug!("still kexinit");
-                    self.rekey = Some(Kex::KexInit(kexinit))
-                }
-            },
             Kex::KexDh(kexinit) => {
                 // Nothing to do here.
                 self.rekey = Some(Kex::KexDh(kexinit))
             },
-            Kex::KexDhDone(kexdhdone) => {
-
-                debug!("kexdhdone: {:?}", kexdhdone);
-
-                let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key.public_host_key,
-                                                                    &kexdhdone.exchange,
-                                                                    buffer));
-
-                // http://tools.ietf.org/html/rfc5656#section-4
-                buffer.clear();
-                buffer.push(msg::KEX_ECDH_REPLY);
-                kexdhdone.key.public_host_key.extend_pubkey(buffer);
-                // Server ephemeral
-                buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
-                // Hash signature
-                kexdhdone.key.add_signature(buffer, hash.as_bytes());
-                //
-                self.cipher.write_server_packet(buffers.write.seqn, buffer.as_slice(), &mut buffers.write.buffer);
-                buffers.write.seqn += 1;
-
-                
-                buffer.clear();
-                buffer.push(msg::NEWKEYS);
-                self.cipher.write_server_packet(buffers.write.seqn, buffer.as_slice(), &mut buffers.write.buffer);
-                buffers.write.seqn += 1;
-
-                debug!("new keys");
-                let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2);
-                self.rekey = Some(Kex::NewKeys(new_keys));
-
-            },
             Kex::NewKeys(n) => {
                 self.rekey = Some(Kex::NewKeys(n));
-            }
+            },
+            Kex::KexDhDone(_) => unreachable!() // skipped in the read function
         }
         Ok(())
     }
-
+     */
 
 }

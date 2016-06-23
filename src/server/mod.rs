@@ -153,7 +153,7 @@ impl ServerSession {
                 let (buf_is_some, rekeying_done) =
                     if let Some(buf) = try!(enc.cipher.read_client_packet(stream, &mut self.buffers.read)) {
 
-                        if try!(enc.server_read_rekey(buf, &config.keys)) && enc.rekey.is_none() && buf[0] == msg::NEWKEYS {
+                        if try!(enc.server_read_rekey(buf, &config.keys, buffer, buffer2, &mut self.buffers.write)) && enc.rekey.is_none() && buf[0] == msg::NEWKEYS {
                             // rekeying is finished.
                             (true, true)
                         } else {
@@ -166,25 +166,31 @@ impl ServerSession {
                     };
 
                 if buf_is_some {
-                    if self.buffers.read.bytes >= config.rekey_read_limit
-                        || time::precise_time_s() >= self.buffers.last_rekey_s + config.rekey_time_limit_s {
+                    if rekeying_done {
+                        self.buffers.read.bytes = 0;
+                        self.buffers.write.bytes = 0;
+                        self.buffers.last_rekey_s = time::precise_time_s();
+                    }
+                    if enc.rekey.is_none() &&
+                        (self.buffers.read.bytes >= config.rekey_read_limit
+                         || self.buffers.write.bytes >= config.rekey_write_limit
+                         || time::precise_time_s() >= self.buffers.last_rekey_s + config.rekey_time_limit_s) {
+
                             let mut kexinit = KexInit {
                                 exchange: std::mem::replace(&mut enc.exchange, None).unwrap(),
                                 algo: None,
-                                sent: false,
+                                sent: true,
                                 session_id: Some(enc.session_id.clone()),
                             };
                             kexinit.exchange.client_kex_init.clear();
                             kexinit.exchange.server_kex_init.clear();
                             kexinit.exchange.client_ephemeral.clear();
                             kexinit.exchange.server_ephemeral.clear();
+
+                            debug!("sending kexinit");
+                            enc.write_kexinit(&config.keys, &mut kexinit, buffer, &mut self.buffers.write);
                             enc.rekey = Some(Kex::KexInit(kexinit))
                         }
-                    if rekeying_done {
-                        self.buffers.read.bytes = 0;
-                        self.buffers.write.bytes = 0;
-                        self.buffers.last_rekey_s = time::precise_time_s();
-                    }
                     self.buffers.read.seqn += 1;
                     self.buffers.read.buffer.clear();
                     self.buffers.read.len = 0;
@@ -205,9 +211,7 @@ impl ServerSession {
     pub fn write<W: Write, A: auth::Authenticate>(
         &mut self,
         config: &Config<A>,
-        stream: &mut W,
-        buffer: &mut CryptoBuf,
-        buffer2: &mut CryptoBuf)
+        stream: &mut W)
         -> Result<bool, Error> {
 
         // Finish pending writes, if any.
@@ -243,41 +247,16 @@ impl ServerSession {
             }
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("write: encrypted {:?} {:?}", enc.state, enc.rekey);
-                if enc.rekey.is_none() && self.buffers.write.bytes >= config.rekey_write_limit
-                    || time::precise_time_s() >= self.buffers.last_rekey_s + config.rekey_time_limit_s {
-                        let mut kexinit = KexInit {
-                            exchange: std::mem::replace(&mut enc.exchange, None).unwrap(),
-                            algo: None,
-                            sent: false,
-                            session_id: Some(enc.session_id.clone()),
-                        };
-                        kexinit.exchange.client_kex_init.clear();
-                        kexinit.exchange.server_kex_init.clear();
-                        kexinit.exchange.client_ephemeral.clear();
-                        kexinit.exchange.server_ephemeral.clear();
-                        enc.rekey = Some(Kex::KexInit(kexinit))
-                    } else {
-                        debug!("not yet rekeying, {:?}", self.buffers.write.bytes)
-                    }
-                let rekey_state = std::mem::replace(&mut enc.rekey, None);
-                match rekey_state {
-                    Some(rekey) => {
-                        // If we are currently in the process of
-                        // rekeying, send these packets first (it's
-                        // not allowed to send any other packet).
-                        try!(enc.server_write_rekey(buffer, buffer2, &mut self.buffers, &config.keys, rekey))
-                    },
-                    None => {
-                        let state = std::mem::replace(&mut enc.state, None);
-                        match state {
-                            Some(EncryptedState::ChannelOpenConfirmation(channel)) => {
-                                // The write buffer was already filled and written above.
-                                let sender_channel = channel.sender_channel;
-                                enc.channels.insert(sender_channel, channel);
-                                enc.state = Some(EncryptedState::ChannelOpened(sender_channel));
-                            }
-                            state => enc.state = state,
+                if enc.rekey.is_none() {
+                    let state = std::mem::replace(&mut enc.state, None);
+                    match state {
+                        Some(EncryptedState::ChannelOpenConfirmation(channel)) => {
+                            // The write buffer was already filled and written above.
+                            let sender_channel = channel.sender_channel;
+                            enc.channels.insert(sender_channel, channel);
+                            enc.state = Some(EncryptedState::ChannelOpened(sender_channel));
                         }
+                        state => enc.state = state,
                     }
                 }
                 self.state = Some(ServerState::Encrypted(enc));
