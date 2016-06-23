@@ -68,7 +68,7 @@ impl ServerSession {
     }
 
     pub fn server_reject_auth_request(&mut self,
-                                      enc: &mut Encrypted,
+                                      enc:&mut Encrypted,
                                       buffer: &mut CryptoBuf,
                                       auth_request: &AuthRequest) {
         buffer.clear();
@@ -86,22 +86,6 @@ impl ServerSession {
         self.buffers.write.seqn += 1;
     }
 
-    pub fn server_confirm_channel_open(&mut self,
-                                       enc: &mut Encrypted,
-                                       buffer: &mut CryptoBuf,
-                                       channel: ChannelParameters) {
-        buffer.clear();
-        buffer.push(msg::CHANNEL_OPEN_CONFIRMATION);
-        buffer.push_u32_be(channel.recipient_channel);
-        buffer.push_u32_be(channel.sender_channel);
-        buffer.push_u32_be(channel.initial_window_size);
-        buffer.push_u32_be(channel.maximum_packet_size);
-        enc.cipher.write_server_packet(self.buffers.write.seqn, buffer.as_slice(), &mut self.buffers.write.buffer);
-
-        self.buffers.write.seqn += 1;
-        enc.channels.insert(channel.sender_channel,
-                            channel);
-    }
 
     pub fn server_send_pk_ok(&mut self,
                              enc: &mut Encrypted,
@@ -115,5 +99,55 @@ impl ServerSession {
             .write_server_packet(self.buffers.write.seqn, buffer.as_slice(), &mut self.buffers.write.buffer);
         self.buffers.write.seqn += 1;
         auth_request.sent_pk_ok = true;
+    }
+}
+
+impl Encrypted {
+    pub fn server_confirm_channel_open(&mut self,
+                                       buffer: &mut CryptoBuf,
+                                       channel: &ChannelParameters,
+                                       write_buffer: &mut super::super::SSHBuffer) {
+        buffer.clear();
+        buffer.push(msg::CHANNEL_OPEN_CONFIRMATION);
+        buffer.push_u32_be(channel.recipient_channel);
+        buffer.push_u32_be(channel.sender_channel);
+        buffer.push_u32_be(channel.initial_window_size);
+        buffer.push_u32_be(channel.maximum_packet_size);
+        self.cipher.write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+        write_buffer.seqn += 1;
+    }
+
+    pub fn server_accept_service(&mut self,
+                                 banner: Option<&str>,
+                                 methods: auth::Methods,
+                                 buffer: &mut CryptoBuf,
+                                 write_buffer: &mut super::super::SSHBuffer)
+                                 -> AuthRequest {
+        buffer.clear();
+        buffer.push(msg::SERVICE_ACCEPT);
+        buffer.extend_ssh_string(b"ssh-userauth");
+        self.cipher.write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+        write_buffer.seqn += 1;
+
+        if let Some(ref banner) = banner {
+
+            buffer.clear();
+            buffer.push(msg::USERAUTH_BANNER);
+            buffer.extend_ssh_string(banner.as_bytes());
+            buffer.extend_ssh_string(b"");
+
+            self.cipher
+               .write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+            write_buffer.seqn += 1;
+        }
+
+        AuthRequest {
+            methods: methods,
+            partial_success: false, // not used immediately anway.
+            public_key: CryptoBuf::new(),
+            public_key_algorithm: CryptoBuf::new(),
+            sent_pk_ok: false,
+            public_key_is_ok: false
+        }
     }
 }

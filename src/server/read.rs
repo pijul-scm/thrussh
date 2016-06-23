@@ -42,7 +42,7 @@ impl ServerSession {
             Ok(true)
         }
     }
-    pub fn server_read_cleartext_kexdh<R: BufRead>(&mut self, stream:&mut R, mut kexdh:KexDh) -> Result<bool, Error> {
+    pub fn server_read_cleartext_kexdh<R: BufRead>(&mut self, stream:&mut R, mut kexdh:KexDh, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<bool, Error> {
 
         if self.buffers.read.len == 0 {
             try!(self.buffers.set_clear_len(stream));
@@ -59,6 +59,8 @@ impl ServerSession {
             };
             self.buffers.read.clear_incr();
 
+            // Then, we fill the write buffer right away, so that we
+            // can output it immediately when the time comes.
             let kexdhdone = KexDhDone {
                 exchange: kexdh.exchange,
                 kex: kex,
@@ -68,7 +70,15 @@ impl ServerSession {
                 follows: kexdh.follows,
                 session_id: kexdh.session_id,
             };
-            self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
+
+            let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key.public_host_key,
+                                                                &kexdhdone.exchange,
+                                                                buffer));
+            self.server_cleartext_kex_ecdh_reply(&kexdhdone, &hash);
+            self.server_cleartext_send_newkeys();
+
+            self.state = Some(ServerState::Kex(Kex::NewKeys(kexdhdone.compute_keys(hash, buffer, buffer2))));
+            // self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
 
             Ok(true)
 
@@ -105,7 +115,7 @@ impl ServerSession {
 
 impl Encrypted {
 
-    pub fn server_read_encrypted<A:Authenticate, S:SSHHandler>(&mut self, auth:&A, server:&mut S,
+    pub fn server_read_encrypted<A:Authenticate, S:SSHHandler>(&mut self, config:&Config<A>, server:&mut S,
                                                                buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) {
         // If we've successfully read a packet.
         debug!("buf = {:?}", buf);
@@ -126,7 +136,7 @@ impl Encrypted {
             Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                 if buf[0] == msg::USERAUTH_REQUEST {
 
-                    self.state = Some(auth_request.read_auth_request(auth, buf))
+                    self.state = Some(auth_request.read_auth_request(&config.auth, buf))
 
                 } else {
                     // Wrong request
@@ -162,14 +172,18 @@ impl Encrypted {
                 while self.channels.contains_key(&sender_channel) || sender_channel == 0 {
                     sender_channel = thread_rng().gen()
                 }
-
-                self.state = Some(EncryptedState::ChannelOpenConfirmation(ChannelParameters {
+                let channel = ChannelParameters {
                     recipient_channel: sender,
                     sender_channel: sender_channel,
                     initial_window_size: window,
                     maximum_packet_size: maxpacket,
-                }))
+                };
 
+                // Write the response immediately, so that we're ready when the stream becomes writable.
+                server.new_channel(&channel);
+                self.server_confirm_channel_open(buffer, &channel, write_buffer);
+                //
+                self.state = Some(EncryptedState::ChannelOpenConfirmation(channel));
             }
             Some(EncryptedState::ChannelOpened(recipient_channel)) => {
                 debug!("buf: {:?}", buf);

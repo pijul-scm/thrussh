@@ -121,7 +121,8 @@ impl ServerSession {
         server:&mut S,
         config: &Config<A>,
         stream: &mut R,
-        buffer: &mut CryptoBuf)
+        buffer: &mut CryptoBuf,
+        buffer2: &mut CryptoBuf)
         -> Result<bool, Error> {
 
         
@@ -143,7 +144,7 @@ impl ServerSession {
 
             Some(ServerState::Kex(Kex::KexInit(kexinit))) => self.server_read_cleartext_kexinit(stream, kexinit, &config.keys),
 
-            Some(ServerState::Kex(Kex::KexDh(kexdh))) => self.server_read_cleartext_kexdh(stream, kexdh),
+            Some(ServerState::Kex(Kex::KexDh(kexdh))) => self.server_read_cleartext_kexdh(stream, kexdh, buffer, buffer2),
 
             Some(ServerState::Kex(Kex::NewKeys(newkeys))) => self.server_read_cleartext_newkeys(stream, newkeys),
 
@@ -157,7 +158,7 @@ impl ServerSession {
                             (true, true)
                         } else {
                             debug!("calling read_encrypted");
-                            enc.server_read_encrypted(&config.auth, server, buf, buffer, &mut self.buffers.write);
+                            enc.server_read_encrypted(config, server, buf, buffer, &mut self.buffers.write);
                             (true, false)
                         }
                     } else {
@@ -241,20 +242,6 @@ impl ServerSession {
                                                                              stream)));
                 Ok(true)
             }
-            Some(ServerState::Kex(Kex::KexDhDone(kexdhdone))) => {
-
-                let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key.public_host_key,
-                                                                    &kexdhdone.exchange,
-                                                                    buffer));
-                self.server_cleartext_kex_ecdh_reply(&kexdhdone, &hash);
-                self.server_cleartext_send_newkeys();
-                try!(self.buffers.write_all(stream));
-
-                self.state = Some(ServerState::Kex(Kex::NewKeys(kexdhdone.compute_keys(hash,
-                                                                                       buffer,
-                                                                                       buffer2))));
-                Ok(true)
-            }
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("write: encrypted {:?} {:?}", enc.state, enc.rekey);
                 if enc.rekey.is_none() && self.buffers.write.bytes >= config.rekey_write_limit
@@ -319,17 +306,14 @@ impl ServerSession {
                             }
 
                             Some(EncryptedState::ChannelOpenConfirmation(channel)) => {
-
-                                server.new_channel(&channel);
+                                // The write buffer was already filled.
+                                try!(self.buffers.write_all(stream));
                                 let sender_channel = channel.sender_channel;
-                                self.server_confirm_channel_open(&mut enc, buffer, channel);
+                                enc.channels.insert(sender_channel, channel);
                                 enc.state = Some(EncryptedState::ChannelOpened(sender_channel));
                                 try!(self.buffers.write_all(stream));
                             }
                             Some(EncryptedState::ChannelOpened(recipient_channel)) => {
-
-                                // self.flush_channels(&mut enc, buffer);
-                                // try!(self.buffers.write_all(stream));
                                 enc.state = Some(EncryptedState::ChannelOpened(recipient_channel))
                             }
                             state => enc.state = state,
