@@ -43,7 +43,7 @@ impl Encrypted {
         Ok(())
     }
 
-    pub fn client_waiting_auth_request(&mut self, buffers:&mut SSHBuffers, auth_request:AuthRequest, auth_method:&Option<auth::Method>, buffer:&mut CryptoBuf) {
+    pub fn client_waiting_auth_request(&mut self, write_buffer:&mut SSHBuffer, auth_request:AuthRequest, auth_method:&Option<auth::Method>, buffer:&mut CryptoBuf) {
         // The server is waiting for our USERAUTH_REQUEST.
         buffer.clear();
         buffer.push(msg::USERAUTH_REQUEST);
@@ -72,8 +72,8 @@ impl Encrypted {
         };
         if method_ok {
             println!("method ok");
-            self.cipher.write_client_packet(buffers.write.seqn, buffer.as_slice(), &mut buffers.write.buffer);
-            buffers.write.seqn += 1;
+            self.cipher.write_client_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+            write_buffer.seqn += 1;
             self.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
         } else {
             println!("method not ok");

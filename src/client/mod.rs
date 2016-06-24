@@ -105,7 +105,7 @@ impl<'a> ClientSession<'a> {
                     },
                     Some(EncryptedState::AuthRequestSuccess(auth_request)) => {
                         debug!("auth_request_success");
-                        read_complete = try!(enc.client_auth_request_success(stream, auth_request, &mut self.buffers.read));
+                        read_complete = try!(enc.client_auth_request_success(stream, auth_request, &self.auth_method, &mut self.buffers, buffer));
                     },
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                         if let Some(buf) = try!(enc.cipher.read_server_packet(stream, &mut self.buffers.read)) {
@@ -253,13 +253,11 @@ impl<'a> ClientSession<'a> {
             }
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("encrypted");
-
                 self.try_rekey(&mut enc, &config);
-                
                 let state = std::mem::replace(&mut enc.state, None);
                 match state {
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
-                        enc.client_waiting_auth_request(&mut self.buffers, auth_request, &self.auth_method, buffer);
+                        enc.client_waiting_auth_request(&mut self.buffers.write, auth_request, &self.auth_method, buffer);
                         try!(self.buffers.write_all(stream));
                     },
                     Some(EncryptedState::WaitingSignature(auth_request)) => {

@@ -256,7 +256,7 @@ impl Encrypted {
                 public_key_is_ok: false,
                 sent_pk_ok: false,
             };
-            self.client_waiting_auth_request(buffers, auth_request, auth_method, buffer);
+            self.client_waiting_auth_request(&mut buffers.write, auth_request, auth_method, buffer);
         } else {
             println!("other message");
             self.state = Some(EncryptedState::ServiceRequest);
@@ -264,11 +264,11 @@ impl Encrypted {
         Ok(read_complete)
     }
 
-    pub fn client_auth_request_success<R:BufRead>(&mut self, stream:&mut R, mut auth_request:AuthRequest, read_buffer:&mut SSHBuffer) -> Result<bool, Error> {
+    pub fn client_auth_request_success<R:BufRead>(&mut self, stream:&mut R, mut auth_request:AuthRequest, auth_method:&Option<auth::Method>, buffers:&mut SSHBuffers, buffer:&mut CryptoBuf) -> Result<bool, Error> {
         // We're waiting for success.
         let read_complete;
         debug!("client_auth_request_success");
-        if let Some(buf) = try!(self.cipher.read_server_packet(stream,read_buffer)) {
+        if let Some(buf) = try!(self.cipher.read_server_packet(stream,&mut buffers.read)) {
 
             println!("line {}, buf = {:?}", line!(), buf);
 
@@ -282,8 +282,7 @@ impl Encrypted {
                 let remaining_methods = r.read_string().unwrap();
 
                 auth_request.methods.keep_remaining(remaining_methods.split(|&c| c==b','));
-
-                self.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
+                self.client_waiting_auth_request(&mut buffers.write, auth_request, auth_method, buffer);
 
             } else if buf[0] == msg::USERAUTH_PK_OK {
 
@@ -304,8 +303,8 @@ impl Encrypted {
 
 
         if read_complete {
-            read_buffer.seqn += 1;
-            read_buffer.clear();
+            buffers.read.seqn += 1;
+            buffers.read.clear();
         }
         Ok(read_complete)
     }
