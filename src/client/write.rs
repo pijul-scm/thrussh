@@ -144,24 +144,9 @@ impl Encrypted {
                     self.rekey = Some(Kex::KexInit(kexinit))
                 }
             },
-            Kex::KexDh(mut kexdh) => {
-                
-                buffer.clear();
-                let kex = try!(kexdh.kex.client_dh(&mut kexdh.exchange, buffer));
-                
-                self.cipher.write_client_packet(buffers.write.seqn, buffer.as_slice(), &mut buffers.write.buffer);
-                buffers.write.seqn += 1;
+            Kex::KexDh(kexdh) => {
+                try!(self.client_write_kexdh(buffer, &mut buffers.write, kexdh));
                 try!(buffers.write_all(stream));
-
-                self.rekey = Some(Kex::KexDhDone(KexDhDone {
-                    exchange: kexdh.exchange,
-                    kex: kex,
-                    key: kexdh.key,
-                    cipher: kexdh.cipher,
-                    mac: kexdh.mac,
-                    follows: kexdh.follows,
-                    session_id: kexdh.session_id,
-                }));
             },
             Kex::NewKeys(mut newkeys) => {
                 println!("newkeys {:?}", newkeys);
@@ -189,6 +174,25 @@ impl Encrypted {
                 self.rekey = Some(state)
             }
         }
+        Ok(())
+    }
+
+    pub fn client_write_kexdh(&mut self, buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer, mut kexdh:KexDh) -> Result<(), Error> {
+        buffer.clear();
+        let kex = try!(kexdh.kex.client_dh(&mut kexdh.exchange, buffer));
+        
+        self.cipher.write_client_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+        write_buffer.seqn += 1;
+
+        self.rekey = Some(Kex::KexDhDone(KexDhDone {
+            exchange: kexdh.exchange,
+            kex: kex,
+            key: kexdh.key,
+            cipher: kexdh.cipher,
+            mac: kexdh.mac,
+            follows: kexdh.follows,
+            session_id: kexdh.session_id,
+        }));
         Ok(())
     }
 }

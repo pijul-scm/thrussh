@@ -175,7 +175,8 @@ impl ServerSession {
                 let (buf_is_some, rekeying_done) =
                     if let Some(buf) = try!(enc.cipher.read_client_packet(stream, &mut self.buffers.read)) {
 
-                        if try!(enc.server_read_rekey(buf, &config.keys, buffer, buffer2, &mut self.buffers.write)) && enc.rekey.is_none() && buf[0] == msg::NEWKEYS {
+                        let rek = try!(enc.server_read_rekey(buf, &config.keys, buffer, buffer2, &mut self.buffers.write));
+                        if rek && enc.rekey.is_none() && buf[0] == msg::NEWKEYS {
                             // rekeying is finished.
                             (true, true)
                         } else {
