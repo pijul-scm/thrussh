@@ -110,7 +110,7 @@ impl Name {
             _ => Err(Error::Kex)
         }
     }
-    pub fn client_dh(&mut self, exchange:&mut super::Exchange, buf:&mut CryptoBuf) -> Result<Algorithm,Error> {
+    pub fn client_dh(&mut self, exchange:&mut super::Exchange, buf:&mut CryptoBuf) -> Algorithm {
 
         match self {
 
@@ -139,12 +139,12 @@ impl Name {
                 buf.extend_ssh_string(client_pubkey.as_bytes());
 
 
-                Ok(Algorithm::Curve25519(Curve25519 {
+                Algorithm::Curve25519(Curve25519 {
                     local_pubkey: client_pubkey,
                     local_secret: client_secret,
                     remote_pubkey: None,
                     shared_secret: None
-                }))
+                })
             },
             // _ => Err(Error::Kex)
         }

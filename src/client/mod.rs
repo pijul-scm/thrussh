@@ -414,7 +414,7 @@ impl<'a> ClientSession<'a> {
                         }
                     },
                     Some(Kex::KexDh(mut kexdh)) => {
-                        try!(enc.client_write_kexdh(buffer, &mut self.buffers.write, kexdh));
+                        enc.client_write_kexdh(buffer, &mut self.buffers.write, kexdh);
                         try!(self.buffers.write_all(stream));
                     }
                     x => enc.rekey = x

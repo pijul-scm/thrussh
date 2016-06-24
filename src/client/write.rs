@@ -145,7 +145,7 @@ impl Encrypted {
                 }
             },
             Kex::KexDh(kexdh) => {
-                try!(self.client_write_kexdh(buffer, &mut buffers.write, kexdh));
+                self.client_write_kexdh(buffer, &mut buffers.write, kexdh);
                 try!(buffers.write_all(stream));
             },
             Kex::NewKeys(mut newkeys) => {
@@ -177,9 +177,9 @@ impl Encrypted {
         Ok(())
     }
 
-    pub fn client_write_kexdh(&mut self, buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer, mut kexdh:KexDh) -> Result<(), Error> {
+    pub fn client_write_kexdh(&mut self, buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer, mut kexdh:KexDh) {
         buffer.clear();
-        let kex = try!(kexdh.kex.client_dh(&mut kexdh.exchange, buffer));
+        let kex = kexdh.kex.client_dh(&mut kexdh.exchange, buffer);
         
         self.cipher.write_client_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
         write_buffer.seqn += 1;
@@ -193,6 +193,5 @@ impl Encrypted {
             follows: kexdh.follows,
             session_id: kexdh.session_id,
         }));
-        Ok(())
     }
 }

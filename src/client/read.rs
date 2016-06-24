@@ -63,7 +63,7 @@ impl<'a> super::ClientSession<'a> {
 
             self.buffers.write.buffer.extend(b"\0\0\0\0\0");
             ////
-            let kex = try!(kex.client_dh(&mut kexinit.exchange, &mut self.buffers.write.buffer));
+            let kex = kex.client_dh(&mut kexinit.exchange, &mut self.buffers.write.buffer);
 
             super::super::complete_packet(&mut self.buffers.write.buffer, 0);
             self.buffers.write.seqn += 1;
