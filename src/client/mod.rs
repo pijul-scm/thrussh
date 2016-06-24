@@ -101,10 +101,23 @@ impl<'a> ClientSession<'a> {
 
                 match state {
                     Some(EncryptedState::ServiceRequest) => {
-                        read_complete = try!(enc.client_service_request(stream, &mut self.buffers.read));
+                        read_complete = try!(enc.client_service_request(stream, &self.auth_method, &mut self.buffers, buffer));
                     },
                     Some(EncryptedState::AuthRequestSuccess(auth_request)) => {
-                        read_complete = try!(enc.client_auth_request_success(stream, auth_request, &mut self.buffers.read))
+                        debug!("auth_request_success");
+                        read_complete = try!(enc.client_auth_request_success(stream, auth_request, &mut self.buffers.read));
+                    },
+                    Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
+                        if let Some(buf) = try!(enc.cipher.read_server_packet(stream, &mut self.buffers.read)) {
+                            read_complete = true;
+                            println!("buf = {:?}", buf);
+                        } else {
+                            read_complete = false;
+                        }
+                        if read_complete {
+                            self.buffers.read.clear_incr();
+                        }
+                        enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
                     },
                     Some(EncryptedState::WaitingSignature(auth_request)) => {
                         // The server is waiting for our authentication signature (also USERAUTH_REQUEST).
@@ -247,9 +260,9 @@ impl<'a> ClientSession<'a> {
                 match state {
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                         enc.client_waiting_auth_request(&mut self.buffers, auth_request, &self.auth_method, buffer);
+                        // self.client_waiting_auth_request(buffers, auth_request, auth_method, buffer);
                         try!(self.buffers.write_all(stream));
                     },
-
                     Some(EncryptedState::WaitingSignature(auth_request)) => {
                         // The server is waiting for our authentication signature (also USERAUTH_REQUEST).
                         try!(enc.client_send_signature(stream, &mut self.buffers, auth_request, config, buffer, buffer2));
