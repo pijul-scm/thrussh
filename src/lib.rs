@@ -82,6 +82,7 @@ pub struct ChannelBuf<'a> {
 }
 
 pub trait SSHHandler {
+    fn auth_banner(&mut self, banner:&str) { }
     fn new_channel(&mut self, channel: &ChannelParameters);
     fn data(&mut self, _: &[u8], _: ChannelBuf) -> Result<(), Error> {
         Ok(())

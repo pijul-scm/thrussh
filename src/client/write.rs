@@ -76,7 +76,10 @@ impl Encrypted {
             write_buffer.seqn += 1;
             self.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
         } else {
-            println!("method not ok");
+            // In this case, the caller should call set_method() to
+            // supply an alternative authentication method (possibly
+            // requiring user input).
+            println!("method not ok: {:?}", auth_method);
             self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
         }
     }

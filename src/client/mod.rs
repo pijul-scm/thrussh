@@ -110,6 +110,10 @@ impl<'a> ClientSession<'a> {
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                         if let Some(buf) = try!(enc.cipher.read_server_packet(stream, &mut self.buffers.read)) {
                             read_complete = true;
+                            if buf[0] == msg::USERAUTH_BANNER {
+                                let mut r = buf.reader(1);
+                                client.auth_banner(std::str::from_utf8(r.read_string().unwrap()).unwrap())
+                            }
                             println!("buf = {:?}", buf);
                         } else {
                             read_complete = false;
