@@ -256,7 +256,7 @@ impl Encrypted {
                 public_key_is_ok: false,
                 sent_pk_ok: false,
             };
-            self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+            self.client_waiting_auth_request(buffers, auth_request, auth_method, buffer);
         } else {
             println!("other message");
             self.state = Some(EncryptedState::ServiceRequest);

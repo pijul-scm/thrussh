@@ -1,5 +1,5 @@
 use byteorder::{ByteOrder, BigEndian};
-use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, KexDhDone, EncryptedState, ChannelBuf};
+use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, EncryptedState, ChannelBuf};
 use super::encoding::*;
 use super::key;
 use super::msg;
@@ -220,7 +220,7 @@ impl<'a> ClientSession<'a> {
                 self.state = Some(ServerState::VersionOk(exchange));
                 Ok(true)
             },
-            Some(ServerState::VersionOk(mut exchange)) => {
+            Some(ServerState::VersionOk(exchange)) => {
                 println!("read: {:?}", exchange);
 
                 if exchange.server_id.len() > 0 {
@@ -239,7 +239,7 @@ impl<'a> ClientSession<'a> {
                 self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
                 Ok(true)
             },
-            Some(ServerState::Kex(Kex::KexDh(kexdh))) => {
+            Some(ServerState::Kex(Kex::KexDh(_))) => {
                 unreachable!() // skipped by the read function
             }
             Some(ServerState::Kex(Kex::KexDhDone(kexdhdone))) => {
@@ -260,7 +260,6 @@ impl<'a> ClientSession<'a> {
                 match state {
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                         enc.client_waiting_auth_request(&mut self.buffers, auth_request, &self.auth_method, buffer);
-                        // self.client_waiting_auth_request(buffers, auth_request, auth_method, buffer);
                         try!(self.buffers.write_all(stream));
                     },
                     Some(EncryptedState::WaitingSignature(auth_request)) => {
@@ -390,7 +389,7 @@ impl<'a> ClientSession<'a> {
                             enc.mac = newkeys.mac;
                         }
                     },
-                    Some(Kex::KexDh(mut kexdh)) => {
+                    Some(Kex::KexDh(kexdh)) => {
                         enc.client_write_kexdh(buffer, &mut self.buffers.write, kexdh);
                         try!(self.buffers.write_all(stream));
                     }

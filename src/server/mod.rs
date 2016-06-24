@@ -231,9 +231,8 @@ impl ServerSession {
 
     // Returns whether the connexion is still alive.
 
-    pub fn write<W: Write, A: auth::Authenticate>(
+    pub fn write<W: Write>(
         &mut self,
-        config: &Config<A>,
         stream: &mut W)
         -> Result<bool, Error> {
 
