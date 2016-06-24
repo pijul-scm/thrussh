@@ -7,7 +7,7 @@ use encoding::Reader;
 use std;
 
 impl<'a> super::ClientSession<'a> {
-    pub fn client_version_ok<R:BufRead>(&mut self, stream:&mut R, mut exchange: Exchange) -> Result<bool, Error> {
+    pub fn client_version_ok<R:BufRead>(&mut self, stream:&mut R, mut exchange: Exchange, config:&super::Config) -> Result<bool, Error> {
         println!("read: {:?}", exchange);
         // Have we received the version id?
         if exchange.server_id.len() == 0 {
@@ -20,19 +20,23 @@ impl<'a> super::ClientSession<'a> {
                 return Ok(false)
             }
         }
-
-        if exchange.client_id.len() > 0 {
-            self.state = Some(ServerState::Kex(Kex::KexInit(KexInit {
-                exchange: exchange,
-                algo: None,
-                sent: false,
-                session_id: None,
-            })));
-        } else {
-            self.state = Some(ServerState::VersionOk(exchange));
+        // Have we received the version id?
+        if exchange.client_id.len() == 0 {
+            self.buffers.send_ssh_id(config.client_id.as_bytes());
+            exchange.client_id.extend(config.client_id.as_bytes());
         }
-        Ok(true)
+        let kexinit = KexInit {
+            exchange: exchange,
+            algo: None,
+            sent: false,
+            session_id: None,
+        };
+        self.state = Some(self.buffers.cleartext_write_kex_init(
+            &config.keys,
+            false, // is_server
+            kexinit));
 
+        Ok(true)
     }
 
     pub fn client_kexinit<R:BufRead>(&mut self, stream:&mut R, mut kexinit:KexInit, keys:&[key::Algorithm]) -> Result<bool, Error> {
@@ -91,14 +95,24 @@ impl<'a> super::ClientSession<'a> {
         }
 
         if try!(self.buffers.read(stream)) {
-            let hash = try!(kexdhdone.client_compute_exchange_hash(self.buffers.get_current_payload(), buffer));
-            let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2);
 
-            self.state = Some(ServerState::Kex(Kex::NewKeys(new_keys)));
+            let hash = try!(kexdhdone.client_compute_exchange_hash(self.buffers.get_current_payload(), buffer));
+            let mut newkeys = kexdhdone.compute_keys(hash, buffer, buffer2);
+
             self.buffers.read.seqn += 1;
             self.buffers.read.clear();
 
+            debug!("sending NEWKEYS");
+            self.buffers.write.buffer.extend(b"\0\0\0\0\0");
+            self.buffers.write.buffer.push(msg::NEWKEYS);
+            super::super::complete_packet(&mut self.buffers.write.buffer, 0);
+            self.buffers.write.seqn += 1;
+            newkeys.sent = true;
+
+            self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
+
             Ok(true)
+
         } else {
             self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
             Ok(false)
@@ -106,7 +120,7 @@ impl<'a> super::ClientSession<'a> {
 
     }
 
-    pub fn client_newkeys<R:BufRead>(&mut self, stream:&mut R, mut newkeys:NewKeys) -> Result<bool, Error> {
+    pub fn client_newkeys<R:BufRead>(&mut self, stream:&mut R, buffer:&mut CryptoBuf, mut newkeys:NewKeys) -> Result<bool, Error> {
 
         if self.buffers.read.len == 0 {
             try!(self.buffers.set_clear_len(stream));
@@ -114,16 +128,23 @@ impl<'a> super::ClientSession<'a> {
         if try!(self.buffers.read(stream)) {
 
             {
-                let payload = self.buffers.get_current_payload();
-                if payload[0] == msg::NEWKEYS {
+                let is_newkeys = {
+                    let payload = self.buffers.get_current_payload();
+                    payload[0] == msg::NEWKEYS
+                };
+                if is_newkeys {
 
                     newkeys.received = true;
+                    let mut encrypted = newkeys.encrypted(EncryptedState::ServiceRequest);
+                    buffer.clear();
+                    buffer.push(msg::SERVICE_REQUEST);
+                    buffer.extend_ssh_string(b"ssh-userauth");
+                
+                    encrypted.cipher.write_client_packet(self.buffers.write.seqn, buffer.as_slice(), &mut self.buffers.write.buffer);
+                    self.buffers.write.seqn += 1;
+                    debug!("sending SERVICE_REQUEST");
 
-                    if newkeys.sent {
-                        self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest)));
-                    } else {
-                        self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
-                    }
+                    self.state = Some(ServerState::Encrypted(encrypted))
                 }
             }
             self.buffers.read.seqn += 1;

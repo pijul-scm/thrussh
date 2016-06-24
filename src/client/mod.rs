@@ -82,7 +82,7 @@ impl<'a> ClientSession<'a> {
                     Ok(false)
                 }
             },
-            Some(ServerState::VersionOk(exchange)) => self.client_version_ok(stream, exchange),
+            Some(ServerState::VersionOk(exchange)) => self.client_version_ok(stream, exchange, &config),
             Some(ServerState::Kex(Kex::KexInit(kexinit))) => self.client_kexinit(stream, kexinit, &config.keys),
             Some(ServerState::Kex(Kex::KexDh(kexdh))) => {
                 // This is a writing state from the client.
@@ -91,7 +91,7 @@ impl<'a> ClientSession<'a> {
                 Ok(true)
             }
             Some(ServerState::Kex(Kex::KexDhDone(kexdhdone))) => self.client_kexdhdone(stream, kexdhdone, buffer, buffer2),
-            Some(ServerState::Kex(Kex::NewKeys(newkeys))) => self.client_newkeys(stream, newkeys),
+            Some(ServerState::Kex(Kex::NewKeys(newkeys))) => self.client_newkeys(stream, buffer, newkeys),
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("encrypted state");
                 self.try_rekey(&mut enc, &config);
@@ -101,7 +101,7 @@ impl<'a> ClientSession<'a> {
 
                 match state {
                     Some(EncryptedState::ServiceRequest) => {
-                        read_complete = try!(enc.client_service_request(stream, &mut self.buffers.read))
+                        read_complete = try!(enc.client_service_request(stream, &mut self.buffers.read));
                     },
                     Some(EncryptedState::AuthRequestSuccess(auth_request)) => {
                         read_complete = try!(enc.client_auth_request_success(stream, auth_request, &mut self.buffers.read))
@@ -209,12 +209,6 @@ impl<'a> ClientSession<'a> {
             },
             Some(ServerState::VersionOk(mut exchange)) => {
                 println!("read: {:?}", exchange);
-                // Have we received the version id?
-                if exchange.client_id.len() == 0 {
-                    self.buffers.send_ssh_id(config.client_id.as_bytes());
-                    try!(self.buffers.write_all(stream));
-                    exchange.client_id.extend(config.client_id.as_bytes());
-                }
 
                 if exchange.server_id.len() > 0 {
                     self.state = Some(ServerState::Kex(Kex::KexInit(KexInit {
@@ -229,11 +223,7 @@ impl<'a> ClientSession<'a> {
                 Ok(true)
             },
             Some(ServerState::Kex(Kex::KexInit(kexinit))) => {
-                self.state = Some(self.buffers.cleartext_write_kex_init(
-                    &config.keys,
-                    false, // is_server
-                    kexinit));
-                try!(self.buffers.write_all(stream));
+                self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
                 Ok(true)
             },
             Some(ServerState::Kex(Kex::KexDh(kexdh))) => {
@@ -244,36 +234,9 @@ impl<'a> ClientSession<'a> {
                 self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
                 Ok(true)
             },
-            Some(ServerState::Kex(Kex::NewKeys(mut newkeys))) => {
-
-                if !newkeys.sent {
-                    debug!("sending NEWKEYS");
-                    self.buffers.write.buffer.extend(b"\0\0\0\0\0");
-                    self.buffers.write.buffer.push(msg::NEWKEYS);
-                    super::complete_packet(&mut self.buffers.write.buffer, 0);
-                    self.buffers.write.seqn += 1;
-
-                    newkeys.sent = true;
-                }
-                if newkeys.received {
-                    // Skipping over the WaitingServiceRequest state,
-                    // since we're immediately sending the request.
-                    let mut encrypted = newkeys.encrypted(EncryptedState::ServiceRequest);
-                    buffer.clear();
-                    buffer.push(msg::SERVICE_REQUEST);
-                    buffer.extend_ssh_string(b"ssh-userauth");
-
-                    encrypted.cipher.write_client_packet(self.buffers.write.seqn, buffer.as_slice(), &mut self.buffers.write.buffer);
-                    self.buffers.write.seqn += 1;
-                    try!(self.buffers.write_all(stream));
-                    debug!("sending SERVICE_REQUEST");
-                    self.state = Some(ServerState::Encrypted(encrypted));
-                } else {
-                    try!(self.buffers.write_all(stream));
-                    self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)))
-                }
+            Some(ServerState::Kex(Kex::NewKeys(newkeys))) => {
+                self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
                 Ok(true)
-
             }
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("encrypted");
@@ -283,7 +246,8 @@ impl<'a> ClientSession<'a> {
                 let state = std::mem::replace(&mut enc.state, None);
                 match state {
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
-                        try!(enc.client_waiting_auth_request(stream, &mut self.buffers, auth_request, &self.auth_method, buffer))
+                        enc.client_waiting_auth_request(&mut self.buffers, auth_request, &self.auth_method, buffer);
+                        try!(self.buffers.write_all(stream));
                     },
 
                     Some(EncryptedState::WaitingSignature(auth_request)) => {
