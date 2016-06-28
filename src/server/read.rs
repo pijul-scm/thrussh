@@ -9,7 +9,7 @@ use rand::{thread_rng, Rng};
 use std;
 use std::io::BufRead;
 use byteorder::{ByteOrder, ReadBytesExt};
-
+use std::collections::hash_map::{Entry};
 
 impl ServerSession {
 
@@ -112,8 +112,8 @@ impl ServerSession {
 
 impl Encrypted {
 
-    pub fn server_read_encrypted<A:Authenticate, S:SSHHandler>(&mut self, config:&Config<A>, server:&mut S,
-                                                               buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) {
+    pub fn server_read_encrypted<A:Authenticate, S:Server>(&mut self, config:&Config<A>, server:&mut S,
+                                                           buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<(),Error> {
         // If we've successfully read a packet.
         debug!("buf = {:?}", buf);
         let state = std::mem::replace(&mut self.state, None);
@@ -121,7 +121,7 @@ impl Encrypted {
             Some(EncryptedState::WaitingServiceRequest) if buf[0] == msg::SERVICE_REQUEST => {
 
                 let mut r = buf.reader(1);
-                let request = r.read_string().unwrap();
+                let request = try!(r.read_string());
                 debug!("request: {:?}", std::str::from_utf8(request));
                 debug!("decrypted {:?}", buf);
                 if request == b"ssh-userauth" {
@@ -136,34 +136,37 @@ impl Encrypted {
 
                     self.state = Some(EncryptedState::WaitingServiceRequest)
                 }
+                Ok(())
             }
             Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                 if buf[0] == msg::USERAUTH_REQUEST {
 
-                    self.server_read_auth_request(&config.auth, buf, auth_request, buffer, write_buffer)
+                    try!(self.server_read_auth_request(&config.auth, buf, auth_request, buffer, write_buffer))
 
                 } else {
                     // Wrong request
                     self.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
                 }
+                Ok(())
             }
 
             Some(EncryptedState::WaitingSignature(auth_request)) => {
                 debug!("receiving signature, {:?}", buf);
                 if buf[0] == msg::USERAUTH_REQUEST {
                     // check signature.
-                    self.server_verify_signature(buf, buffer, auth_request, write_buffer);
+                    try!(self.server_verify_signature(buf, buffer, auth_request, write_buffer));
                 } else {
                     self.server_reject_auth_request(buffer, auth_request, write_buffer)
                 }
+                Ok(())
             }
             Some(EncryptedState::WaitingChannelOpen) if buf[0] == msg::CHANNEL_OPEN => {
                 // https://tools.ietf.org/html/rfc4254#section-5.1
                 let mut r = buf.reader(1);
-                let typ = r.read_string().unwrap();
-                let sender = r.read_u32().unwrap();
-                let window = r.read_u32().unwrap();
-                let maxpacket = r.read_u32().unwrap();
+                let typ = try!(r.read_string());
+                let sender = try!(r.read_u32());
+                let window = try!(r.read_u32());
+                let maxpacket = try!(r.read_u32());
 
                 debug!("waiting channel open: type = {:?} sender = {:?} window = {:?} maxpacket = {:?}",
                        String::from_utf8_lossy(typ),
@@ -187,57 +190,88 @@ impl Encrypted {
                 self.server_confirm_channel_open(buffer, &channel, write_buffer);
                 //
                 self.state = Some(EncryptedState::ChannelOpenConfirmation(channel));
+                Ok(())
             }
             Some(EncryptedState::ChannelOpened(recipient_channel)) => {
-                debug!("buf: {:?}", buf);
-                if buf[0] == msg::CHANNEL_DATA {
 
-                    let mut r = buf.reader(1);
-                    let channel_num = r.read_u32().unwrap();
-                    if let Some(ref mut channel) = self.channels.get_mut(&channel_num) {
+                let mut r = buf.reader(1);
+                let channel_num = try!(r.read_u32());
+                match self.channels.entry(channel_num) {
 
-                        let data = r.read_string().unwrap();
+                    Entry::Occupied(e) => {
                         buffer.clear();
 
-                        let data = {
-                            let server_buf = ChannelBuf {
-                                buffer:buffer,
-                                recipient_channel: channel.recipient_channel,
-                                sent_seqn: &mut write_buffer.seqn,
-                                write_buffer: &mut write_buffer.buffer,
-                                cipher: &mut self.cipher
-                            };
-                            server.data(&data, server_buf)
-                        };
-
-                        if let Ok(()) = data {
-                            /*if channel.stdout.len() > 0 || channel.stderr.len() > 0 {
-                            enc.pending_messages.insert(channel_num);
-                        }*/
-                        } else {
-                            unimplemented!()
+                        match buf[0] {
+                            msg::CHANNEL_DATA => {
+                                let server_buf = ChannelBuf {
+                                    buffer:buffer,
+                                    recipient_channel: e.get().recipient_channel,
+                                    write_buffer: write_buffer,
+                                    cipher: &mut self.cipher,
+                                    wants_reply: false
+                                };
+                                let data = try!(r.read_string());
+                                try!(server.data(&data, server_buf))
+                            },
+                            msg::CHANNEL_REQUEST => {
+                                let req_type = try!(r.read_string());
+                                let wants_reply = try!(r.read_byte());
+                                let server_buf = ChannelBuf {
+                                    buffer:buffer,
+                                    recipient_channel: e.get().recipient_channel,
+                                    write_buffer: write_buffer,
+                                    cipher: &mut self.cipher,
+                                    wants_reply: wants_reply != 0
+                                };
+                                match req_type {
+                                    b"exec" => {
+                                        let req = try!(r.read_string());
+                                        try!(server.exec(req, server_buf));
+                                    },
+                                    _ => unimplemented!()
+                                }
+                            },
+                            msg::CHANNEL_WINDOW_ADJUST => {
+                                unimplemented!()
+                            },
+                            msg::CHANNEL_EOF => {
+                                e.remove();
+                            },
+                            msg::CHANNEL_CLOSE => {
+                                e.remove();
+                            },
+                            _ => {
+                                unimplemented!()
+                            }
                         }
+                    },
+                    _ => {
+
                     }
                 }
-                self.state = Some(EncryptedState::ChannelOpened(recipient_channel))
+                self.state = Some(EncryptedState::ChannelOpened(recipient_channel));
+                Ok(())
             }
             Some(state) => {
                 debug!("buf: {:?}", buf);
                 debug!("replacing state: {:?}", state);
-                self.state = Some(state)
+                self.state = Some(state);
+                Ok(())
             },
-            None => {}
+            None => {
+                Ok(())
+            }
         }
 
     }
 
-    pub fn server_read_auth_request<A:Authenticate>(&mut self, auth:&A, buf:&[u8], mut auth_request:AuthRequest, buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) {
+    pub fn server_read_auth_request<A:Authenticate>(&mut self, auth:&A, buf:&[u8], mut auth_request:AuthRequest, buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<(), Error> {
         // https://tools.ietf.org/html/rfc4252#section-5
         let mut r = buf.reader(1);
-        let name = r.read_string().unwrap();
-        let name = std::str::from_utf8(name).unwrap();
-        let service_name = r.read_string().unwrap();
-        let method = r.read_string().unwrap();
+        let name = try!(r.read_string());
+        let name = try!(std::str::from_utf8(name));
+        let service_name = try!(r.read_string());
+        let method = try!(r.read_string());
         debug!("name: {:?} {:?} {:?}",
                name, std::str::from_utf8(service_name),
                std::str::from_utf8(method));
@@ -248,9 +282,9 @@ impl Encrypted {
 
                 // let x = buf[pos];
                 // println!("is false? {:?}", x);
-                r.read_byte();
-                let password = r.read_string().unwrap();
-                let password = std::str::from_utf8(password).unwrap();
+                try!(r.read_byte());
+                let password = try!(r.read_string());
+                let password = try!(std::str::from_utf8(password));
                 let method = Method::Password {
                     user: name,
                     password: password
@@ -268,24 +302,23 @@ impl Encrypted {
 
             } else if method == b"publickey" {
 
-                r.read_byte(); // is not probe
+                try!(r.read_byte()); // is not probe
 
-                let pubkey_algo = r.read_string().unwrap();
-                let pubkey = r.read_string().unwrap();
+                let pubkey_algo = try!(r.read_string());
+                let pubkey = try!(r.read_string());
 
                 let pubkey_ = match pubkey_algo {
                     b"ssh-ed25519" => {
                         let mut p = pubkey.reader(0);
-                        p.read_string();
+                        try!(p.read_string());
                         key::PublicKey::Ed25519(
-                            sodium::ed25519::PublicKey::copy_from_slice(p.read_string().unwrap())
+                            sodium::ed25519::PublicKey::copy_from_slice(try!(p.read_string()))
                         )
                     },
                     _ => unimplemented!()
                 };
                 let method = Method::Pubkey {
                     user: name,
-                    // algo: std::str::from_utf8(pubkey_algo).unwrap(),
                     pubkey: pubkey_,
                     seckey: None
                 };
@@ -316,36 +349,37 @@ impl Encrypted {
             // Unknown service
             unimplemented!()
         }
-
+        Ok(())
     }
 
 
-    pub fn server_verify_signature(&mut self, buf:&[u8], buffer:&mut CryptoBuf, auth_request: AuthRequest, write_buffer:&mut SSHBuffer) {
+    pub fn server_verify_signature(&mut self, buf:&[u8], buffer:&mut CryptoBuf, auth_request: AuthRequest, write_buffer:&mut SSHBuffer) -> Result<(), Error> {
         // https://tools.ietf.org/html/rfc4252#section-5
         let mut r = buf.reader(1);
-        let user_name = r.read_string().unwrap();
-        let service_name = r.read_string().unwrap();
-        let method = r.read_string().unwrap();
-        let is_probe = r.read_byte().unwrap() == 0;
+        let user_name = try!(r.read_string());
+        let service_name = try!(r.read_string());
+        let method = try!(r.read_string());
+        let is_probe = try!(r.read_byte()) == 0;
         // TODO: check that the user is the same (maybe?)
         if service_name == b"ssh-connection" && method == b"publickey" && !is_probe {
 
-            let algo = r.read_string().unwrap();
-            let key = r.read_string().unwrap();
+            let algo = try!(r.read_string());
+            let key = try!(r.read_string());
 
             let pos0 = r.position;
             if algo == b"ssh-ed25519" {
 
                 let key = {
                     let mut k = key.reader(0);
-                    k.read_string(); // should be equal to algo.
-                    sodium::ed25519::PublicKey::copy_from_slice(k.read_string().unwrap())
+                    try!(k.read_string()); // should be equal to algo.
+                    sodium::ed25519::PublicKey::copy_from_slice(try!(k.read_string()))
                 };
-                let signature = r.read_string().unwrap();
+
+                let signature = try!(r.read_string());
                 let mut s = signature.reader(0);
                 // let algo_ =
-                s.read_string().unwrap();
-                let sig = sodium::ed25519::Signature::copy_from_slice(s.read_string().unwrap());
+                try!(s.read_string());
+                let sig = sodium::ed25519::Signature::copy_from_slice(try!(s.read_string()));
 
                 buffer.clear();
                 buffer.extend_ssh_string(self.session_id.as_bytes());
@@ -364,6 +398,7 @@ impl Encrypted {
         } else {
             self.server_reject_auth_request(buffer, auth_request, write_buffer)
         }
+        Ok(())
     }
 
     pub fn server_read_rekey(&mut self, buf:&[u8], keys:&[key::Algorithm], buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<bool, Error> {
@@ -401,33 +436,35 @@ impl Encrypted {
                 },
                 None => {
                     // start a rekeying
-                    let mut kexinit = KexInit::rekey(
-                        std::mem::replace(&mut self.exchange, None).unwrap(),
-                        try!(negociation::read_kex(buf, &keys)),
-                        &self.session_id
-                    );
-                    debug!("sending kexinit");
-                    buffer.clear();
-                    negociation::write_kex(keys, buffer);
-                    kexinit.exchange.server_kex_init.extend(buffer.as_slice());
-                    self.cipher.write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
-                    write_buffer.seqn += 1;
-                    kexinit.sent = true;
-                    kexinit.exchange.client_kex_init.extend(buf);
+                    if let Some(exchange) = std::mem::replace(&mut self.exchange, None) {
+                        let mut kexinit = KexInit::rekey(
+                            exchange,
+                            try!(negociation::read_kex(buf, &keys)),
+                            &self.session_id
+                        );
+                        debug!("sending kexinit");
+                        buffer.clear();
+                        negociation::write_kex(keys, buffer);
+                        kexinit.exchange.server_kex_init.extend(buffer.as_slice());
+                        self.cipher.write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+                        write_buffer.seqn += 1;
+                        kexinit.sent = true;
+                        kexinit.exchange.client_kex_init.extend(buf);
 
-                    if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
-                        debug!("rekey ok");
-                        self.rekey = Some(Kex::KexDh(KexDh {
-                            exchange: kexinit.exchange,
-                            kex: kex,
-                            key: key,
-                            cipher: cipher,
-                            mac: mac,
-                            follows: follows,
-                            session_id: kexinit.session_id,
-                        }))
-                    } else {
-                        unreachable!()
+                        if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
+                            debug!("rekey ok");
+                            self.rekey = Some(Kex::KexDh(KexDh {
+                                exchange: kexinit.exchange,
+                                kex: kex,
+                                key: key,
+                                cipher: cipher,
+                                mac: mac,
+                                follows: follows,
+                                session_id: kexinit.session_id,
+                            }))
+                        } else {
+                            unreachable!()
+                        }
                     }
                     Ok(true)
                 },

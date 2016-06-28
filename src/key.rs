@@ -1,5 +1,5 @@
 use super::negociation::{ Named, Preferred };
-use super::CryptoBuf;
+use super::{CryptoBuf, Error};
 pub use super::sodium::ed25519;
 
 #[derive(Debug,Clone)]
@@ -69,11 +69,11 @@ impl Preferred for Algorithm {
 }
 use std::path::Path;
 impl Algorithm {
-    pub fn load_keypair_ed25519<P:AsRef<Path>, Q:AsRef<Path>>(public:P, secret:Q) -> Algorithm {
-        Algorithm {
-            public_host_key: super::load_public_key(public).unwrap(),
-            secret_host_key: super::load_secret_key(secret).unwrap(),
-        }
+    pub fn load_keypair_ed25519<P:AsRef<Path>, Q:AsRef<Path>>(public:P, secret:Q) -> Result<Algorithm, Error> {
+        Ok(Algorithm {
+            public_host_key: try!(super::load_public_key(public)),
+            secret_host_key: try!(super::load_secret_key(secret)),
+        })
     }
 
     pub fn name(&self) -> &'static str {

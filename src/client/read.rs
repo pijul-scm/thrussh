@@ -279,7 +279,7 @@ impl Encrypted {
             } else if buf[0] == msg::USERAUTH_FAILURE {
 
                 let mut r = buf.reader(1);
-                let remaining_methods = r.read_string().unwrap();
+                let remaining_methods = try!(r.read_string());
 
                 auth_request.methods.keep_remaining(remaining_methods.split(|&c| c==b','));
                 self.client_waiting_auth_request(&mut buffers.write, auth_request, auth_method, buffer);
@@ -318,10 +318,10 @@ impl Encrypted {
             println!("channel_confirmation? {:?}", buf);
             if buf[0] == msg::CHANNEL_OPEN_CONFIRMATION {
                 let mut reader = buf.reader(1);
-                let id_send = reader.read_u32().unwrap();
-                let id_recv = reader.read_u32().unwrap();
-                let window = reader.read_u32().unwrap();
-                let max_packet = reader.read_u32().unwrap();
+                let id_send = try!(reader.read_u32());
+                let id_recv = try!(reader.read_u32());
+                let window = try!(reader.read_u32());
+                let max_packet = try!(reader.read_u32());
 
                 if channels.sender_channel == id_send {
 

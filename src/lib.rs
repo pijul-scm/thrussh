@@ -33,6 +33,8 @@ static SODIUM_INIT: Once = ONCE_INIT;
 #[derive(Debug)]
 pub enum Error {
     CouldNotReadKey,
+    Regex(regex::Error),
+    Base64(rustc_serialize::base64::FromBase64Error),
     KexInit,
     Version,
     Kex,
@@ -41,12 +43,29 @@ pub enum Error {
     NewKeys,
     Inconsistent,
     HUP,
+    IndexOutOfBounds,
+    Utf8(std::str::Utf8Error),
     IO(std::io::Error),
 }
 
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Error {
         Error::IO(e)
+    }
+}
+impl From<std::str::Utf8Error> for Error {
+    fn from(e: std::str::Utf8Error) -> Error {
+        Error::Utf8(e)
+    }
+}
+impl From<regex::Error> for Error {
+    fn from(e: regex::Error) -> Error {
+        Error::Regex(e)
+    }
+}
+impl From<rustc_serialize::base64::FromBase64Error> for Error {
+    fn from(e: rustc_serialize::base64::FromBase64Error) -> Error {
+        Error::Base64(e)
     }
 }
 
@@ -76,19 +95,27 @@ pub mod client;
 pub struct ChannelBuf<'a> {
     buffer:&'a mut CryptoBuf,
     recipient_channel: u32,
-    sent_seqn: &'a mut usize,
-    write_buffer: &'a mut CryptoBuf,
-    cipher: &'a mut cipher::Cipher
+    write_buffer: &'a mut SSHBuffer,
+    cipher: &'a mut cipher::Cipher,
+    wants_reply: bool
 }
 
-pub trait SSHHandler {
-    fn auth_banner(&mut self, banner:&str) { }
+pub trait Server {
     fn new_channel(&mut self, channel: &ChannelParameters);
     fn data(&mut self, _: &[u8], _: ChannelBuf) -> Result<(), Error> {
         Ok(())
     }
+    fn exec(&mut self, _:&[u8], _: ChannelBuf) -> Result<(),Error> {
+        Ok(())
+    }
 }
-
+pub trait Client {
+    fn auth_banner(&mut self, _:&str) { }
+    fn new_channel(&mut self, _: &ChannelParameters) { }
+    fn data(&mut self, _: &[u8], _: ChannelBuf) -> Result<(), Error> {
+        Ok(())
+    }
+}
 #[derive(Debug)]
 pub struct SSHBuffers {
     read: SSHBuffer,
@@ -469,10 +496,10 @@ impl KexDhDone {
         assert!(payload[0] == msg::KEX_ECDH_REPLY);
         let mut reader = payload.reader(1);
 
-        let pubkey = reader.read_string().unwrap();
-        let server_ephemeral = reader.read_string().unwrap();
+        let pubkey = try!(reader.read_string());
+        let server_ephemeral = try!(reader.read_string());
         self.exchange.server_ephemeral.extend(server_ephemeral);
-        let signature = reader.read_string().unwrap();
+        let signature = try!(reader.read_string());
 
         try!(self.kex.compute_shared_secret(&self.exchange.server_ephemeral));
 
@@ -483,9 +510,9 @@ impl KexDhDone {
 
         let signature = {
             let mut sig_reader = signature.reader(0);
-            let sig_type = sig_reader.read_string().unwrap();
+            let sig_type = try!(sig_reader.read_string());
             assert_eq!(sig_type, b"ssh-ed25519");
-            let signature = sig_reader.read_string().unwrap();
+            let signature = try!(sig_reader.read_string());
             sodium::ed25519::Signature::copy_from_slice(signature)
         };
 
@@ -603,18 +630,21 @@ const KEYTYPE_ED25519:&'static [u8] = b"ssh-ed25519";
 
 pub fn load_public_key<P:AsRef<Path>>(p:P) -> Result<key::PublicKey, Error> {
 
-    let pubkey_regex = Regex::new(r"ssh-\S*\s*(?P<key>\S+)\s*").unwrap();
+    let pubkey_regex = try!(Regex::new(r"ssh-\S*\s*(?P<key>\S+)\s*"));
     let mut pubkey = String::new();
-    let mut file = File::open(p.as_ref()).unwrap();
-    file.read_to_string(&mut pubkey).unwrap();
-    let p = pubkey_regex.captures(&pubkey).unwrap().name("key").unwrap().from_base64().unwrap();
-    read_public_key(&p)
+    let mut file = try!(File::open(p.as_ref()));
+    try!(file.read_to_string(&mut pubkey));
+    if let Some(p) = pubkey_regex.captures(&pubkey).and_then(|cap| cap.name("key")).and_then(|base| base.from_base64().ok()) {
+        read_public_key(&p)
+    } else {
+        Err(Error::CouldNotReadKey)
+    }
 }
 
 pub fn read_public_key(p: &[u8]) -> Result<key::PublicKey, Error> {
     let mut pos = p.reader(0);
-    if pos.read_string() == Some(b"ssh-ed25519") {
-        if let Some(pubkey) = pos.read_string() {
+    if try!(pos.read_string()) == b"ssh-ed25519" {
+        if let Ok(pubkey) = pos.read_string() {
             return Ok(key::PublicKey::Ed25519(sodium::ed25519::PublicKey::copy_from_slice(pubkey)))
         }
     }
@@ -623,7 +653,7 @@ pub fn read_public_key(p: &[u8]) -> Result<key::PublicKey, Error> {
 
 pub fn load_secret_key<P:AsRef<Path>>(p:P) -> Result<key::SecretKey, Error> {
 
-    let file = File::open(p.as_ref()).unwrap();
+    let file = try!(File::open(p.as_ref()));
     let file = BufReader::new(file);
 
     let mut secret = String::new();
@@ -639,29 +669,27 @@ pub fn load_secret_key<P:AsRef<Path>>(p:P) -> Result<key::SecretKey, Error> {
             secret.push_str(&l)
         }
     }
-    let secret = secret.from_base64().unwrap();
-    //println!("secret: {:?} {:?}", secret, secret.len());
-    //println!("secret: {:?}", std::str::from_utf8(&secret[0..62]));
+    let secret = try!(secret.from_base64());
 
     if &secret[0..15] == b"openssh-key-v1\0" {
         let mut position = secret.reader(15);
 
-        let ciphername = position.read_string().unwrap();
-        let kdfname = position.read_string().unwrap();
-        let kdfoptions = position.read_string().unwrap();
+        let ciphername = try!(position.read_string());
+        let kdfname = try!(position.read_string());
+        let kdfoptions = try!(position.read_string());
         info!("ciphername: {:?}", std::str::from_utf8(ciphername));
         debug!("kdf: {:?} {:?}",
                  std::str::from_utf8(kdfname),
                  std::str::from_utf8(kdfoptions));
 
-        let nkeys = position.read_u32().unwrap();
+        let nkeys = try!(position.read_u32());
         
         for _ in 0..nkeys {
-            let public_string = position.read_string().unwrap();
+            let public_string = try!(position.read_string());
             let mut pos = public_string.reader(0);
-            if pos.read_string() == Some(KEYTYPE_ED25519) {
+            if try!(pos.read_string()) == KEYTYPE_ED25519 {
                 // println!("{:?} {:?}", secret, secret.len());
-                if let Some(pubkey) = pos.read_string() {
+                if let Ok(pubkey) = pos.read_string() {
                     let public = sodium::ed25519::PublicKey::copy_from_slice(pubkey);
                     info!("public: {:?}", public);
                 } else {
@@ -670,21 +698,21 @@ pub fn load_secret_key<P:AsRef<Path>>(p:P) -> Result<key::SecretKey, Error> {
             }
         }
         info!("there are {} keys in this file", nkeys);
-        let secret = position.read_string().unwrap();
+        let secret = try!(position.read_string());
         if kdfname == b"none" {
             let mut position = secret.reader(0);
-            let check0 = position.read_u32().unwrap();
-            let check1 = position.read_u32().unwrap();
+            let check0 = try!(position.read_u32());
+            let check1 = try!(position.read_u32());
             debug!("check0: {:?}", check0);
             debug!("check1: {:?}", check1);
             for _ in 0..nkeys {
 
-                let key_type = position.read_string().unwrap();
+                let key_type = try!(position.read_string());
                 if key_type == KEYTYPE_ED25519 {
-                    let pubkey = position.read_string().unwrap();
+                    let pubkey = try!(position.read_string());
                     debug!("pubkey = {:?}", pubkey);
-                    let seckey = position.read_string().unwrap();
-                    let comment = position.read_string().unwrap();
+                    let seckey = try!(position.read_string());
+                    let comment = try!(position.read_string());
                     debug!("comment = {:?}", comment);
                     let secret = sodium::ed25519::SecretKey::copy_from_slice(seckey);
                     return Ok(key::SecretKey::Ed25519(secret))

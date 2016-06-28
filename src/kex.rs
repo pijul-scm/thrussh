@@ -275,41 +275,6 @@ impl Algorithm {
                                 super::cipher::chacha20poly1305::Cipher::init(key.as_slice())
                             },
                         }
-                        
-                        /* cipher = Some(super::cipher::chacha20poly1305::Cipher {
-                            iv_client_to_server: {
-                                println!("A");
-                                println!("{:?}", NONCEBYTES);
-                                compute_key(b'A', NONCEBYTES)
-                                //println!("buf {:?} {:?}", key, key.len());
-                                //Nonce::from_slice(&key[0..NONCEBYTES]).unwrap()
-                            },
-                            iv_server_to_client: {
-                                println!("B");
-                                compute_key(b'B', NONCEBYTES)
-                                //Nonce::from_slice(&key[0..NONCEBYTES]).unwrap()
-                            },
-                            key_client_to_server: {
-                                println!("C");
-                                compute_key(b'C', KEYBYTES)
-                                //Key::from_slice(&key).unwrap()
-                            },
-                            key_server_to_client: {
-                                println!("D");
-                                compute_key(b'D', KEYBYTES)
-                                //Key::from_slice(&key).unwrap()
-                            },
-                            integrity_client_to_server: {
-                                println!("E");
-                                compute_key(b'E', KEYBYTES)
-                                //Key::from_slice(&key).unwrap()
-                            },
-                            integrity_server_to_client: {
-                                println!("F");
-                                compute_key(b'F', KEYBYTES)
-                                //Key::from_slice(&key).unwrap()
-                            }
-                    })*/
                     }
                 }
             },

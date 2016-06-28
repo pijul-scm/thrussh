@@ -43,62 +43,111 @@ pub struct ServerSession {
 
 const SSH_EXTENDED_DATA_STDERR: u32 = 1;
 
+pub struct SignalName<'a> {
+    name:&'a str
+}
+pub const SIGABRT:SignalName<'static> = SignalName { name:"ABRT" };
+pub const SIGALRM:SignalName<'static> = SignalName { name:"ALRM" };
+pub const SIGFPE:SignalName<'static> = SignalName { name:"FPE" };
+pub const SIGHUP:SignalName<'static> = SignalName { name:"HUP" };
+pub const SIGILL:SignalName<'static> = SignalName { name:"ILL" };
+pub const SIGINT:SignalName<'static> = SignalName { name:"INT" };
+pub const SIGKILL:SignalName<'static> = SignalName { name:"KILL" };
+pub const SIGPIPE:SignalName<'static> = SignalName { name:"PIPE" };
+pub const SIGQUIT:SignalName<'static> = SignalName { name:"QUIT" };
+pub const SIGSEGV:SignalName<'static> = SignalName { name:"SEGV" };
+pub const SIGTERM:SignalName<'static> = SignalName { name:"TERM" };
+pub const SIGUSR1:SignalName<'static> = SignalName { name:"USR1" };
+
+impl<'a> SignalName<'a> {
+    pub fn other(name:&'a str) -> SignalName<'a> {
+        SignalName { name:name }
+    }
+}
+
 impl<'a> ChannelBuf<'a> {
-    pub fn stdout(&mut self, stdout:&[u8]) -> Result<(), Error> {
+    pub fn stdout(&mut self, stdout:&[u8]) {
         self.buffer.clear();
         self.buffer.push(msg::CHANNEL_DATA);
         self.buffer.push_u32_be(self.recipient_channel);
         self.buffer.extend_ssh_string(stdout);
 
-        self.cipher.write_server_packet(*self.sent_seqn,
+        self.cipher.write_server_packet(self.write_buffer.seqn,
                                         self.buffer.as_slice(),
-                                        self.write_buffer);
+                                        &mut self.write_buffer.buffer);
                         
-        *self.sent_seqn += 1;
-        Ok(())
+        self.write_buffer.seqn += 1;
     }
-    pub fn stderr(&mut self, stderr:&[u8]) -> Result<(), Error> {
+    pub fn stderr(&mut self, stderr:&[u8]) {
         self.buffer.clear();
         self.buffer.push(msg::CHANNEL_EXTENDED_DATA);
         self.buffer.push_u32_be(self.recipient_channel);
         self.buffer.push_u32_be(SSH_EXTENDED_DATA_STDERR);
         self.buffer.extend_ssh_string(stderr);
-        self.cipher.write_server_packet(*self.sent_seqn,
+        self.cipher.write_server_packet(self.write_buffer.seqn,
                                         self.buffer.as_slice(),
-                                        self.write_buffer);
+                                        &mut self.write_buffer.buffer);
                         
-        *self.sent_seqn += 1;
-        Ok(())
+        self.write_buffer.seqn += 1;
+    }
+
+    fn reply(&mut self, msg:u8) {
+        self.buffer.clear();
+        self.buffer.push(msg);
+        self.buffer.push_u32_be(self.recipient_channel);
+        println!("reply {:?}", self.buffer.as_slice());
+        self.cipher.write_server_packet(self.write_buffer.seqn, self.buffer.as_slice(), &mut self.write_buffer.buffer);
+        self.write_buffer.seqn+=1
+    }
+    pub fn success(&mut self) {
+        if self.wants_reply {
+            self.reply(msg::CHANNEL_SUCCESS);
+            self.wants_reply = false
+        }
+    }
+    pub fn failure(&mut self) {
+        if self.wants_reply {
+            self.reply(msg::CHANNEL_FAILURE);
+            self.wants_reply = false
+        }
+    }
+    pub fn eof(&mut self) {
+        self.reply(msg::CHANNEL_EOF);
+    }
+    pub fn close(mut self) {
+        self.reply(msg::CHANNEL_CLOSE);
+    }
+    
+    pub fn exit_status(&mut self, exit_status: u32) {
+        // https://tools.ietf.org/html/rfc4254#section-6.10
+        self.buffer.clear();
+        self.buffer.push(msg::CHANNEL_REQUEST);
+        self.buffer.push_u32_be(self.recipient_channel);
+        self.buffer.extend_ssh_string(b"exit-status");
+        self.buffer.push(0);
+        self.buffer.push_u32_be(exit_status);
+        self.cipher.write_server_packet(self.write_buffer.seqn, self.buffer.as_slice(), &mut self.write_buffer.buffer);
+        self.write_buffer.seqn+=1
+    }
+
+    pub fn exit_signal(&mut self, signal_name:SignalName, core_dumped: bool, error_message:&str, language_tag: &str) {
+        // https://tools.ietf.org/html/rfc4254#section-6.10
+        // Windows compatibility: we can't use Unix signal names here.
+        self.buffer.clear();
+        self.buffer.push(msg::CHANNEL_REQUEST);
+        self.buffer.push_u32_be(self.recipient_channel);
+        self.buffer.extend_ssh_string(b"exit-signal");
+        self.buffer.push(0);
+
+        self.buffer.extend_ssh_string(signal_name.name.as_bytes());
+        self.buffer.push(if core_dumped { 1 } else { 0 });
+        self.buffer.extend_ssh_string(error_message.as_bytes());
+        self.buffer.extend_ssh_string(language_tag.as_bytes());
+
+        self.cipher.write_server_packet(self.write_buffer.seqn, self.buffer.as_slice(), &mut self.write_buffer.buffer);
+        self.write_buffer.seqn+=1
     }
 }
-
-
-pub fn hexdump(x: &CryptoBuf) {
-    let x = x.as_slice();
-    let mut buf = Vec::new();
-    let mut i = 0;
-    while i < x.len() {
-        if i % 16 == 0 {
-            print!("{:04}: ", i)
-        }
-        print!("{:02x} ", x[i]);
-        if x[i] >= 0x20 && x[i] <= 0x7e {
-            buf.push(x[i]);
-        } else {
-            buf.push(b'.');
-        }
-        if i % 16 == 15 || i == x.len() - 1 {
-            while i % 16 != 15 {
-                print!("   ");
-                i += 1
-            }
-            println!(" {}", std::str::from_utf8(&buf).unwrap());
-            buf.clear();
-        }
-        i += 1
-    }
-}
-
 
 
 mod read;
@@ -116,7 +165,7 @@ impl ServerSession {
     }
 
     // returns whether a complete packet has been read.
-    pub fn read<R: BufRead, A: auth::Authenticate,S:SSHHandler>(
+    pub fn read<R: BufRead, A: auth::Authenticate,S:Server>(
         &mut self,
         server:&mut S,
         config: &Config<A>,
@@ -125,7 +174,6 @@ impl ServerSession {
         buffer2: &mut CryptoBuf)
         -> Result<bool, Error> {
 
-        
         let state = std::mem::replace(&mut self.state, None);
         // println!("state: {:?}", state);
         match state {
@@ -181,7 +229,7 @@ impl ServerSession {
                             (true, true)
                         } else {
                             debug!("calling read_encrypted");
-                            enc.server_read_encrypted(config, server, buf, buffer, &mut self.buffers.write);
+                            try!(enc.server_read_encrypted(config, server, buf, buffer, &mut self.buffers.write));
                             (true, false)
                         }
                     } else {
@@ -199,20 +247,23 @@ impl ServerSession {
                          || self.buffers.write.bytes >= config.rekey_write_limit
                          || time::precise_time_s() >= self.buffers.last_rekey_s + config.rekey_time_limit_s) {
 
-                            let mut kexinit = KexInit {
-                                exchange: std::mem::replace(&mut enc.exchange, None).unwrap(),
-                                algo: None,
-                                sent: true,
-                                session_id: Some(enc.session_id.clone()),
-                            };
-                            kexinit.exchange.client_kex_init.clear();
-                            kexinit.exchange.server_kex_init.clear();
-                            kexinit.exchange.client_ephemeral.clear();
-                            kexinit.exchange.server_ephemeral.clear();
+                            if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
+                                
+                                let mut kexinit = KexInit {
+                                    exchange: exchange,
+                                    algo: None,
+                                    sent: true,
+                                    session_id: Some(enc.session_id.clone()),
+                                };
+                                kexinit.exchange.client_kex_init.clear();
+                                kexinit.exchange.server_kex_init.clear();
+                                kexinit.exchange.client_ephemeral.clear();
+                                kexinit.exchange.server_ephemeral.clear();
 
-                            debug!("sending kexinit");
-                            enc.write_kexinit(&config.keys, &mut kexinit, buffer, &mut self.buffers.write);
-                            enc.rekey = Some(Kex::KexInit(kexinit))
+                                debug!("sending kexinit");
+                                enc.write_kexinit(&config.keys, &mut kexinit, buffer, &mut self.buffers.write);
+                                enc.rekey = Some(Kex::KexInit(kexinit))
+                            }
                         }
                     self.buffers.read.seqn += 1;
                     self.buffers.read.buffer.clear();

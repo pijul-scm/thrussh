@@ -1,5 +1,5 @@
 use byteorder::{ByteOrder,BigEndian};
-use super::CryptoBuf;
+use super::{CryptoBuf, Error};
 use super::key;
 
 pub trait Bytes {
@@ -79,33 +79,33 @@ impl Reader for [u8] {
 
 pub struct Position<'a> { s:&'a[u8], pub position: usize }
 impl<'a> Position<'a> {
-    pub fn read_string(&mut self) -> Option<&'a[u8]> {
+    pub fn read_string(&mut self) -> Result<&'a[u8], Error> {
 
         let len = BigEndian::read_u32(&self.s[self.position..]) as usize;
         if self.position+4+len <= self.s.len() {
             let result = &self.s[(self.position+4)..(self.position+4+len)];
             self.position += 4+len;
-            Some(result)
+            Ok(result)
         } else {
-            None
+            Err(Error::IndexOutOfBounds)
         }
     }
-    pub fn read_u32(&mut self) -> Option<u32> {
+    pub fn read_u32(&mut self) -> Result<u32, Error> {
         if self.position + 4 <= self.s.len() {
             let u = BigEndian::read_u32(&self.s[self.position..]);
             self.position += 4;
-            Some(u)
+            Ok(u)
         } else {
-            None
+            Err(Error::IndexOutOfBounds)
         }
     }
-    pub fn read_byte(&mut self) -> Option<u8> {
+    pub fn read_byte(&mut self) -> Result<u8, Error> {
         if self.position+1 <= self.s.len() {
             let u = self.s[self.position];
             self.position += 1;
-            Some(u)
+            Ok(u)
         } else {
-            None
+            Err(Error::IndexOutOfBounds)
         }
     }
 }

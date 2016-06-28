@@ -157,6 +157,34 @@ impl CryptoBuf {
             std::slice::from_raw_parts_mut(self.p, self.size)
         }
     }
+
+    pub fn hexdump(&self) {
+        let x = self.as_slice();
+        let mut buf = Vec::new();
+        let mut i = 0;
+        while i < x.len() {
+            if i % 16 == 0 {
+                print!("{:04}: ", i)
+            }
+            print!("{:02x} ", x[i]);
+            if x[i] >= 0x20 && x[i] <= 0x7e {
+                buf.push(x[i]);
+            } else {
+                buf.push(b'.');
+            }
+            if i % 16 == 15 || i == x.len() - 1 {
+                while i % 16 != 15 {
+                    print!("   ");
+                    i += 1
+                }
+                println!(" {:?}", std::str::from_utf8(&buf));
+                buf.clear();
+            }
+            i += 1
+        }
+    }
+
+
 }
 
 impl Drop for CryptoBuf {

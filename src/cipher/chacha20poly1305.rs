@@ -12,13 +12,6 @@ use sodium::randombytes;
 pub struct Cipher {
     k1:chacha20::Key,
     k2:chacha20::Key
-    /*
-        let k1 = &key[32..64];
-        let k1 = chacha20::Key::from_slice(k1).unwrap();
-
-        let k2 = &key[0..32];
-        let k2 = chacha20::Key::from_slice(k2).unwrap();
-     */
 }
 
 impl Cipher {
@@ -182,36 +175,3 @@ impl super::CipherT for Cipher {
         
     }
 }
-
-
-#[test]
-fn write_read() {
-    use super::CipherT;
-    use super::super::CryptoBuf;
-
-    let k1 = chacha20::gen_key();
-    let k2 = chacha20::gen_key();
-    let key = Cipher {
-        k1:k1,
-        k2:k2
-    };
-
-    let plaintext = b"some data";
-    let seq = 12;
-    let mut stream = CryptoBuf::new();
-
-    key.write_packet(seq, plaintext, &mut stream);
-
-    println!("================ stream {:?}", stream.as_slice());
-
-    let mut stream = stream.as_slice();
-
-    let mut read_len = 0;
-
-    let mut buffer = CryptoBuf::new();
-    let packet = key.read_packet(seq, &mut stream, &mut read_len, &mut buffer).unwrap().unwrap();
-    println!("{:?}", packet);
-    assert_eq!(packet, plaintext);
-
-}
-

@@ -7,13 +7,10 @@ pub const IGNORE:u8 = 2;
 pub const UNIMPLEMENTED:u8 = 3;
 #[allow(dead_code)]
 pub const DEBUG:u8 = 4;
-#[allow(dead_code)]
+
 pub const SERVICE_REQUEST:u8 = 5;
-#[allow(dead_code)]
 pub const SERVICE_ACCEPT:u8 = 6;
-#[allow(dead_code)]
 pub const KEXINIT:u8 = 20;
-#[allow(dead_code)]
 pub const NEWKEYS:u8 = 21;
 
 
