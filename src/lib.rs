@@ -94,7 +94,7 @@ pub mod client;
 
 pub struct ChannelBuf<'a> {
     buffer:&'a mut CryptoBuf,
-    recipient_channel: u32,
+    channel: &'a mut ChannelParameters,
     write_buffer: &'a mut SSHBuffer,
     cipher: &'a mut cipher::Cipher,
     wants_reply: bool
@@ -575,7 +575,8 @@ pub struct Encrypted {
 pub struct ChannelParameters {
     pub recipient_channel: u32,
     pub sender_channel: u32,
-    pub initial_window_size: u32,
+    pub recipient_window_size: u32,
+    pub sender_window_size: u32,
     pub maximum_packet_size: u32,
 }
 

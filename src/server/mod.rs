@@ -15,7 +15,8 @@ pub struct Config<Auth> {
     pub auth: Auth,
     pub rekey_write_limit: usize,
     pub rekey_read_limit: usize,
-    pub rekey_time_limit_s: f64
+    pub rekey_time_limit_s: f64,
+    pub window_size: u32
 }
 
 impl<A> Config<A> {
@@ -30,7 +31,8 @@ impl<A> Config<A> {
             // Following the recommendations of https://tools.ietf.org/html/rfc4253#section-9
             rekey_write_limit: 1<<30, // 1 Gb
             rekey_read_limit: 1<<30, // 1Gb
-            rekey_time_limit_s: 3600.0
+            rekey_time_limit_s: 3600.0,
+            window_size: 100
         }
     }
 }
@@ -69,32 +71,33 @@ impl<'a> ChannelBuf<'a> {
     pub fn stdout(&mut self, stdout:&[u8]) {
         self.buffer.clear();
         self.buffer.push(msg::CHANNEL_DATA);
-        self.buffer.push_u32_be(self.recipient_channel);
+        self.buffer.push_u32_be(self.channel.recipient_channel);
         self.buffer.extend_ssh_string(stdout);
-
         self.cipher.write_server_packet(self.write_buffer.seqn,
                                         self.buffer.as_slice(),
                                         &mut self.write_buffer.buffer);
-                        
+
+        self.channel.recipient_window_size -= stdout.len() as u32;
         self.write_buffer.seqn += 1;
     }
     pub fn stderr(&mut self, stderr:&[u8]) {
         self.buffer.clear();
         self.buffer.push(msg::CHANNEL_EXTENDED_DATA);
-        self.buffer.push_u32_be(self.recipient_channel);
+        self.buffer.push_u32_be(self.channel.recipient_channel);
         self.buffer.push_u32_be(SSH_EXTENDED_DATA_STDERR);
         self.buffer.extend_ssh_string(stderr);
         self.cipher.write_server_packet(self.write_buffer.seqn,
                                         self.buffer.as_slice(),
                                         &mut self.write_buffer.buffer);
                         
+        self.channel.recipient_window_size -= stderr.len() as u32;
         self.write_buffer.seqn += 1;
     }
 
     fn reply(&mut self, msg:u8) {
         self.buffer.clear();
         self.buffer.push(msg);
-        self.buffer.push_u32_be(self.recipient_channel);
+        self.buffer.push_u32_be(self.channel.recipient_channel);
         println!("reply {:?}", self.buffer.as_slice());
         self.cipher.write_server_packet(self.write_buffer.seqn, self.buffer.as_slice(), &mut self.write_buffer.buffer);
         self.write_buffer.seqn+=1
@@ -122,7 +125,7 @@ impl<'a> ChannelBuf<'a> {
         // https://tools.ietf.org/html/rfc4254#section-6.10
         self.buffer.clear();
         self.buffer.push(msg::CHANNEL_REQUEST);
-        self.buffer.push_u32_be(self.recipient_channel);
+        self.buffer.push_u32_be(self.channel.recipient_channel);
         self.buffer.extend_ssh_string(b"exit-status");
         self.buffer.push(0);
         self.buffer.push_u32_be(exit_status);
@@ -135,7 +138,7 @@ impl<'a> ChannelBuf<'a> {
         // Windows compatibility: we can't use Unix signal names here.
         self.buffer.clear();
         self.buffer.push(msg::CHANNEL_REQUEST);
-        self.buffer.push_u32_be(self.recipient_channel);
+        self.buffer.push_u32_be(self.channel.recipient_channel);
         self.buffer.extend_ssh_string(b"exit-signal");
         self.buffer.push(0);
 

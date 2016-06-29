@@ -164,33 +164,56 @@ impl Encrypted {
 
                 match buf[0] {
                     msg::CHANNEL_OPEN => {
-                        try!(self.server_handle_channel_open(server, buf, buffer, write_buffer))
+                        try!(self.server_handle_channel_open(config, server, buf, buffer, write_buffer))
                     },
                     buf_0 => {
                         let mut r = buf.reader(1);
                         let channel_num = try!(r.read_u32());
                         match self.channels.entry(channel_num) {
 
-                            Entry::Occupied(e) => {
+                            Entry::Occupied(mut e) => {
                                 buffer.clear();
                                 match buf_0 {
                                     msg::CHANNEL_DATA => {
-                                        let server_buf = ChannelBuf {
-                                            buffer:buffer,
-                                            recipient_channel: e.get().recipient_channel,
-                                            write_buffer: write_buffer,
-                                            cipher: &mut self.cipher,
-                                            wants_reply: false
-                                        };
+                                        let channel = e.get_mut();
                                         let data = try!(r.read_string());
-                                        try!(server.data(&data, server_buf))
+
+                                        // Ignore extra data.
+                                        // https://tools.ietf.org/html/rfc4254#section-5.2
+                                        if data.len() as u32 <= channel.sender_window_size {
+                                            channel.sender_window_size -= data.len() as u32;
+                                            let server_buf = ChannelBuf {
+                                                buffer:buffer,
+                                                channel: channel,
+                                                write_buffer: write_buffer,
+                                                cipher: &mut self.cipher,
+                                                wants_reply: false
+                                            };
+                                            try!(server.data(&data, server_buf))
+                                        }
+                                        println!("{:?} / {:?}", channel.sender_window_size, config.window_size);
+                                        if channel.sender_window_size < config.window_size/2 {
+                                            buffer.clear();
+                                            buffer.push(msg::CHANNEL_WINDOW_ADJUST);
+                                            buffer.push_u32_be(channel.recipient_channel);
+                                            buffer.push_u32_be(config.window_size - channel.sender_window_size);
+                                            self.cipher.write_server_packet(write_buffer.seqn,
+                                                                            buffer.as_slice(),
+                                                                            &mut write_buffer.buffer);
+                                            write_buffer.seqn += 1;
+                                            channel.sender_window_size = config.window_size;
+                                        }
+                                    },
+                                    msg::CHANNEL_WINDOW_ADJUST => {
+                                        let amount = try!(r.read_u32());
+                                        e.get_mut().recipient_window_size += amount
                                     },
                                     msg::CHANNEL_REQUEST => {
                                         let req_type = try!(r.read_string());
                                         let wants_reply = try!(r.read_byte());
                                         let server_buf = ChannelBuf {
                                             buffer:buffer,
-                                            recipient_channel: e.get().recipient_channel,
+                                            channel: e.get_mut(),
                                             write_buffer: write_buffer,
                                             cipher: &mut self.cipher,
                                             wants_reply: wants_reply != 0
@@ -204,9 +227,6 @@ impl Encrypted {
                                                 println!("{:?}, line {:?} req_type = {:?}", file!(), line!(), std::str::from_utf8(x))
                                             }
                                         }
-                                    },
-                                    msg::CHANNEL_WINDOW_ADJUST => {
-                                        unimplemented!()
                                     },
                                     msg::CHANNEL_EOF => {
                                         e.remove();
@@ -241,7 +261,7 @@ impl Encrypted {
 
     }
 
-    fn server_handle_channel_open<S:Server>(&mut self, server:&mut S, buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<(), Error> {
+    fn server_handle_channel_open<A, S:Server>(&mut self, config:&super::Config<A>, server:&mut S, buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<(), Error> {
 
         // https://tools.ietf.org/html/rfc4254#section-5.1
         let mut r = buf.reader(1);
@@ -262,14 +282,15 @@ impl Encrypted {
         }
         let channel = ChannelParameters {
             recipient_channel: sender,
-            sender_channel: sender_channel,
-            initial_window_size: window,
+            sender_channel: sender_channel, // "sender" is the local end, i.e. we're the sender, the remote is the recipient.
+            recipient_window_size: window,
+            sender_window_size: config.window_size,
             maximum_packet_size: maxpacket,
         };
 
         // Write the response immediately, so that we're ready when the stream becomes writable.
         server.new_channel(&channel);
-        self.server_confirm_channel_open(buffer, &channel, write_buffer);
+        self.server_confirm_channel_open(buffer, &channel, config, write_buffer);
         //
         let sender_channel = channel.sender_channel;
         self.channels.insert(sender_channel, channel);

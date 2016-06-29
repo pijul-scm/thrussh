@@ -104,7 +104,8 @@ impl Encrypted {
             ChannelParameters {
                 recipient_channel: 0,
                 sender_channel: sender_channel,
-                initial_window_size: config.window,
+                sender_window_size: config.window,
+                recipient_window_size: config.window,
                 maximum_packet_size: config.maxpacket,
             }
         ));

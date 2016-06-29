@@ -324,7 +324,7 @@ impl Encrypted {
                 if channels.sender_channel == id_send {
 
                     channels.recipient_channel = id_recv;
-                    channels.initial_window_size = std::cmp::min(window, channels.initial_window_size);
+                    channels.recipient_window_size = window;
                     channels.maximum_packet_size = std::cmp::min(max_packet, channels.maximum_packet_size);
 
                     println!("id_send = {:?}", id_send);

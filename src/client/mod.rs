@@ -69,6 +69,7 @@ impl<'a> ClientSession<'a> {
 
         debug!("read");
         let state = std::mem::replace(&mut self.state, None);
+        println!("state = {:?}", state);
         match state {
             None => {
                 // We have neither sent nor received the version id.
@@ -77,7 +78,6 @@ impl<'a> ClientSession<'a> {
                 // Send our ID, and move on to the next state.
                 self.buffers.write.send_ssh_id(config.client_id.as_bytes());
                 exchange.client_id.extend(config.client_id.as_bytes());
-
                 //
                 self.client_read_server_id(stream, exchange, &config.keys)
             },
@@ -172,7 +172,7 @@ impl<'a> ClientSession<'a> {
                                             buffer.clear();
                                             let server_buf = ChannelBuf {
                                                 buffer:buffer,
-                                                recipient_channel: channel.recipient_channel,
+                                                channel: channel,
                                                 write_buffer: &mut self.buffers.write,
                                                 cipher: &mut enc.cipher,
                                                 wants_reply: false
@@ -222,7 +222,7 @@ impl<'a> ClientSession<'a> {
             None => {
                 // Maybe the first time we get to talk with the server
                 // is to write to it (i.e. the socket is only
-                // writable). Handle this case.
+                // writable). Send our id.
                 self.buffers.write.send_ssh_id(config.client_id.as_bytes());
                 try!(self.buffers.write_all(stream));
                 let mut exchange = Exchange::new();
@@ -231,27 +231,6 @@ impl<'a> ClientSession<'a> {
                 self.state = Some(ServerState::VersionOk(exchange));
                 Ok(true)
             },
-            Some(ServerState::VersionOk(exchange)) => {
-                // We've sent our id, but not yet received the server's id.
-                self.state = Some(ServerState::VersionOk(exchange));
-                Ok(true)
-            },
-            Some(ServerState::Kex(Kex::KexInit(kexinit))) => {
-                self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
-                Ok(true)
-            },
-            Some(ServerState::Kex(Kex::KexDh(_))) => {
-                unreachable!() // skipped by the read function
-            }
-            Some(ServerState::Kex(Kex::KexDhDone(kexdhdone))) => {
-                // We're waiting for ECDH_REPLY from server, nothing to write.
-                self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
-                Ok(true)
-            },
-            Some(ServerState::Kex(Kex::NewKeys(newkeys))) => {
-                self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
-                Ok(true)
-            }
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("encrypted");
                 self.try_rekey(&mut enc, &config);
@@ -276,6 +255,10 @@ impl<'a> ClientSession<'a> {
                 }
 
                 self.state = Some(ServerState::Encrypted(enc));
+                Ok(true)
+            },
+            state => {
+                self.state = state;
                 Ok(true)
             }
         }

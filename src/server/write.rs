@@ -36,15 +36,16 @@ impl ServerSession {
 }
 
 impl Encrypted {
-    pub fn server_confirm_channel_open(&mut self,
-                                       buffer: &mut CryptoBuf,
-                                       channel: &ChannelParameters,
-                                       write_buffer: &mut super::super::SSHBuffer) {
+    pub fn server_confirm_channel_open<A>(&mut self,
+                                          buffer: &mut CryptoBuf,
+                                          channel: &ChannelParameters,
+                                          config: &super::Config<A>,
+                                          write_buffer: &mut super::super::SSHBuffer) {
         buffer.clear();
         buffer.push(msg::CHANNEL_OPEN_CONFIRMATION);
-        buffer.push_u32_be(channel.recipient_channel);
-        buffer.push_u32_be(channel.sender_channel);
-        buffer.push_u32_be(channel.initial_window_size);
+        buffer.push_u32_be(channel.recipient_channel); // remote channel number.
+        buffer.push_u32_be(channel.sender_channel); // our channel number.
+        buffer.push_u32_be(config.window_size);
         buffer.push_u32_be(channel.maximum_packet_size);
         self.cipher.write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
         write_buffer.seqn += 1;
