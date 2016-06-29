@@ -180,7 +180,7 @@ impl ServerSession {
             None => {
                 let mut exchange;
                 {
-                    let client_id = try!(self.buffers.read_ssh_id(stream));
+                    let client_id = try!(self.buffers.read.read_ssh_id(stream));
                     if let Some(client_id) = client_id {
                         exchange = Exchange::new();
                         exchange.client_id.extend(client_id);
@@ -190,7 +190,7 @@ impl ServerSession {
                     }
                 }
                 // Preparing the response
-                self.buffers.send_ssh_id(config.server_id.as_bytes());
+                self.buffers.write.send_ssh_id(config.server_id.as_bytes());
                 exchange.server_id.extend(config.server_id.as_bytes());
 
                 self.state = Some(ServerState::Kex(Kex::KexInit(KexInit {
@@ -285,34 +285,10 @@ impl ServerSession {
     pub fn write<W: Write>(
         &mut self,
         stream: &mut W)
-        -> Result<bool, Error> {
+        -> Result<(), Error> {
 
         // Finish pending writes, if any.
-        if !try!(self.buffers.write_all(stream)) {
-            // If there are still bytes to write.
-            return Ok(true);
-        }
-
-        match self.state {
-            Some(ServerState::Encrypted(ref mut enc)) => {
-                debug!("write: encrypted {:?} {:?}", enc.state, enc.rekey);
-                if enc.rekey.is_none() {
-                    let state = std::mem::replace(&mut enc.state, None);
-                    match state {
-                        Some(EncryptedState::ChannelOpenConfirmation(channel)) => {
-                            // The write buffer was already filled and written above.
-                            let sender_channel = channel.sender_channel;
-                            enc.channels.insert(sender_channel, channel);
-                            enc.state = Some(EncryptedState::ChannelOpened(sender_channel));
-                        }
-                        state => enc.state = state,
-                    }
-                }
-                Ok(true)
-            }
-            _ => {
-                Ok(true)
-            }
-        }
+        try!(self.buffers.write_all(stream));
+        Ok(())
     }
 }

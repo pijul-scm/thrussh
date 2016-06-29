@@ -9,7 +9,7 @@ use super::super::negociation;
 
 impl Encrypted {
 
-    pub fn client_send_signature<W:Write>(&mut self, stream:&mut W, buffers:&mut SSHBuffers, auth_request:AuthRequest, config:&super::Config, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<(),Error> {
+    pub fn client_send_signature(&mut self, write_buffer:&mut SSHBuffer, auth_request:AuthRequest, config:&super::Config, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<(),Error> {
 
         buffer.clear();
 
@@ -32,13 +32,11 @@ impl Encrypted {
         buffer.extend(buffer2.as_slice());
 
         // Send
-        self.cipher.write_client_packet(buffers.write.seqn,
-                                       &(buffer.as_slice())[i0..], // Skip the session id.
-                                       &mut buffers.write.buffer);
+        self.cipher.write_client_packet(write_buffer.seqn,
+                                        &(buffer.as_slice())[i0..], // Skip the session id.
+                                        &mut write_buffer.buffer);
 
-        buffers.write.seqn += 1;
-        try!(buffers.write_all(stream));
-
+        write_buffer.seqn += 1;
         self.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
         Ok(())
     }
@@ -84,7 +82,7 @@ impl Encrypted {
         }
     }
 
-    pub fn client_waiting_channel_open<W:Write>(&mut self, stream:&mut W, buffers:&mut SSHBuffers, config:&super::Config, buffer:&mut CryptoBuf) -> Result<(),Error> {
+    pub fn client_waiting_channel_open(&mut self, write_buffer:&mut SSHBuffer, config:&super::Config, buffer:&mut CryptoBuf) -> Result<(),Error> {
         // The server is waiting for our CHANNEL_OPEN.
         let mut sender_channel = 0;
         while self.channels.contains_key(&sender_channel) || sender_channel == 0 {
@@ -97,12 +95,11 @@ impl Encrypted {
         buffer.push_u32_be(config.window); // window.
         buffer.push_u32_be(config.maxpacket); // max packet size.
         // Send
-        self.cipher.write_client_packet(buffers.write.seqn,
-                                       buffer.as_slice(),
-                                       &mut buffers.write.buffer);
+        self.cipher.write_client_packet(write_buffer.seqn,
+                                        buffer.as_slice(),
+                                        &mut write_buffer.buffer);
 
-        buffers.write.seqn += 1;
-        try!(buffers.write_all(stream));
+        write_buffer.seqn += 1;
         self.state = Some(EncryptedState::ChannelOpenConfirmation(
             ChannelParameters {
                 recipient_channel: 0,

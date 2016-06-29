@@ -91,7 +91,7 @@ impl Encrypted {
                                         buffer.as_slice(),
                                         &mut write_buffer.buffer);
         write_buffer.seqn += 1;
-        self.state = Some(EncryptedState::WaitingChannelOpen);
+        self.state = Some(EncryptedState::ChannelOpened(None));
     }
 
     pub fn server_reject_auth_request(&mut self,

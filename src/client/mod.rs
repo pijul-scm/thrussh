@@ -72,17 +72,19 @@ impl<'a> ClientSession<'a> {
         match state {
             None => {
                 // We have neither sent nor received the version id.
-                let server_id = try!(self.buffers.read_ssh_id(stream));
-                println!("server_id = {:?}", server_id);
-                if let Some(server_id) = server_id {
-                    let mut exchange = Exchange::new();
-                    exchange.server_id.extend(server_id);
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
+                // Do both (read and send).
+                let mut exchange = Exchange::new();
+                // Send our ID, and move on to the next state.
+                self.buffers.write.send_ssh_id(config.client_id.as_bytes());
+                exchange.client_id.extend(config.client_id.as_bytes());
+
+                //
+                self.client_read_server_id(stream, exchange, &config.keys)
             },
-            Some(ServerState::VersionOk(exchange)) => self.client_version_ok(stream, exchange, &config),
+            Some(ServerState::VersionOk(mut exchange)) => {
+                // We've sent our id, and are waiting for the server's id.
+                self.client_read_server_id(stream, exchange, &config.keys)
+            },
             Some(ServerState::Kex(Kex::KexInit(kexinit))) => self.client_kexinit(stream, kexinit, &config.keys),
             Some(ServerState::Kex(Kex::KexDh(kexdh))) => {
                 // This is a writing state from the client.
@@ -105,7 +107,7 @@ impl<'a> ClientSession<'a> {
                     },
                     Some(EncryptedState::AuthRequestSuccess(auth_request)) => {
                         debug!("auth_request_success");
-                        read_complete = try!(enc.client_auth_request_success(stream, auth_request, &self.auth_method, &mut self.buffers, buffer));
+                        read_complete = try!(enc.client_auth_request_success(stream, config, auth_request, &self.auth_method, &mut self.buffers, buffer, buffer2));
                     },
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                         if let Some(buf) = try!(enc.cipher.read_server_packet(stream, &mut self.buffers.read)) {
@@ -205,8 +207,7 @@ impl<'a> ClientSession<'a> {
     pub fn write<W: Write>(&mut self,
                            config: &Config,
                            stream: &mut W,
-                           buffer: &mut CryptoBuf,
-                           buffer2: &mut CryptoBuf)
+                           buffer: &mut CryptoBuf)
                            -> Result<bool, Error> {
         debug!("write, buffer: {:?}", self.buffers.write);
         // Finish pending writes, if any.
@@ -216,9 +217,13 @@ impl<'a> ClientSession<'a> {
         }
 
         let state = std::mem::replace(&mut self.state, None);
+        println!("state = {:?}", state);
         match state {
             None => {
-                self.buffers.send_ssh_id(config.client_id.as_bytes());
+                // Maybe the first time we get to talk with the server
+                // is to write to it (i.e. the socket is only
+                // writable). Handle this case.
+                self.buffers.write.send_ssh_id(config.client_id.as_bytes());
                 try!(self.buffers.write_all(stream));
                 let mut exchange = Exchange::new();
                 exchange.client_id.extend(config.client_id.as_bytes());
@@ -227,18 +232,8 @@ impl<'a> ClientSession<'a> {
                 Ok(true)
             },
             Some(ServerState::VersionOk(exchange)) => {
-                println!("read: {:?}", exchange);
-
-                if exchange.server_id.len() > 0 {
-                    self.state = Some(ServerState::Kex(Kex::KexInit(KexInit {
-                        exchange: exchange,
-                        algo: None,
-                        sent: false,
-                        session_id: None,
-                    })));
-                } else {
-                    self.state = Some(ServerState::VersionOk(exchange));
-                }
+                // We've sent our id, but not yet received the server's id.
+                self.state = Some(ServerState::VersionOk(exchange));
                 Ok(true)
             },
             Some(ServerState::Kex(Kex::KexInit(kexinit))) => {
@@ -268,13 +263,6 @@ impl<'a> ClientSession<'a> {
                         // user input) between read and write.
                         enc.client_waiting_auth_request(&mut self.buffers.write, auth_request, &self.auth_method, buffer);
                         try!(self.buffers.write_all(stream));
-                    },
-                    Some(EncryptedState::WaitingSignature(auth_request)) => {
-                        // The server is waiting for our authentication signature (also USERAUTH_REQUEST).
-                        try!(enc.client_send_signature(stream, &mut self.buffers, auth_request, config, buffer, buffer2));
-                    },
-                    Some(EncryptedState::WaitingChannelOpen) => {
-                        try!(enc.client_waiting_channel_open(stream, &mut self.buffers, config, buffer))
                     },
                     state => {
                         match std::mem::replace(&mut enc.rekey, None) {
@@ -361,7 +349,7 @@ impl<'a> ClientSession<'a> {
         match self.state {
             Some(ServerState::Encrypted(ref enc)) => {
                 match enc.state {
-                    Some(EncryptedState::ChannelOpened(x)) => Some(x),
+                    Some(EncryptedState::ChannelOpened(Some(x))) => Some(x),
                     _ => None
                 }
             },

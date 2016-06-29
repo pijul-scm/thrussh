@@ -148,6 +148,38 @@ impl SSHBuffer {
         self.buffer.clear();
         self.seqn += 1
     }
+    pub fn read_ssh_id<'a, R: BufRead>(&'a mut self, stream: &'a mut R) -> Result<Option<&'a [u8]>, Error> {
+        let i = {
+            let buf = try!(stream.fill_buf());
+            let mut i = 0;
+            while i < buf.len() - 1 {
+                if &buf[i..i + 2] == b"\r\n" {
+                    break;
+                }
+                i += 1
+            }
+            if buf.len() <= 8 || i >= buf.len() - 1 {
+                // Not enough bytes. Don't consume, wait until we have more bytes. The buffer is larger than 255 anyway.
+                return Ok(None);
+            }
+            if &buf[0..8] == b"SSH-2.0-" {
+                self.buffer.clear();
+                self.bytes += i+2;
+                self.buffer.extend(&buf[0..i+2]);
+                i
+
+            } else {
+                return Err(Error::Version)
+            }
+        };
+        stream.consume(i+2);
+        Ok(Some(&self.buffer.as_slice()[0..i]))
+    }
+    pub fn send_ssh_id(&mut self, id:&[u8]) {
+        self.buffer.extend(id);
+        self.buffer.push(b'\r');
+        self.buffer.push(b'\n');
+    }
 }
 impl SSHBuffers {
     fn new() -> Self {
@@ -159,7 +191,7 @@ impl SSHBuffers {
     }
     // Returns true iff the write buffer has been completely written.
     pub fn write_all<W: std::io::Write>(&mut self, stream: &mut W) -> Result<bool, Error> {
-        println!("write_all, self = {:?}", self);
+        println!("write_all, self = {:?}", self.write.buffer.as_slice());
         while self.write.len < self.write.buffer.len() {
             match self.write.buffer.write_all_from(self.write.len, stream) {
                 Ok(s) => {
@@ -182,38 +214,6 @@ impl SSHBuffers {
         Ok(true)
     }
 
-    pub fn read_ssh_id<'a, R: BufRead>(&'a mut self, stream: &'a mut R) -> Result<Option<&'a [u8]>, Error> {
-        let i = {
-            let buf = try!(stream.fill_buf());
-            let mut i = 0;
-            while i < buf.len() - 1 {
-                if &buf[i..i + 2] == b"\r\n" {
-                    break;
-                }
-                i += 1
-            }
-            if buf.len() <= 8 || i >= buf.len() - 1 {
-                // Not enough bytes. Don't consume, wait until we have more bytes. The buffer is larger than 255 anyway.
-                return Ok(None);
-            }
-            if &buf[0..8] == b"SSH-2.0-" {
-                self.read.buffer.clear();
-                self.read.bytes += i+2;
-                self.read.buffer.extend(&buf[0..i+2]);
-                i
-
-            } else {
-                return Err(Error::Version)
-            }
-        };
-        stream.consume(i+2);
-        Ok(Some(&self.read.buffer.as_slice()[0..i]))
-    }
-    pub fn send_ssh_id(&mut self, id:&[u8]) {
-        self.write.buffer.extend(id);
-        self.write.buffer.push(b'\r');
-        self.write.buffer.push(b'\n');
-    }
     pub fn cleartext_write_kex_init(
         &mut self,
         keys: &[key::Algorithm],
@@ -349,7 +349,7 @@ fn complete_packet(buf: &mut CryptoBuf, off: usize) {
 
 }
 
-
+#[derive(Debug)]
 pub enum ServerState {
     VersionOk(Exchange),
     Kex(Kex),
@@ -366,7 +366,7 @@ pub enum EncryptedState {
     AuthRequestSuccess(auth::AuthRequest),
     WaitingChannelOpen,
     ChannelOpenConfirmation(ChannelParameters),
-    ChannelOpened(u32) // (HashSet<u32>),
+    ChannelOpened(Option<u32>) // (HashSet<u32>),
 }
 
 
@@ -558,7 +558,7 @@ impl NewKeys {
     }
 }
 
-
+#[derive(Debug)]
 pub struct Encrypted {
     exchange: Option<Exchange>, // It's always Some, except when we std::mem::replace it temporarily.
     kex: kex::Algorithm,

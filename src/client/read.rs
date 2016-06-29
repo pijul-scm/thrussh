@@ -7,38 +7,36 @@ use encoding::Reader;
 use std;
 
 impl<'a> super::ClientSession<'a> {
-    pub fn client_version_ok<R:BufRead>(&mut self, stream:&mut R, mut exchange: Exchange, config:&super::Config) -> Result<bool, Error> {
-        println!("read: {:?}", exchange);
-        // Have we received the version id?
-        if exchange.server_id.len() == 0 {
-            let server_id = try!(self.buffers.read_ssh_id(stream));
+    pub fn client_read_server_id<R:BufRead>(&mut self, stream:&mut R, mut exchange:Exchange, keys:&[key::Algorithm]) -> Result<bool, Error> {
+        let read_server_id = {
+            let server_id = try!(self.buffers.read.read_ssh_id(stream));
             println!("server_id = {:?}", server_id);
             if let Some(server_id) = server_id {
                 exchange.server_id.extend(server_id);
+                true
             } else {
-                self.state = Some(ServerState::VersionOk(exchange));
-                return Ok(false)
+                false
             }
-        }
-        // Have we received the version id?
-        if exchange.client_id.len() == 0 {
-            self.buffers.send_ssh_id(config.client_id.as_bytes());
-            exchange.client_id.extend(config.client_id.as_bytes());
-        }
-        let kexinit = KexInit {
-            exchange: exchange,
-            algo: None,
-            sent: false,
-            session_id: None,
         };
-        self.state = Some(self.buffers.cleartext_write_kex_init(
-            &config.keys,
-            false, // is_server
-            kexinit));
 
-        Ok(true)
+        if read_server_id {
+            let kexinit = KexInit {
+                exchange: exchange,
+                algo: None,
+                sent: false,
+                session_id: None,
+            };
+            self.state = Some(self.buffers.cleartext_write_kex_init(
+                keys,
+                false, // is_server
+                kexinit));
+            Ok(true)
+        } else {
+            self.state = Some(ServerState::VersionOk(exchange));
+            Ok(false)
+        }
+
     }
-
     pub fn client_kexinit<R:BufRead>(&mut self, stream:&mut R, mut kexinit:KexInit, keys:&[key::Algorithm]) -> Result<bool, Error> {
         // Have we determined the algorithm yet?
         let mut received = false;
@@ -264,7 +262,7 @@ impl Encrypted {
         Ok(read_complete)
     }
 
-    pub fn client_auth_request_success<R:BufRead>(&mut self, stream:&mut R, mut auth_request:AuthRequest, auth_method:&Option<auth::Method>, buffers:&mut SSHBuffers, buffer:&mut CryptoBuf) -> Result<bool, Error> {
+    pub fn client_auth_request_success<R:BufRead>(&mut self, stream:&mut R, config:&super::Config, mut auth_request:AuthRequest, auth_method:&Option<auth::Method>, buffers:&mut SSHBuffers, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<bool, Error> {
         // We're waiting for success.
         let read_complete;
         debug!("client_auth_request_success");
@@ -274,7 +272,7 @@ impl Encrypted {
 
             if buf[0] == msg::USERAUTH_SUCCESS {
 
-                self.state = Some(EncryptedState::WaitingChannelOpen)
+                try!(self.client_waiting_channel_open(&mut buffers.write, config, buffer))
 
             } else if buf[0] == msg::USERAUTH_FAILURE {
 
@@ -287,7 +285,7 @@ impl Encrypted {
             } else if buf[0] == msg::USERAUTH_PK_OK {
 
                 auth_request.public_key_is_ok = true;
-                self.state = Some(EncryptedState::WaitingSignature(auth_request))
+                try!(self.client_send_signature(&mut buffers.write, auth_request, config, buffer, buffer2));
 
             } else {
                 println!("unknown message: {:?}", buf);
@@ -332,7 +330,7 @@ impl Encrypted {
                     println!("id_send = {:?}", id_send);
                     self.channels.insert(channels.sender_channel, channels);
 
-                    self.state = Some(EncryptedState::ChannelOpened(id_send));
+                    self.state = Some(EncryptedState::ChannelOpened(Some(id_send)));
 
                 } else {
 
