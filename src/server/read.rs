@@ -195,15 +195,8 @@ impl Encrypted {
                                         }
                                         println!("{:?} / {:?}", channel.sender_window_size, config.window_size);
                                         if channel.sender_window_size < config.window_size/2 {
-                                            buffer.clear();
-                                            buffer.push(msg::CHANNEL_WINDOW_ADJUST);
-                                            buffer.push_u32_be(channel.recipient_channel);
-                                            buffer.push_u32_be(config.window_size - channel.sender_window_size);
-                                            self.cipher.write(write_buffer.seqn,
-                                                              buffer.as_slice(),
-                                                              &mut write_buffer.buffer);
-                                            write_buffer.seqn += 1;
-                                            channel.sender_window_size = config.window_size;
+                                            super::super::adjust_window_size(write_buffer, &mut self.cipher,
+                                                                             config.window_size, buffer, channel)
                                         }
                                     },
                                     msg::CHANNEL_WINDOW_ADJUST => {

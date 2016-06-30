@@ -93,7 +93,7 @@ impl Encrypted {
         buffer.push(msg::CHANNEL_OPEN);
         buffer.extend_ssh_string(b"channel name");
         buffer.push_u32_be(sender_channel); // sender channel id.
-        buffer.push_u32_be(config.window); // window.
+        buffer.push_u32_be(config.window_size); // window.
         buffer.push_u32_be(config.maxpacket); // max packet size.
         // Send
         self.cipher.write(write_buffer.seqn,
@@ -105,7 +105,7 @@ impl Encrypted {
             ChannelParameters {
                 recipient_channel: 0,
                 sender_channel: sender_channel,
-                sender_window_size: config.window,
+                sender_window_size: config.window_size,
                 recipient_window_size: 0,
                 sender_maximum_packet_size: config.maxpacket,
                 recipient_maximum_packet_size: 0,

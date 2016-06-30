@@ -722,6 +722,17 @@ pub struct ChannelParameters {
     pub recipient_maximum_packet_size: u32,
     pub sender_maximum_packet_size: u32,
 }
+fn adjust_window_size(write_buffer:&mut SSHBuffer, cipher:&mut cipher::CipherPair, target:u32, buffer:&mut CryptoBuf, channel:&mut ChannelParameters) {
+    buffer.clear();
+    buffer.push(msg::CHANNEL_WINDOW_ADJUST);
+    buffer.push_u32_be(channel.recipient_channel);
+    buffer.push_u32_be(target - channel.sender_window_size);
+    cipher.write(write_buffer.seqn,
+                 buffer.as_slice(),
+                 &mut write_buffer.buffer);
+    write_buffer.seqn += 1;
+    channel.sender_window_size = target;
+}
 
 
 /// Fills the read buffer, and returns whether a complete message has been read.

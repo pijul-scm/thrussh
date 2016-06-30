@@ -1,5 +1,5 @@
 use byteorder::{ByteOrder, BigEndian};
-use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, EncryptedState, ChannelBuf};
+use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, EncryptedState, ChannelBuf, ChannelParameters};
 use super::encoding::*;
 use super::key;
 use super::msg;
@@ -21,7 +21,7 @@ pub struct Config {
     pub rekey_write_limit: usize,
     pub rekey_read_limit: usize,
     pub rekey_time_limit_s: f64,
-    pub window: u32,
+    pub window_size: u32,
     pub maxpacket: u32
 }
 
@@ -35,7 +35,7 @@ impl std::default::Default for Config {
             rekey_write_limit: 1<<30, // 1 Gb
             rekey_read_limit: 1<<30, // 1 Gb
             rekey_time_limit_s: 3600.0,
-            window:200000,
+            window_size:200000,
             maxpacket:200000
         }
     }
@@ -168,6 +168,11 @@ impl<'a> ClientSession<'a> {
                                     if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
 
                                         let data = try!(r.read_string());
+                                        channel.sender_window_size -= data.len() as u32;
+                                        if channel.sender_window_size < config.window_size / 2 {
+                                            super::adjust_window_size(&mut self.buffers.write, &mut enc.cipher,
+                                                                      config.window_size, buffer, channel)
+                                        }
                                         buffer.clear();
                                         let server_buf = ChannelBuf {
                                             buffer:buffer,
@@ -184,7 +189,6 @@ impl<'a> ClientSession<'a> {
                                     let channel_num = try!(r.read_u32());
                                     let extended_code = try!(r.read_u32());
                                     if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
-
                                         let data = try!(r.read_string());
                                         buffer.clear();
                                         let server_buf = ChannelBuf {
@@ -198,7 +202,12 @@ impl<'a> ClientSession<'a> {
                                     }
                                 },
                                 None if buf[0] == msg::CHANNEL_WINDOW_ADJUST => {
-                                    unimplemented!()
+                                    let mut r = buf.reader(1);
+                                    let channel_num = try!(r.read_u32());
+                                    let amount = try!(r.read_u32());
+                                    if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
+                                        channel.recipient_window_size += amount
+                                    }
                                 },
                                 None => {
                                     info!("Unhandled packet: {:?}", buf);
@@ -286,7 +295,6 @@ impl<'a> ClientSession<'a> {
         }
         
     }
-
     fn try_rekey(&mut self, enc: &mut super::Encrypted, config:&Config) {
         if enc.rekey.is_none() &&
             (self.buffers.write.bytes >= config.rekey_write_limit
