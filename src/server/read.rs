@@ -4,6 +4,7 @@ use super::super::*;
 use super::super::msg;
 use super::super::negociation;
 use super::super::encoding::Reader;
+use super::super::cipher::CipherT;
 
 use rand::{thread_rng, Rng};
 use std;
@@ -74,7 +75,7 @@ impl ServerSession {
             self.server_cleartext_kex_ecdh_reply(&kexdhdone, &hash);
             self.server_cleartext_send_newkeys();
 
-            self.state = Some(ServerState::Kex(Kex::NewKeys(kexdhdone.compute_keys(hash, buffer, buffer2))));
+            self.state = Some(ServerState::Kex(Kex::NewKeys(kexdhdone.compute_keys(hash, buffer, buffer2, true))));
             // self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
 
             Ok(true)
@@ -161,7 +162,7 @@ impl Encrypted {
                 Ok(())
             }
             Some(EncryptedState::ChannelOpened(recipient_channel)) => {
-
+                println!("buf = {:?}", buf);
                 match buf[0] {
                     msg::CHANNEL_OPEN => {
                         try!(self.server_handle_channel_open(config, server, buf, buffer, write_buffer))
@@ -173,6 +174,7 @@ impl Encrypted {
 
                             Entry::Occupied(mut e) => {
                                 buffer.clear();
+                                println!("buf: {:?}", buf);
                                 match buf_0 {
                                     msg::CHANNEL_DATA => {
                                         let channel = e.get_mut();
@@ -197,9 +199,9 @@ impl Encrypted {
                                             buffer.push(msg::CHANNEL_WINDOW_ADJUST);
                                             buffer.push_u32_be(channel.recipient_channel);
                                             buffer.push_u32_be(config.window_size - channel.sender_window_size);
-                                            self.cipher.write_server_packet(write_buffer.seqn,
-                                                                            buffer.as_slice(),
-                                                                            &mut write_buffer.buffer);
+                                            self.cipher.write(write_buffer.seqn,
+                                                              buffer.as_slice(),
+                                                              &mut write_buffer.buffer);
                                             write_buffer.seqn += 1;
                                             channel.sender_window_size = config.window_size;
                                         }
@@ -481,7 +483,7 @@ impl Encrypted {
                         buffer.clear();
                         negociation::write_kex(keys, buffer);
                         kexinit.exchange.server_kex_init.extend(buffer.as_slice());
-                        self.cipher.write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+                        self.cipher.write(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
                         write_buffer.seqn += 1;
                         kexinit.sent = true;
                         kexinit.exchange.client_kex_init.extend(buf);
@@ -548,17 +550,17 @@ impl Encrypted {
                         // Hash signature
                         kexdhdone.key.add_signature(buffer, hash.as_bytes());
                         //
-                        self.cipher.write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+                        self.cipher.write(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
                         write_buffer.seqn += 1;
 
                         
                         buffer.clear();
                         buffer.push(msg::NEWKEYS);
-                        self.cipher.write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+                        self.cipher.write(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
                         write_buffer.seqn += 1;
 
                         debug!("new keys");
-                        let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2);
+                        let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2, true);
                         self.rekey = Some(Kex::NewKeys(new_keys));
                         Ok(true)
 

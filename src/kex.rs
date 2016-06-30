@@ -224,7 +224,9 @@ impl Algorithm {
                         exchange_hash:&Digest,
                         buffer:&mut CryptoBuf,
                         key:&mut CryptoBuf,
-                        cipher:&super::cipher::Name) -> super::cipher::Cipher {
+                        cipher:&super::cipher::Name,
+                        is_server:bool
+    ) -> super::cipher::CipherPair {
         match self {
             &Algorithm::Curve25519(ref kex) => {
 
@@ -264,16 +266,29 @@ impl Algorithm {
                 match cipher {
                     &super::cipher::Name::Chacha20Poly1305 => {
 
-                        super::cipher::Cipher::Chacha20Poly1305 {
-
-                            client_to_server: {
-                                compute_key(b'C', key, cipher.key_size());
+                        let client_to_server = {
+                            compute_key(b'C', key, cipher.key_size());
+                            super::cipher::Cipher::Chacha20Poly1305 (
                                 super::cipher::chacha20poly1305::Cipher::init(key.as_slice())
-                            },
-                            server_to_client: {
-                                compute_key(b'D', key, cipher.key_size());
+                            )
+                        };
+                        let server_to_client = {
+                            compute_key(b'D', key, cipher.key_size());
+                            super::cipher::Cipher::Chacha20Poly1305 (
                                 super::cipher::chacha20poly1305::Cipher::init(key.as_slice())
-                            },
+                            )
+                        };
+                        
+                        if is_server {
+                            super::cipher::CipherPair {
+                                local_to_remote: server_to_client,
+                                remote_to_local: client_to_server,
+                            }
+                        } else {
+                            super::cipher::CipherPair {
+                                local_to_remote: client_to_server,
+                                remote_to_local: server_to_client,
+                            }
                         }
                     }
                 }

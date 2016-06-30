@@ -5,6 +5,7 @@ use std;
 use super::*;
 pub use super::auth::*;
 use super::msg;
+use super::cipher::CipherT;
 
 #[derive(Debug)]
 pub struct Config<Auth> {
@@ -43,138 +44,6 @@ pub struct ServerSession {
     buffers: super::SSHBuffers,
     state: Option<ServerState>,
 }
-
-
-const SSH_EXTENDED_DATA_STDERR: u32 = 1;
-
-pub struct SignalName<'a> {
-    name:&'a str
-}
-pub const SIGABRT:SignalName<'static> = SignalName { name:"ABRT" };
-pub const SIGALRM:SignalName<'static> = SignalName { name:"ALRM" };
-pub const SIGFPE:SignalName<'static> = SignalName { name:"FPE" };
-pub const SIGHUP:SignalName<'static> = SignalName { name:"HUP" };
-pub const SIGILL:SignalName<'static> = SignalName { name:"ILL" };
-pub const SIGINT:SignalName<'static> = SignalName { name:"INT" };
-pub const SIGKILL:SignalName<'static> = SignalName { name:"KILL" };
-pub const SIGPIPE:SignalName<'static> = SignalName { name:"PIPE" };
-pub const SIGQUIT:SignalName<'static> = SignalName { name:"QUIT" };
-pub const SIGSEGV:SignalName<'static> = SignalName { name:"SEGV" };
-pub const SIGTERM:SignalName<'static> = SignalName { name:"TERM" };
-pub const SIGUSR1:SignalName<'static> = SignalName { name:"USR1" };
-
-impl<'a> SignalName<'a> {
-    pub fn other(name:&'a str) -> SignalName<'a> {
-        SignalName { name:name }
-    }
-}
-
-impl<'a> ChannelBuf<'a> {
-
-    fn output(&mut self, extended:Option<u32>, buf:&[u8]) -> usize {
-
-        let mut buf =
-            if buf.len() as u32 > self.channel.recipient_window_size {
-                &buf[0..self.channel.recipient_window_size as usize]
-            } else {
-                buf
-            };
-        let buf_len = buf.len();
-
-        while buf.len() > 0 && self.channel.recipient_window_size > 0 {
-
-            // Compute the length we're allowed to send.
-            let off = std::cmp::min(buf.len(), self.channel.recipient_maximum_packet_size as usize);
-            let off = std::cmp::min(off, self.channel.recipient_window_size as usize);
-
-            //
-            self.buffer.clear();
-
-            if let Some(ext) = extended {
-                self.buffer.push(msg::CHANNEL_EXTENDED_DATA);
-                self.buffer.push_u32_be(self.channel.recipient_channel);
-                self.buffer.push_u32_be(ext);
-            } else {
-                self.buffer.push(msg::CHANNEL_DATA);
-                self.buffer.push_u32_be(self.channel.recipient_channel);
-            }
-            self.buffer.extend_ssh_string(&buf [ .. off ]);
-            self.cipher.write_server_packet(self.write_buffer.seqn,
-                                            self.buffer.as_slice(),
-                                            &mut self.write_buffer.buffer);
-
-            self.channel.recipient_window_size -= off as u32;
-            self.write_buffer.seqn += 1;
-
-            buf = &buf[off..]
-        }
-        buf_len
-    }
-    pub fn stdout(&mut self, stdout:&[u8]) -> usize {
-        self.output(None, stdout)
-    }
-    pub fn stderr(&mut self, stderr:&[u8]) -> usize {
-        self.output(Some(SSH_EXTENDED_DATA_STDERR), stderr)
-    }
-
-    fn reply(&mut self, msg:u8) {
-        self.buffer.clear();
-        self.buffer.push(msg);
-        self.buffer.push_u32_be(self.channel.recipient_channel);
-        println!("reply {:?}", self.buffer.as_slice());
-        self.cipher.write_server_packet(self.write_buffer.seqn, self.buffer.as_slice(), &mut self.write_buffer.buffer);
-        self.write_buffer.seqn+=1
-    }
-    pub fn success(&mut self) {
-        if self.wants_reply {
-            self.reply(msg::CHANNEL_SUCCESS);
-            self.wants_reply = false
-        }
-    }
-    pub fn failure(&mut self) {
-        if self.wants_reply {
-            self.reply(msg::CHANNEL_FAILURE);
-            self.wants_reply = false
-        }
-    }
-    pub fn eof(&mut self) {
-        self.reply(msg::CHANNEL_EOF);
-    }
-    pub fn close(mut self) {
-        self.reply(msg::CHANNEL_CLOSE);
-    }
-    
-    pub fn exit_status(&mut self, exit_status: u32) {
-        // https://tools.ietf.org/html/rfc4254#section-6.10
-        self.buffer.clear();
-        self.buffer.push(msg::CHANNEL_REQUEST);
-        self.buffer.push_u32_be(self.channel.recipient_channel);
-        self.buffer.extend_ssh_string(b"exit-status");
-        self.buffer.push(0);
-        self.buffer.push_u32_be(exit_status);
-        self.cipher.write_server_packet(self.write_buffer.seqn, self.buffer.as_slice(), &mut self.write_buffer.buffer);
-        self.write_buffer.seqn+=1
-    }
-
-    pub fn exit_signal(&mut self, signal_name:SignalName, core_dumped: bool, error_message:&str, language_tag: &str) {
-        // https://tools.ietf.org/html/rfc4254#section-6.10
-        // Windows compatibility: we can't use Unix signal names here.
-        self.buffer.clear();
-        self.buffer.push(msg::CHANNEL_REQUEST);
-        self.buffer.push_u32_be(self.channel.recipient_channel);
-        self.buffer.extend_ssh_string(b"exit-signal");
-        self.buffer.push(0);
-
-        self.buffer.extend_ssh_string(signal_name.name.as_bytes());
-        self.buffer.push(if core_dumped { 1 } else { 0 });
-        self.buffer.extend_ssh_string(error_message.as_bytes());
-        self.buffer.extend_ssh_string(language_tag.as_bytes());
-
-        self.cipher.write_server_packet(self.write_buffer.seqn, self.buffer.as_slice(), &mut self.write_buffer.buffer);
-        self.write_buffer.seqn+=1
-    }
-}
-
 
 mod read;
 mod write;
@@ -243,12 +112,12 @@ impl ServerSession {
             Some(ServerState::Kex(Kex::KexDh(kexdh))) => self.server_read_cleartext_kexdh(stream, kexdh, buffer, buffer2),
 
             Some(ServerState::Kex(Kex::NewKeys(newkeys))) => self.server_read_cleartext_newkeys(stream, newkeys),
-
+            
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("read: encrypted {:?} {:?}", enc.state, enc.rekey);
                 let (buf_is_some, rekeying_done) =
-                    if let Some(buf) = try!(enc.cipher.read_client_packet(stream, &mut self.buffers.read)) {
-
+                    if let Some(buf) = try!(enc.cipher.read(stream, &mut self.buffers.read)) {
+                        debug!("read buf {:?}", buf);
                         let rek = try!(enc.server_read_rekey(buf, &config.keys, buffer, buffer2, &mut self.buffers.write));
                         if rek && enc.rekey.is_none() && buf[0] == msg::NEWKEYS {
                             // rekeying is finished.
@@ -261,7 +130,7 @@ impl ServerSession {
                     } else {
                         (false, false)
                     };
-
+                
                 if buf_is_some {
                     if rekeying_done {
                         self.buffers.read.bytes = 0;
@@ -294,6 +163,8 @@ impl ServerSession {
                     self.buffers.read.seqn += 1;
                     self.buffers.read.buffer.clear();
                     self.buffers.read.len = 0;
+                } else {
+                    debug!("not read buf, {:?}", self.buffers.read);
                 }
 
                 self.state = Some(ServerState::Encrypted(enc));

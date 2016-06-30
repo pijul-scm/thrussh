@@ -1,6 +1,7 @@
 use super::super::*;
 use super::super::msg;
 use super::super::negociation;
+use super::super::cipher::CipherT;
 use std::io::BufRead;
 use auth::AuthRequest;
 use encoding::Reader;
@@ -101,7 +102,7 @@ impl<'a> super::ClientSession<'a> {
                 }
                 try!(kexdhdone.client_compute_exchange_hash(client, payload, buffer))
             };
-            let mut newkeys = kexdhdone.compute_keys(hash, buffer, buffer2);
+            let mut newkeys = kexdhdone.compute_keys(hash, buffer, buffer2, false);
 
             self.buffers.read.seqn += 1;
             self.buffers.read.clear();
@@ -143,7 +144,7 @@ impl<'a> super::ClientSession<'a> {
                     buffer.push(msg::SERVICE_REQUEST);
                     buffer.extend_ssh_string(b"ssh-userauth");
                 
-                    encrypted.cipher.write_client_packet(self.buffers.write.seqn, buffer.as_slice(), &mut self.buffers.write.buffer);
+                    encrypted.cipher.write(self.buffers.write.seqn, buffer.as_slice(), &mut self.buffers.write.buffer);
                     self.buffers.write.seqn += 1;
                     debug!("sending SERVICE_REQUEST");
 
@@ -198,7 +199,7 @@ impl Encrypted {
             Kex::KexDhDone(mut kexdhdone) => {
                 if buf[0] == msg::KEX_ECDH_REPLY {
                     let hash = try!(kexdhdone.client_compute_exchange_hash(client, buf, buffer));
-                    let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2);
+                    let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2, false);
                     self.rekey = Some(Kex::NewKeys(new_keys));
                 } else {
                     self.rekey = Some(Kex::KexDhDone(kexdhdone))
@@ -237,7 +238,7 @@ impl Encrypted {
         let read_complete;
 
         let is_service_accept = {
-            if let Some(buf) = try!(self.cipher.read_server_packet(stream, &mut buffers.read)) {
+            if let Some(buf) = try!(self.cipher.read(stream, &mut buffers.read)) {
                 read_complete = true;
                 buf[0] == msg::SERVICE_ACCEPT
             } else {
@@ -271,7 +272,7 @@ impl Encrypted {
         // We're waiting for success.
         let read_complete;
         debug!("client_auth_request_success");
-        if let Some(buf) = try!(self.cipher.read_server_packet(stream,&mut buffers.read)) {
+        if let Some(buf) = try!(self.cipher.read(stream,&mut buffers.read)) {
 
             println!("line {}, buf = {:?}", line!(), buf);
 
@@ -316,7 +317,7 @@ impl Encrypted {
         // Check whether we're receiving a confirmation message.
         let read_complete;
 
-        if let Some(buf) = try!(self.cipher.read_server_packet(stream, read_buffer)) {
+        if let Some(buf) = try!(self.cipher.read(stream, read_buffer)) {
 
             println!("channel_confirmation? {:?}", buf);
             if buf[0] == msg::CHANNEL_OPEN_CONFIRMATION {

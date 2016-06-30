@@ -27,7 +27,7 @@ use super::super::CryptoBuf;
 
 impl super::CipherT for Cipher {
 
-    fn read_packet<'a, R:BufRead>(&self, stream:&mut R, read_buffer:&'a mut SSHBuffer) -> Result<Option<&'a[u8]>,Error> {
+    fn read<'a, R:BufRead>(&self, stream:&mut R, read_buffer:&'a mut SSHBuffer) -> Result<Option<&'a[u8]>,Error> {
 
         // http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD
         let mut nonce = [0;8];
@@ -98,7 +98,7 @@ impl super::CipherT for Cipher {
     }
 
     /// Append an encrypted packet with contents `packet_content` at the end of `buffer`.
-    fn write_packet(&self, seq:usize, packet_content:&[u8], buffer:&mut CryptoBuf) {
+    fn write(&self, seq:usize, packet_content:&[u8], buffer:&mut CryptoBuf) {
 
         // http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD
         let offset = buffer.len();

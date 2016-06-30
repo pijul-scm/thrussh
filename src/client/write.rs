@@ -5,6 +5,7 @@ use super::super::auth::{AuthRequest};
 use rand;
 use rand::Rng;
 use super::super::negociation;
+use super::super::cipher::CipherT;
 
 
 impl Encrypted {
@@ -32,9 +33,9 @@ impl Encrypted {
         buffer.extend(buffer2.as_slice());
 
         // Send
-        self.cipher.write_client_packet(write_buffer.seqn,
-                                        &(buffer.as_slice())[i0..], // Skip the session id.
-                                        &mut write_buffer.buffer);
+        self.cipher.write(write_buffer.seqn,
+                          &(buffer.as_slice())[i0..], // Skip the session id.
+                          &mut write_buffer.buffer);
 
         write_buffer.seqn += 1;
         self.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
@@ -70,7 +71,7 @@ impl Encrypted {
         };
         if method_ok {
             println!("method ok");
-            self.cipher.write_client_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+            self.cipher.write(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
             write_buffer.seqn += 1;
             self.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
         } else {
@@ -95,9 +96,9 @@ impl Encrypted {
         buffer.push_u32_be(config.window); // window.
         buffer.push_u32_be(config.maxpacket); // max packet size.
         // Send
-        self.cipher.write_client_packet(write_buffer.seqn,
-                                        buffer.as_slice(),
-                                        &mut write_buffer.buffer);
+        self.cipher.write(write_buffer.seqn,
+                          buffer.as_slice(),
+                          &mut write_buffer.buffer);
 
         write_buffer.seqn += 1;
         self.state = Some(EncryptedState::ChannelOpenConfirmation(
@@ -123,8 +124,8 @@ impl Encrypted {
                     negociation::write_kex(&config.keys, buffer);
                     kexinit.exchange.client_kex_init.extend(buffer.as_slice());
 
-                    self.cipher.write_client_packet(buffers.write.seqn, buffer.as_slice(),
-                                                    &mut buffers.write.buffer);
+                    self.cipher.write(buffers.write.seqn, buffer.as_slice(),
+                                      &mut buffers.write.buffer);
                     
                     buffers.write.seqn += 1;
                     try!(buffers.write_all(stream));
@@ -151,10 +152,10 @@ impl Encrypted {
             Kex::NewKeys(mut newkeys) => {
                 println!("newkeys {:?}", newkeys);
                 if !newkeys.sent {
-                    self.cipher.write_client_packet(buffers.write.seqn, &[msg::NEWKEYS],
-                                                    &mut buffers.write.buffer);
-                    try!(buffers.write_all(stream));
+                    self.cipher.write(buffers.write.seqn, &[msg::NEWKEYS],
+                                      &mut buffers.write.buffer);
                     buffers.write.seqn += 1;
+                    try!(buffers.write_all(stream));
                     newkeys.sent = true;
                 }
                 if !newkeys.received {
@@ -181,7 +182,7 @@ impl Encrypted {
         buffer.clear();
         let kex = kexdh.kex.client_dh(&mut kexdh.exchange, buffer);
         
-        self.cipher.write_client_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+        self.cipher.write(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
         write_buffer.seqn += 1;
 
         self.rekey = Some(Kex::KexDhDone(KexDhDone {

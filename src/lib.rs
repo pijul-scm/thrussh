@@ -76,6 +76,7 @@ mod msg;
 mod kex;
 
 mod cipher;
+use cipher::CipherT;
 pub mod key;
 
 mod mac;
@@ -92,13 +93,142 @@ pub mod auth;
 pub mod server;
 pub mod client;
 
+const SSH_EXTENDED_DATA_STDERR: u32 = 1;
+
+pub struct SignalName<'a> {
+    name:&'a str
+}
+pub const SIGABRT:SignalName<'static> = SignalName { name:"ABRT" };
+pub const SIGALRM:SignalName<'static> = SignalName { name:"ALRM" };
+pub const SIGFPE:SignalName<'static> = SignalName { name:"FPE" };
+pub const SIGHUP:SignalName<'static> = SignalName { name:"HUP" };
+pub const SIGILL:SignalName<'static> = SignalName { name:"ILL" };
+pub const SIGINT:SignalName<'static> = SignalName { name:"INT" };
+pub const SIGKILL:SignalName<'static> = SignalName { name:"KILL" };
+pub const SIGPIPE:SignalName<'static> = SignalName { name:"PIPE" };
+pub const SIGQUIT:SignalName<'static> = SignalName { name:"QUIT" };
+pub const SIGSEGV:SignalName<'static> = SignalName { name:"SEGV" };
+pub const SIGTERM:SignalName<'static> = SignalName { name:"TERM" };
+pub const SIGUSR1:SignalName<'static> = SignalName { name:"USR1" };
+
+impl<'a> SignalName<'a> {
+    pub fn other(name:&'a str) -> SignalName<'a> {
+        SignalName { name:name }
+    }
+}
 
 pub struct ChannelBuf<'a> {
     buffer:&'a mut CryptoBuf,
     channel: &'a mut ChannelParameters,
     write_buffer: &'a mut SSHBuffer,
-    cipher: &'a mut cipher::Cipher,
+    cipher: &'a mut cipher::CipherPair,
     wants_reply: bool
+}
+impl<'a> ChannelBuf<'a> {
+
+    fn output(&mut self, extended:Option<u32>, buf:&[u8]) -> usize {
+        println!("output {:?} {:?}", self.channel, buf);
+        let mut buf =
+            if buf.len() as u32 > self.channel.recipient_window_size {
+                &buf[0..self.channel.recipient_window_size as usize]
+            } else {
+                buf
+            };
+        let buf_len = buf.len();
+
+        while buf.len() > 0 && self.channel.recipient_window_size > 0 {
+
+            // Compute the length we're allowed to send.
+            let off = std::cmp::min(buf.len(), self.channel.recipient_maximum_packet_size as usize);
+            let off = std::cmp::min(off, self.channel.recipient_window_size as usize);
+
+            //
+            self.buffer.clear();
+
+            if let Some(ext) = extended {
+                self.buffer.push(msg::CHANNEL_EXTENDED_DATA);
+                self.buffer.push_u32_be(self.channel.recipient_channel);
+                self.buffer.push_u32_be(ext);
+            } else {
+                self.buffer.push(msg::CHANNEL_DATA);
+                self.buffer.push_u32_be(self.channel.recipient_channel);
+            }
+            self.buffer.extend_ssh_string(&buf [ .. off ]);
+            println!("buffer = {:?}", self.buffer.as_slice());
+            self.cipher.write(self.write_buffer.seqn,
+                              self.buffer.as_slice(),
+                              &mut self.write_buffer.buffer);
+
+            self.channel.recipient_window_size -= off as u32;
+            self.write_buffer.seqn += 1;
+
+            buf = &buf[off..]
+        }
+        buf_len
+    }
+    pub fn stdout(&mut self, stdout:&[u8]) -> usize {
+        self.output(None, stdout)
+    }
+    pub fn stderr(&mut self, stderr:&[u8]) -> usize {
+        self.output(Some(SSH_EXTENDED_DATA_STDERR), stderr)
+    }
+
+    fn reply(&mut self, msg:u8) {
+        self.buffer.clear();
+        self.buffer.push(msg);
+        self.buffer.push_u32_be(self.channel.recipient_channel);
+        println!("reply {:?}", self.buffer.as_slice());
+        self.cipher.write(self.write_buffer.seqn, self.buffer.as_slice(), &mut self.write_buffer.buffer);
+        self.write_buffer.seqn+=1
+    }
+    pub fn success(&mut self) {
+        if self.wants_reply {
+            self.reply(msg::CHANNEL_SUCCESS);
+            self.wants_reply = false
+        }
+    }
+    pub fn failure(&mut self) {
+        if self.wants_reply {
+            self.reply(msg::CHANNEL_FAILURE);
+            self.wants_reply = false
+        }
+    }
+    pub fn eof(&mut self) {
+        self.reply(msg::CHANNEL_EOF);
+    }
+    pub fn close(mut self) {
+        self.reply(msg::CHANNEL_CLOSE);
+    }
+    
+    pub fn exit_status(&mut self, exit_status: u32) {
+        // https://tools.ietf.org/html/rfc4254#section-6.10
+        self.buffer.clear();
+        self.buffer.push(msg::CHANNEL_REQUEST);
+        self.buffer.push_u32_be(self.channel.recipient_channel);
+        self.buffer.extend_ssh_string(b"exit-status");
+        self.buffer.push(0);
+        self.buffer.push_u32_be(exit_status);
+        self.cipher.write(self.write_buffer.seqn, self.buffer.as_slice(), &mut self.write_buffer.buffer);
+        self.write_buffer.seqn+=1
+    }
+
+    pub fn exit_signal(&mut self, signal_name:SignalName, core_dumped: bool, error_message:&str, language_tag: &str) {
+        // https://tools.ietf.org/html/rfc4254#section-6.10
+        // Windows compatibility: we can't use Unix signal names here.
+        self.buffer.clear();
+        self.buffer.push(msg::CHANNEL_REQUEST);
+        self.buffer.push_u32_be(self.channel.recipient_channel);
+        self.buffer.extend_ssh_string(b"exit-signal");
+        self.buffer.push(0);
+
+        self.buffer.extend_ssh_string(signal_name.name.as_bytes());
+        self.buffer.push(if core_dumped { 1 } else { 0 });
+        self.buffer.extend_ssh_string(error_message.as_bytes());
+        self.buffer.extend_ssh_string(language_tag.as_bytes());
+
+        self.cipher.write(self.write_buffer.seqn, self.buffer.as_slice(), &mut self.write_buffer.buffer);
+        self.write_buffer.seqn+=1
+    }
 }
 
 pub trait Server {
@@ -113,7 +243,7 @@ pub trait Server {
 pub trait Client {
     fn auth_banner(&mut self, _:&str) { }
     fn new_channel(&mut self, _: &ChannelParameters) { }
-    fn data(&mut self, _: &[u8], _: ChannelBuf) -> Result<(), Error> {
+    fn data(&mut self, _:Option<u32>, _: &[u8], _: ChannelBuf) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -479,7 +609,8 @@ impl KexDhDone {
     fn compute_keys(mut self,
                     hash: kex::Digest,
                     buffer: &mut CryptoBuf,
-                    buffer2: &mut CryptoBuf)
+                    buffer2: &mut CryptoBuf,
+                    is_server:bool)
                     -> NewKeys {
         let session_id = if let Some(session_id) = self.session_id {
             session_id
@@ -487,7 +618,7 @@ impl KexDhDone {
             hash.clone()
         };
         // Now computing keys.
-        let c = self.kex.compute_keys(&session_id, &hash, buffer, buffer2, &mut self.cipher);
+        let c = self.kex.compute_keys(&session_id, &hash, buffer, buffer2, &mut self.cipher, is_server);
         NewKeys {
             exchange: self.exchange,
             kex: self.kex,
@@ -546,7 +677,7 @@ pub struct NewKeys {
     exchange: Exchange,
     kex: kex::Algorithm,
     key: key::Algorithm,
-    cipher: cipher::Cipher,
+    cipher: cipher::CipherPair,
     mac: Mac,
     session_id: kex::Digest,
     received:bool,
@@ -574,7 +705,7 @@ pub struct Encrypted {
     exchange: Option<Exchange>, // It's always Some, except when we std::mem::replace it temporarily.
     kex: kex::Algorithm,
     key: key::Algorithm,
-    cipher: cipher::Cipher,
+    cipher: cipher::CipherPair,
     mac: Mac,
     session_id: kex::Digest,
     state: Option<EncryptedState>,

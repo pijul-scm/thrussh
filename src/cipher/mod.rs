@@ -15,87 +15,59 @@ impl Name {
             &Name::Chacha20Poly1305 => 64
         }
     }
-    /*pub fn init(&self, client_to_server:&[u8], server_to_client: &[u8]) -> Cipher {
-        match self {
-            &Name::Chacha20Poly1305 => {
-                Cipher::Chacha20Poly1305 {
-                    client_to_server: chacha20poly1305::Cipher::init(client_to_server),
-                    server_to_client: chacha20poly1305::Cipher::init(server_to_client)
-                }
-            }
-        }
-    }*/
 }
 
 #[derive(Debug)]
 pub enum Cipher {
-    Chacha20Poly1305 {
-        client_to_server:chacha20poly1305::Cipher,
-        server_to_client:chacha20poly1305::Cipher
-    }
+    Chacha20Poly1305(chacha20poly1305::Cipher)
+}
+
+#[derive(Debug)]
+pub struct CipherPair {
+    pub local_to_remote: Cipher,
+    pub remote_to_local: Cipher,
 }
 
 use super::CryptoBuf;
 
 pub trait CipherT {
-    fn read_packet<'a, R:BufRead>(&self, stream:&mut R, buffer: &'a mut super::SSHBuffer) -> Result<Option<&'a[u8]>,Error>;
-    fn write_packet(&self, seq:usize, packet:&[u8], buffer:&mut CryptoBuf);
+    fn read<'a, R:BufRead>(&self, stream:&mut R, buffer: &'a mut super::SSHBuffer) -> Result<Option<&'a[u8]>,Error>;
+    fn write(&self, seq:usize, packet:&[u8], buffer:&mut CryptoBuf);
 }
 
-impl Cipher {
-
-    pub fn read_client_packet<'a, R:BufRead>(
-        &mut self,
+impl CipherT for Cipher {
+    fn read<'a, R:BufRead>(
+        &self,
         stream:&mut R,
         buffer:&'a mut super::SSHBuffer) -> Result<Option<&'a[u8]>,Error> {
 
         match *self {
-            Cipher::Chacha20Poly1305 { ref client_to_server, .. } => {
-
-                client_to_server.read_packet(stream, buffer)
-
+            Cipher::Chacha20Poly1305(ref cipher) => {
+                cipher.read(stream, buffer)
             },
-            //_ => unimplemented!()
         }
     }
-    pub fn read_server_packet<'a, R:BufRead>(
-        &mut self,
+    fn write(&self, seq:usize, packet:&[u8], buffer:&mut CryptoBuf) {
+
+        match *self {
+            Cipher::Chacha20Poly1305(ref cipher) => {
+                cipher.write(seq, packet, buffer)
+            },
+        }
+    }
+}
+impl CipherT for CipherPair {
+    fn read<'a, R:BufRead>(
+        &self,
         stream:&mut R,
         buffer:&'a mut super::SSHBuffer) -> Result<Option<&'a[u8]>,Error> {
 
-        match *self {
-            Cipher::Chacha20Poly1305 { ref server_to_client, .. } => {
-
-                server_to_client.read_packet(stream, buffer)
-
-            },
-            //_ => unimplemented!()
-        }
+        self.remote_to_local.read(stream, buffer)
     }
+    fn write(&self, seq:usize, packet:&[u8], buffer:&mut CryptoBuf) {
 
-    pub fn write_server_packet(&mut self, seq:usize, packet:&[u8], buffer:&mut CryptoBuf) {
+        self.local_to_remote.write(seq, packet, buffer)
 
-        match *self {
-            Cipher::Chacha20Poly1305 { ref server_to_client, .. } => {
-
-                server_to_client.write_packet(seq, packet, buffer)
-            },
-            //_ => unimplemented!()
-        }
-
-        
-    }
-    pub fn write_client_packet(&mut self, seq:usize, packet:&[u8], buffer:&mut CryptoBuf) {
-
-        match *self {
-            Cipher::Chacha20Poly1305 { ref client_to_server, .. } => {
-
-                client_to_server.write_packet(seq, packet, buffer)
-            },
-            //_ => unimplemented!()
-        }
-
-        
     }
 }
 

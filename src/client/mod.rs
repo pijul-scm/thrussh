@@ -4,6 +4,7 @@ use super::encoding::*;
 use super::key;
 use super::msg;
 use super::auth;
+use super::cipher::CipherT;
 use std::io::{Write,BufRead};
 use std;
 use time;
@@ -110,7 +111,7 @@ impl<'a> ClientSession<'a> {
                         read_complete = try!(enc.client_auth_request_success(stream, config, auth_request, &self.auth_method, &mut self.buffers, buffer, buffer2));
                     },
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
-                        if let Some(buf) = try!(enc.cipher.read_server_packet(stream, &mut self.buffers.read)) {
+                        if let Some(buf) = try!(enc.cipher.read(stream, &mut self.buffers.read)) {
                             read_complete = true;
                             if buf[0] == msg::USERAUTH_BANNER {
                                 let mut r = buf.reader(1);
@@ -141,7 +142,7 @@ impl<'a> ClientSession<'a> {
                     state => {
                         debug!("read state {:?}", state);
                         let mut is_newkeys = false;
-                        if let Some(buf) = try!(enc.cipher.read_server_packet(stream,&mut self.buffers.read)) {
+                        if let Some(buf) = try!(enc.cipher.read(stream,&mut self.buffers.read)) {
 
                             println!("msg: {:?} {:?}", buf, enc.rekey);
                             match std::mem::replace(&mut enc.rekey, None) {
@@ -160,27 +161,48 @@ impl<'a> ClientSession<'a> {
                                         enc.rekey = Some(try!(kexinit.kexinit()));
                                     }
                                 },
-                                None => {
-                                    // standard response
-                                    if buf[0] == msg::CHANNEL_DATA {
+                                None if buf[0] == msg::CHANNEL_DATA => {
 
-                                        let channel_num = BigEndian::read_u32(&buf[1..]);
-                                        if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
+                                    let mut r = buf.reader(1);
+                                    let channel_num = try!(r.read_u32());
+                                    if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
 
-                                            let len = BigEndian::read_u32(&buf[5..]) as usize;
-                                            let data = &buf[9..9 + len];
-                                            buffer.clear();
-                                            let server_buf = ChannelBuf {
-                                                buffer:buffer,
-                                                channel: channel,
-                                                write_buffer: &mut self.buffers.write,
-                                                cipher: &mut enc.cipher,
-                                                wants_reply: false
-                                            };
-                                            try!(client.data(&data, server_buf))
-                                        }
+                                        let data = try!(r.read_string());
+                                        buffer.clear();
+                                        let server_buf = ChannelBuf {
+                                            buffer:buffer,
+                                            channel: channel,
+                                            write_buffer: &mut self.buffers.write,
+                                            cipher: &mut enc.cipher,
+                                            wants_reply: false
+                                        };
+                                        try!(client.data(None, &data, server_buf))
                                     }
                                 },
+                                None if buf[0] == msg::CHANNEL_EXTENDED_DATA => {
+                                    let mut r = buf.reader(1);
+                                    let channel_num = try!(r.read_u32());
+                                    let extended_code = try!(r.read_u32());
+                                    if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
+
+                                        let data = try!(r.read_string());
+                                        buffer.clear();
+                                        let server_buf = ChannelBuf {
+                                            buffer:buffer,
+                                            channel: channel,
+                                            write_buffer: &mut self.buffers.write,
+                                            cipher: &mut enc.cipher,
+                                            wants_reply: false
+                                        };
+                                        try!(client.data(Some(extended_code), &data, server_buf))
+                                    }
+                                },
+                                None if buf[0] == msg::CHANNEL_WINDOW_ADJUST => {
+                                    unimplemented!()
+                                },
+                                None => {
+                                    info!("Unhandled packet: {:?}", buf);
+                                }
                             }
                             read_complete = true;
                         } else {
@@ -344,7 +366,7 @@ impl<'a> ClientSession<'a> {
         self.auth_method = Some(method)
     }
 
-    pub fn msg<W:Write>(&mut self, stream:&mut W, buffer:&mut CryptoBuf, msg:&[u8], channel:u32) -> Result<bool,Error> {
+    pub fn msg<W:Write>(&mut self, stream:&mut W, buffer:&mut CryptoBuf, msg:&[u8], channel:u32) -> Result<Option<usize>,Error> {
        
         match self.state {
             Some(ServerState::Encrypted(ref mut enc)) => {
@@ -354,8 +376,8 @@ impl<'a> ClientSession<'a> {
                     Some(Kex::NewKeys(mut newkeys)) => {
                         debug!("newkeys {:?}", newkeys);
                         if !newkeys.sent {
-                            enc.cipher.write_client_packet(self.buffers.write.seqn, &[msg::NEWKEYS],
-                                                           &mut self.buffers.write.buffer);
+                            enc.cipher.write(self.buffers.write.seqn, &[msg::NEWKEYS],
+                                             &mut self.buffers.write.buffer);
                             try!(self.buffers.write_all(stream));
                             self.buffers.write.seqn += 1;
                             newkeys.sent = true;
@@ -382,31 +404,32 @@ impl<'a> ClientSession<'a> {
                     match enc.state {
                         Some(EncryptedState::ChannelOpened(_)) => {
 
-                            if let Some(c) = enc.channels.get(&channel) {
-                                buffer.clear();
-                                buffer.push(msg::CHANNEL_DATA);
-                                buffer.push_u32_be(c.recipient_channel);
-                                buffer.extend_ssh_string(msg);
-                                debug!("{:?} {:?}", buffer.as_slice(), self.buffers.write.seqn);
-                                enc.cipher.write_client_packet(self.buffers.write.seqn,
-                                                               buffer.as_slice(),
-                                                               &mut self.buffers.write.buffer);
-                                debug!("buf = {:?}", self.buffers.write.buffer.as_slice());
-                                self.buffers.write.seqn += 1;
+                            if let Some(c) = enc.channels.get_mut(&channel) {
+
+                                let written = {
+                                    let mut channel_buf = ChannelBuf {
+                                        buffer:buffer,
+                                        channel: c,
+                                        write_buffer: &mut self.buffers.write,
+                                        cipher: &mut enc.cipher,
+                                        wants_reply: false
+                                    };
+                                    channel_buf.output(None, msg)
+                                };
                                 try!(self.buffers.write_all(stream));
-                                Ok(true)
+                                Ok(Some(written))
                             } else {
-                                Ok(false)
+                                Ok(None)
                             }
                         },
-                        _ => Ok(false)
+                        _ => Ok(None)
                     }
 
                 } else {
-                    Ok(false)
+                    Ok(None)
                 }
             },
-            _ => Ok(false)
+            _ => Ok(None)
         }
     }
 }

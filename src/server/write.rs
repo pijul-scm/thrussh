@@ -4,6 +4,7 @@ use super::*;
 use super::super::*;
 use super::super::complete_packet;
 use super::super::negociation;
+use super::super::cipher::CipherT;
 
 impl ServerSession {
 
@@ -47,7 +48,7 @@ impl Encrypted {
         buffer.push_u32_be(channel.sender_channel); // our channel number.
         buffer.push_u32_be(config.window_size);
         buffer.push_u32_be(config.maximum_packet_size);
-        self.cipher.write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+        self.cipher.write(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
         write_buffer.seqn += 1;
     }
 
@@ -60,7 +61,7 @@ impl Encrypted {
         buffer.clear();
         buffer.push(msg::SERVICE_ACCEPT);
         buffer.extend_ssh_string(b"ssh-userauth");
-        self.cipher.write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+        self.cipher.write(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
         write_buffer.seqn += 1;
 
         if let Some(ref banner) = banner {
@@ -70,8 +71,7 @@ impl Encrypted {
             buffer.extend_ssh_string(banner.as_bytes());
             buffer.extend_ssh_string(b"");
 
-            self.cipher
-               .write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+            self.cipher.write(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
             write_buffer.seqn += 1;
         }
 
@@ -88,9 +88,9 @@ impl Encrypted {
     pub fn server_auth_request_success(&mut self, buffer:&mut CryptoBuf, write_buffer:&mut super::super::SSHBuffer) {
         buffer.clear();
         buffer.push(msg::USERAUTH_SUCCESS);
-        self.cipher.write_server_packet(write_buffer.seqn,
-                                        buffer.as_slice(),
-                                        &mut write_buffer.buffer);
+        self.cipher.write(write_buffer.seqn,
+                          buffer.as_slice(),
+                          &mut write_buffer.buffer);
         write_buffer.seqn += 1;
         self.state = Some(EncryptedState::ChannelOpened(None));
     }
@@ -109,8 +109,8 @@ impl Encrypted {
             0
         });
 
-        self.cipher.write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
-
+        self.cipher.write(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+        
         write_buffer.seqn += 1;
         self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
     }
@@ -122,8 +122,7 @@ impl Encrypted {
         buffer.push(msg::USERAUTH_PK_OK);
         buffer.extend_ssh_string(auth_request.public_key_algorithm.as_slice());
         buffer.extend_ssh_string(auth_request.public_key.as_slice());
-        self.cipher
-            .write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+        self.cipher.write(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
         write_buffer.seqn += 1;
         auth_request.sent_pk_ok = true;
     }
@@ -132,7 +131,7 @@ impl Encrypted {
         buffer.clear();
         negociation::write_kex(keys, buffer);
         kexinit.exchange.server_kex_init.extend(buffer.as_slice());
-        self.cipher.write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
+        self.cipher.write(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
         write_buffer.seqn += 1;
     }
 
