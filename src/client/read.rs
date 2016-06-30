@@ -255,6 +255,8 @@ impl Encrypted {
 
         if let Some(buf) = try!(self.cipher.read(stream, read_buffer)) {
 
+            transport!(buf);
+
             println!("channel_confirmation? {:?}", buf);
             if buf[0] == msg::CHANNEL_OPEN_CONFIRMATION {
                 let mut reader = buf.reader(1);
