@@ -5,10 +5,9 @@ use super::super::cipher::CipherT;
 use std::io::BufRead;
 use auth::AuthRequest;
 use encoding::Reader;
-use std;
 
 impl<'a> super::ClientSession<'a> {
-    pub fn client_read_server_id<R:BufRead>(&mut self, stream:&mut R, mut exchange:Exchange, keys:&[key::Algorithm]) -> Result<bool, Error> {
+    pub fn client_read_server_id<R:BufRead>(&mut self, stream:&mut R, mut exchange:Exchange, keys:&[key::Algorithm]) -> Result<ReturnCode, Error> {
         let read_server_id = {
             let server_id = try!(self.buffers.read.read_ssh_id(stream));
             println!("server_id = {:?}", server_id);
@@ -31,36 +30,27 @@ impl<'a> super::ClientSession<'a> {
                 keys,
                 false, // is_server
                 kexinit));
-            Ok(true)
+            Ok(ReturnCode::Ok)
         } else {
             self.state = Some(ServerState::VersionOk(exchange));
-            Ok(false)
+            Ok(ReturnCode::NotEnoughBytes)
         }
 
     }
-    pub fn client_kexinit<R:BufRead>(&mut self, stream:&mut R, mut kexinit:KexInit, keys:&[key::Algorithm]) -> Result<bool, Error> {
+    pub fn client_kexinit(&mut self, mut kexinit:KexInit, keys:&[key::Algorithm]) -> Result<ReturnCode, Error> {
         // Have we determined the algorithm yet?
-        let mut received = false;
         if kexinit.algo.is_none() {
-            if self.buffers.read.len == 0 {
-                try!(self.buffers.set_clear_len(stream));
-            }
-            if try!(self.buffers.read(stream)) {
-                {
-                    let payload = self.buffers.get_current_payload();
-                    if payload[0] == msg::KEXINIT {
-                        kexinit.algo = Some(try!(negociation::client_read_kex(payload, keys)));
-                        kexinit.exchange.server_kex_init.extend(payload);
-                    } else {
-                        println!("unknown packet, expecting KEXINIT, received {:?}", payload);
-                    }
+            {
+                let payload = self.buffers.get_current_payload();
+                transport!(payload);
+                if payload[0] == msg::KEXINIT {
+                    kexinit.algo = Some(try!(negociation::client_read_kex(payload, keys)));
+                    kexinit.exchange.server_kex_init.extend(payload);
+                } else {
+                    println!("unknown packet, expecting KEXINIT, received {:?}", payload);
                 }
-                self.buffers.read.seqn += 1;
-                self.buffers.read.clear();
-                received = true;
             }
         }
-
 
         if let Some((mut kex, key, cipher, mac, follows)) = kexinit.algo {
 
@@ -82,84 +72,57 @@ impl<'a> super::ClientSession<'a> {
         } else {
             self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)))
         }
-        Ok(received)
-
+        Ok(ReturnCode::Ok)
     }
 
-    pub fn client_kexdhdone<R:BufRead, C:ValidateKey>(&mut self, client:&C, stream:&mut R, mut kexdhdone:KexDhDone, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<bool, Error> {
+    pub fn client_kexdhdone<C:ValidateKey>(&mut self, client:&C, mut kexdhdone:KexDhDone, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<ReturnCode, Error> {
         debug!("kexdhdone");
         // We've sent ECDH_INIT, waiting for ECDH_REPLY
-        if self.buffers.read.len == 0 {
-            try!(self.buffers.set_clear_len(stream));
-        }
-
-        if try!(self.buffers.read(stream)) {
-            let hash = {
-                let payload = self.buffers.get_current_payload();
-                if payload[0] != msg::KEX_ECDH_REPLY {
-                    self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
-                    return Ok(true)
-                }
-                try!(kexdhdone.client_compute_exchange_hash(client, payload, buffer))
-            };
-            let mut newkeys = kexdhdone.compute_keys(hash, buffer, buffer2, false);
-
-            self.buffers.read.seqn += 1;
-            self.buffers.read.clear();
-
-            debug!("sending NEWKEYS");
-            self.buffers.write.buffer.extend(b"\0\0\0\0\0");
-            self.buffers.write.buffer.push(msg::NEWKEYS);
-            super::super::complete_packet(&mut self.buffers.write.buffer, 0);
-            self.buffers.write.seqn += 1;
-            newkeys.sent = true;
-
-            self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
-
-            Ok(true)
-        } else {
-            self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
-            Ok(false)
-        }
-
-    }
-
-    pub fn client_newkeys<R:BufRead>(&mut self, stream:&mut R, buffer:&mut CryptoBuf, mut newkeys:NewKeys) -> Result<bool, Error> {
-
-        if self.buffers.read.len == 0 {
-            try!(self.buffers.set_clear_len(stream));
-        }
-        if try!(self.buffers.read(stream)) {
-
-            {
-                let is_newkeys = {
-                    let payload = self.buffers.get_current_payload();
-                    payload[0] == msg::NEWKEYS
-                };
-                if is_newkeys {
-
-                    newkeys.received = true;
-                    let mut encrypted = newkeys.encrypted(EncryptedState::ServiceRequest);
-                    buffer.clear();
-                    buffer.push(msg::SERVICE_REQUEST);
-                    buffer.extend_ssh_string(b"ssh-userauth");
-                
-                    encrypted.cipher.write(self.buffers.write.seqn, buffer.as_slice(), &mut self.buffers.write.buffer);
-                    self.buffers.write.seqn += 1;
-                    debug!("sending SERVICE_REQUEST");
-
-                    self.state = Some(ServerState::Encrypted(encrypted))
-                }
+        let hash = {
+            let payload = self.buffers.get_current_payload();
+            transport!(payload);
+            if payload[0] != msg::KEX_ECDH_REPLY {
+                self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
+                return Ok(ReturnCode::Ok)
             }
-            self.buffers.read.seqn += 1;
-            self.buffers.read.clear();
+            try!(kexdhdone.client_compute_exchange_hash(client, payload, buffer))
+        };
+        let mut newkeys = kexdhdone.compute_keys(hash, buffer, buffer2, false);
 
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        debug!("sending NEWKEYS");
+        self.buffers.write.buffer.extend(b"\0\0\0\0\0");
+        self.buffers.write.buffer.push(msg::NEWKEYS);
+        super::super::complete_packet(&mut self.buffers.write.buffer, 0);
+        self.buffers.write.seqn += 1;
+        newkeys.sent = true;
+
+        self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
+
+        Ok(ReturnCode::Ok)
     }
 
+    pub fn client_newkeys(&mut self, buffer:&mut CryptoBuf, mut newkeys:NewKeys) -> Result<ReturnCode, Error> {
+
+        let is_newkeys = {
+            let payload = self.buffers.get_current_payload();
+            transport!(payload);
+            payload[0] == msg::NEWKEYS
+        };
+        if is_newkeys {
+
+            newkeys.received = true;
+            let encrypted = newkeys.encrypted(EncryptedState::ServiceRequest);
+            buffer.clear();
+            buffer.push(msg::SERVICE_REQUEST);
+            buffer.extend_ssh_string(b"ssh-userauth");
+            
+            encrypted.cipher.write(buffer.as_slice(), &mut self.buffers.write);
+            debug!("sending SERVICE_REQUEST");
+
+            self.state = Some(ServerState::Encrypted(encrypted))
+        }
+        Ok(ReturnCode::Ok)
+    }
 }
 
 
@@ -233,39 +196,18 @@ impl Encrypted {
     }
 
 
-    pub fn client_service_request<R:BufRead>(&mut self, stream:&mut R, auth_method:&Option<auth::Method>, buffers:&mut SSHBuffers, buffer:&mut CryptoBuf) -> Result<bool, Error> {
-        println!("service request");
-        let read_complete;
-
-        let is_service_accept = {
-            if let Some(buf) = try!(self.cipher.read(stream, &mut buffers.read)) {
-                read_complete = true;
-                buf[0] == msg::SERVICE_ACCEPT
-            } else {
-                read_complete = false;
-                false
-            }
+    pub fn client_service_request(&mut self, auth_method:&Option<auth::Method>, buffers:&mut SSHBuffers, buffer:&mut CryptoBuf) -> Result<(), Error> {
+        println!("request success");
+        let auth_request = auth::AuthRequest {
+            methods: auth::Methods::all(),
+            partial_success: false,
+            public_key: CryptoBuf::new(),
+            public_key_algorithm: CryptoBuf::new(),
+            public_key_is_ok: false,
+            sent_pk_ok: false,
         };
-        if read_complete {
-            buffers.read.seqn += 1;
-            buffers.read.clear();
-        }
-        if is_service_accept {
-            println!("request success");
-            let auth_request = auth::AuthRequest {
-                methods: auth::Methods::all(),
-                partial_success: false,
-                public_key: CryptoBuf::new(),
-                public_key_algorithm: CryptoBuf::new(),
-                public_key_is_ok: false,
-                sent_pk_ok: false,
-            };
-            self.client_waiting_auth_request(&mut buffers.write, auth_request, auth_method, buffer);
-        } else {
-            println!("other message");
-            self.state = Some(EncryptedState::ServiceRequest);
-        }
-        Ok(read_complete)
+        self.client_waiting_auth_request(&mut buffers.write, auth_request, auth_method, buffer);
+        Ok(())
     }
 
     pub fn client_auth_request_success<R:BufRead>(&mut self, stream:&mut R, config:&super::Config, mut auth_request:AuthRequest, auth_method:&Option<auth::Method>, buffers:&mut SSHBuffers, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<bool, Error> {
@@ -303,12 +245,6 @@ impl Encrypted {
 
             read_complete = false
 
-        }
-
-
-        if read_complete {
-            buffers.read.seqn += 1;
-            buffers.read.clear();
         }
         Ok(read_complete)
     }
@@ -350,10 +286,6 @@ impl Encrypted {
             self.state = Some(EncryptedState::ChannelOpenConfirmation(channels));
             read_complete = false
         };
-        
-        if read_complete {
-            read_buffer.clear_incr();
-        }
         Ok(read_complete)
     }
 }

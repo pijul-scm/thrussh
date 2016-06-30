@@ -102,6 +102,12 @@ macro_rules! transport {
         }
     };
 }
+pub enum ReturnCode {
+    Ok,
+    NotEnoughBytes,
+    Disconnect,
+    WrongPacket
+}
 
 pub mod server;
 pub mod client;
@@ -168,12 +174,9 @@ impl<'a> ChannelBuf<'a> {
             }
             self.buffer.extend_ssh_string(&buf [ .. off ]);
             println!("buffer = {:?}", self.buffer.as_slice());
-            self.cipher.write(self.write_buffer.seqn,
-                              self.buffer.as_slice(),
-                              &mut self.write_buffer.buffer);
+            self.cipher.write(self.buffer.as_slice(), self.write_buffer);
 
             self.channel.recipient_window_size -= off as u32;
-            self.write_buffer.seqn += 1;
 
             buf = &buf[off..]
         }
@@ -191,8 +194,7 @@ impl<'a> ChannelBuf<'a> {
         self.buffer.push(msg);
         self.buffer.push_u32_be(self.channel.recipient_channel);
         println!("reply {:?}", self.buffer.as_slice());
-        self.cipher.write(self.write_buffer.seqn, self.buffer.as_slice(), &mut self.write_buffer.buffer);
-        self.write_buffer.seqn+=1
+        self.cipher.write(self.buffer.as_slice(), self.write_buffer);
     }
     pub fn success(&mut self) {
         if self.wants_reply {
@@ -221,8 +223,7 @@ impl<'a> ChannelBuf<'a> {
         self.buffer.extend_ssh_string(b"exit-status");
         self.buffer.push(0);
         self.buffer.push_u32_be(exit_status);
-        self.cipher.write(self.write_buffer.seqn, self.buffer.as_slice(), &mut self.write_buffer.buffer);
-        self.write_buffer.seqn+=1
+        self.cipher.write(self.buffer.as_slice(), self.write_buffer);
     }
 
     pub fn exit_signal(&mut self, signal_name:SignalName, core_dumped: bool, error_message:&str, language_tag: &str) {
@@ -239,8 +240,7 @@ impl<'a> ChannelBuf<'a> {
         self.buffer.extend_ssh_string(error_message.as_bytes());
         self.buffer.extend_ssh_string(language_tag.as_bytes());
 
-        self.cipher.write(self.write_buffer.seqn, self.buffer.as_slice(), &mut self.write_buffer.buffer);
-        self.write_buffer.seqn+=1
+        self.cipher.write(self.buffer.as_slice(), self.write_buffer);
     }
 }
 
@@ -262,7 +262,7 @@ pub trait Client {
 }
 
 pub trait ValidateKey {
-    fn check_server_key(&self, key:&key::PublicKey) -> bool {
+    fn check_server_key(&self, _:&key::PublicKey) -> bool {
         false
     }
 }
@@ -466,6 +466,8 @@ impl SSHBuffers {
             stream.consume(consumed_len);
             self.read.bytes += consumed_len;
             if self.read.buffer.len() >= 4 + self.read.len {
+                self.read.len = 0;
+                self.read.seqn += 1;
                 return Ok(true);
             }
         }
@@ -741,10 +743,7 @@ fn adjust_window_size(write_buffer:&mut SSHBuffer, cipher:&mut cipher::CipherPai
     buffer.push(msg::CHANNEL_WINDOW_ADJUST);
     buffer.push_u32_be(channel.recipient_channel);
     buffer.push_u32_be(target - channel.sender_window_size);
-    cipher.write(write_buffer.seqn,
-                 buffer.as_slice(),
-                 &mut write_buffer.buffer);
-    write_buffer.seqn += 1;
+    cipher.write(buffer.as_slice(), write_buffer);
     channel.sender_window_size = target;
 }
 

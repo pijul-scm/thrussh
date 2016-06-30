@@ -23,7 +23,6 @@ impl ServerSession {
             kexdh.exchange.client_ephemeral.extend(&payload[5..]);
             try!(kexdh.kex.server_dh(&mut kexdh.exchange, payload))
         };
-        self.buffers.read.clear_incr();
 
         // Then, we fill the write buffer right away, so that we
         // can output it immediately when the time comes.
@@ -58,7 +57,6 @@ impl ServerSession {
         if payload_is_newkeys {
             // Ok, NEWKEYS received, now encrypted.
             self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest)));
-            self.buffers.read.clear_incr();
             Ok(ReturnCode::Ok)
         } else {
             Err(Error::NewKeys)
@@ -432,8 +430,7 @@ impl Encrypted {
                         buffer.clear();
                         negociation::write_kex(keys, buffer);
                         kexinit.exchange.server_kex_init.extend(buffer.as_slice());
-                        self.cipher.write(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
-                        write_buffer.seqn += 1;
+                        self.cipher.write(buffer.as_slice(), write_buffer);
                         kexinit.sent = true;
                         kexinit.exchange.client_kex_init.extend(buf);
 
@@ -499,14 +496,11 @@ impl Encrypted {
                         // Hash signature
                         kexdhdone.key.add_signature(buffer, hash.as_bytes());
                         //
-                        self.cipher.write(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
-                        write_buffer.seqn += 1;
+                        self.cipher.write(buffer.as_slice(), write_buffer);
 
-                        
                         buffer.clear();
                         buffer.push(msg::NEWKEYS);
-                        self.cipher.write(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
-                        write_buffer.seqn += 1;
+                        self.cipher.write(buffer.as_slice(), write_buffer);
 
                         debug!("new keys");
                         let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2, true);

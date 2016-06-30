@@ -33,11 +33,8 @@ impl Encrypted {
         buffer.extend(buffer2.as_slice());
 
         // Send
-        self.cipher.write(write_buffer.seqn,
-                          &(buffer.as_slice())[i0..], // Skip the session id.
-                          &mut write_buffer.buffer);
+        self.cipher.write(&(buffer.as_slice())[i0..], write_buffer); // Skip the session id.
 
-        write_buffer.seqn += 1;
         self.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
         Ok(())
     }
@@ -71,8 +68,7 @@ impl Encrypted {
         };
         if method_ok {
             println!("method ok");
-            self.cipher.write(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
-            write_buffer.seqn += 1;
+            self.cipher.write(buffer.as_slice(), write_buffer);
             self.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
         } else {
             // In this case, the caller should call set_method() to
@@ -96,11 +92,8 @@ impl Encrypted {
         buffer.push_u32_be(config.window_size); // window.
         buffer.push_u32_be(config.maxpacket); // max packet size.
         // Send
-        self.cipher.write(write_buffer.seqn,
-                          buffer.as_slice(),
-                          &mut write_buffer.buffer);
+        self.cipher.write(buffer.as_slice(), write_buffer);
 
-        write_buffer.seqn += 1;
         self.state = Some(EncryptedState::ChannelOpenConfirmation(
             ChannelParameters {
                 recipient_channel: 0,
@@ -124,10 +117,8 @@ impl Encrypted {
                     negociation::write_kex(&config.keys, buffer);
                     kexinit.exchange.client_kex_init.extend(buffer.as_slice());
 
-                    self.cipher.write(buffers.write.seqn, buffer.as_slice(),
-                                      &mut buffers.write.buffer);
+                    self.cipher.write(buffer.as_slice(), &mut buffers.write);
                     
-                    buffers.write.seqn += 1;
                     try!(buffers.write_all(stream));
                     kexinit.sent = true;
                 }
@@ -152,9 +143,7 @@ impl Encrypted {
             Kex::NewKeys(mut newkeys) => {
                 println!("newkeys {:?}", newkeys);
                 if !newkeys.sent {
-                    self.cipher.write(buffers.write.seqn, &[msg::NEWKEYS],
-                                      &mut buffers.write.buffer);
-                    buffers.write.seqn += 1;
+                    self.cipher.write(&[msg::NEWKEYS], &mut buffers.write);
                     try!(buffers.write_all(stream));
                     newkeys.sent = true;
                 }
@@ -182,8 +171,7 @@ impl Encrypted {
         buffer.clear();
         let kex = kexdh.kex.client_dh(&mut kexdh.exchange, buffer);
         
-        self.cipher.write(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
-        write_buffer.seqn += 1;
+        self.cipher.write(buffer.as_slice(), write_buffer);
 
         self.rekey = Some(Kex::KexDhDone(KexDhDone {
             exchange: kexdh.exchange,

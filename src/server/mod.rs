@@ -48,14 +48,6 @@ pub struct ServerSession {
 mod read;
 mod write;
 
-pub enum ReturnCode {
-    Ok,
-    NotEnoughBytes,
-    Disconnect,
-    WrongPacket
-}
-
-
 impl ServerSession {
     pub fn new() -> Self {
         super::SODIUM_INIT.call_once(|| {
@@ -78,7 +70,7 @@ impl ServerSession {
         -> Result<ReturnCode, Error> {
 
         let state = std::mem::replace(&mut self.state, None);
-        // println!("state: {:?}", state);
+        println!("state: {:?}", state);
         match state {
             None => {
                 let mut exchange;
@@ -95,7 +87,6 @@ impl ServerSession {
                 // Preparing the response
                 self.buffers.write.send_ssh_id(config.server_id.as_bytes());
                 exchange.server_id.extend(config.server_id.as_bytes());
-
                 self.state = Some(ServerState::Kex(Kex::KexInit(KexInit {
                     exchange: exchange,
                     algo: None,
@@ -118,7 +109,6 @@ impl ServerSession {
                             kexinit.exchange.client_kex_init.extend(payload);
                         }
                     }
-                    self.buffers.read.clear_incr();
                     self.state = Some(self.buffers.cleartext_write_kex_init(&config.keys, true, kexinit));
                     Ok(ReturnCode::Ok)
                 } else {
@@ -198,7 +188,6 @@ impl ServerSession {
                                     enc.rekey = Some(Kex::KexInit(kexinit))
                                 }
                             }
-                        self.buffers.read.seqn += 1;
                         self.buffers.read.buffer.clear();
                         self.buffers.read.len = 0;
                     },

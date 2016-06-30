@@ -32,7 +32,7 @@ use super::CryptoBuf;
 
 pub trait CipherT {
     fn read<'a, R:BufRead>(&self, stream:&mut R, buffer: &'a mut super::SSHBuffer) -> Result<Option<&'a[u8]>,Error>;
-    fn write(&self, seq:usize, packet:&[u8], buffer:&mut CryptoBuf);
+    fn write(&self, packet:&[u8], buffer:&mut super::SSHBuffer);
 }
 
 impl CipherT for Cipher {
@@ -47,11 +47,11 @@ impl CipherT for Cipher {
             },
         }
     }
-    fn write(&self, seq:usize, packet:&[u8], buffer:&mut CryptoBuf) {
+    fn write(&self, packet:&[u8], buffer:&mut super::SSHBuffer) {
 
         match *self {
             Cipher::Chacha20Poly1305(ref cipher) => {
-                cipher.write(seq, packet, buffer)
+                cipher.write(packet, buffer)
             },
         }
     }
@@ -64,9 +64,9 @@ impl CipherT for CipherPair {
 
         self.remote_to_local.read(stream, buffer)
     }
-    fn write(&self, seq:usize, packet:&[u8], buffer:&mut CryptoBuf) {
+    fn write(&self, packet:&[u8], buffer:&mut super::SSHBuffer) {
 
-        self.local_to_remote.write(seq, packet, buffer)
+        self.local_to_remote.write(packet, buffer)
 
     }
 }

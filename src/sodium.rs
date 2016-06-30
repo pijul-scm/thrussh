@@ -1,4 +1,5 @@
 // Some parts of this module come from sodiumoxide, (c) 2013 Daniel Ashhami, under an MIT licence.
+
 use super::libsodium_sys;
 pub fn init() -> bool {
     unsafe {
