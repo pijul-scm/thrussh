@@ -23,8 +23,6 @@ impl Cipher {
     }
 }
 
-use super::super::CryptoBuf;
-
 impl super::CipherT for Cipher {
 
     fn read<'a, R:BufRead>(&self, stream:&mut R, read_buffer:&'a mut SSHBuffer) -> Result<Option<&'a[u8]>,Error> {

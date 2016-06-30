@@ -290,15 +290,6 @@ impl SSHBuffer {
             seqn:0
         }
     }
-    fn clear(&mut self) {
-        self.len = 0;
-        self.buffer.clear();
-    }
-    fn clear_incr(&mut self) {
-        self.len = 0;
-        self.buffer.clear();
-        self.seqn += 1
-    }
     pub fn read_ssh_id<'a, R: BufRead>(&'a mut self, stream: &'a mut R) -> Result<Option<&'a [u8]>, Error> {
         let i = {
             let buf = try!(stream.fill_buf());
@@ -360,7 +351,7 @@ impl SSHBuffers {
                 }
             }
         }
-        self.write.clear();
+        self.write.buffer.clear();
         self.write.len = 0;
         Ok(true)
     }

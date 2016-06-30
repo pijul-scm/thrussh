@@ -144,7 +144,12 @@ impl<'a> ClientSession<'a> {
                     },
                     Some(EncryptedState::AuthRequestSuccess(auth_request)) => {
                         debug!("auth_request_success");
-                        read_complete = try!(enc.client_auth_request_success(stream, config, auth_request, &self.auth_method, &mut self.buffers, buffer, buffer2));
+                        if let Some(buf) = try!(enc.cipher.read(stream,&mut self.buffers.read)) {
+                            read_complete = true;
+                            try!(enc.client_auth_request_success(buf, config, auth_request, &self.auth_method, &mut self.buffers.write, buffer, buffer2));
+                        } else {
+                            read_complete = false;
+                        }
                     },
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                         if let Some(buf) = try!(enc.cipher.read(stream, &mut self.buffers.read)) {
@@ -173,7 +178,15 @@ impl<'a> ClientSession<'a> {
                         read_complete = false
                     },
                     Some(EncryptedState::ChannelOpenConfirmation(channels)) => {
-                        read_complete = try!(enc.client_channel_open_confirmation(stream, channels, &mut self.buffers.read))
+
+                        if let Some(buf) = try!(enc.cipher.read(stream, &mut self.buffers.read)) {
+                            transport!(buf);
+                            read_complete = true;
+                            try!(enc.client_channel_open_confirmation(buf, channels))
+                        } else {
+                            read_complete = false;
+                            enc.state = Some(EncryptedState::ChannelOpenConfirmation(channels));
+                        }
                     }
                     state => {
                         debug!("read state {:?}", state);

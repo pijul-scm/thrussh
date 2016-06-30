@@ -28,8 +28,6 @@ pub struct CipherPair {
     pub remote_to_local: Cipher,
 }
 
-use super::CryptoBuf;
-
 pub trait CipherT {
     fn read<'a, R:BufRead>(&self, stream:&mut R, buffer: &'a mut super::SSHBuffer) -> Result<Option<&'a[u8]>,Error>;
     fn write(&self, packet:&[u8], buffer:&mut super::SSHBuffer);
