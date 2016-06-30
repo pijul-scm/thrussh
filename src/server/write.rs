@@ -15,11 +15,11 @@ impl ServerSession {
         // http://tools.ietf.org/html/rfc5656#section-4
         self.buffers.write.buffer.extend(b"\0\0\0\0\0");
         self.buffers.write.buffer.push(msg::KEX_ECDH_REPLY);
-        kexdhdone.key.public_host_key.extend_pubkey(&mut self.buffers.write.buffer);
+        kexdhdone.names.key.public_host_key.extend_pubkey(&mut self.buffers.write.buffer);
         // Server ephemeral
         self.buffers.write.buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
         // Hash signature
-        kexdhdone.key.add_signature(&mut self.buffers.write.buffer, hash.as_bytes());
+        kexdhdone.names.key.add_signature(&mut self.buffers.write.buffer, hash.as_bytes());
         //
         complete_packet(&mut self.buffers.write.buffer, 0);
         self.buffers.write.seqn += 1;
@@ -119,29 +119,10 @@ impl Encrypted {
         auth_request.sent_pk_ok = true;
     }
 
-    pub fn write_kexinit(&mut self, keys:&[key::Algorithm], kexinit:&mut KexInit, buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) {
+    pub fn write_kexinit(&mut self, preferred:&negociation::Preferred, kexinit:&mut KexInit, buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) {
         buffer.clear();
-        negociation::write_kex(keys, buffer);
+        negociation::write_kex(preferred, buffer);
         kexinit.exchange.server_kex_init.extend(buffer.as_slice());
         self.cipher.write(buffer.as_slice(), write_buffer);
     }
-
-    /*
-    pub fn server_write_rekey(&mut self, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf, buffers:&mut SSHBuffers, keys:&[key::Algorithm], rekey: Kex) -> Result<(),Error> {
-        match rekey {
-            Kex::KexInit(mut kexinit) => unreachable!(),
-
-            Kex::KexDh(kexinit) => {
-                // Nothing to do here.
-                self.rekey = Some(Kex::KexDh(kexinit))
-            },
-            Kex::NewKeys(n) => {
-                self.rekey = Some(Kex::NewKeys(n));
-            },
-            Kex::KexDhDone(_) => unreachable!() // skipped in the read function
-        }
-        Ok(())
-    }
-     */
-
 }

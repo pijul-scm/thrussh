@@ -11,137 +11,108 @@ use super::mac;
 use super::msg;
 use super::compression;
 use super::CryptoBuf;
+use super::encoding::Reader;
 
-pub type Names = (super::kex::Name, super::key::Algorithm, super::cipher::Name, super::mac::Mac, bool);
+// pub type Names = (super::kex::Name, super::key::Algorithm, super::cipher::Name, super::mac::Mac, bool);
 
-pub trait Named:Sized {
-    fn from_name(&[u8]) -> Option<Self>;
+#[derive(Debug)]
+pub struct Names {
+    pub kex: &'static str,
+    pub key: key::Algorithm,
+    pub cipher: &'static str,
+    pub mac: &'static str,
+    pub ignore_guessed: bool
 }
 
-pub trait Preferred:Sized {
-    fn preferred() -> &'static [&'static str];
+#[derive(Debug)]
+pub struct Preferred {
+    pub kex: &'static [&'static str],
+    pub key: &'static [&'static str],
+    pub cipher: &'static [&'static str],
+    pub mac: &'static [&'static str],
+    pub compression: &'static [&'static str],
 }
 
-fn select<A:Named + 'static>(list:&[u8]) -> Option<A> {
-    for l in list.split(|&x| x == b',') {
-        if let Some(x) = A::from_name(l) {
-            return Some(x)
-        }
-    }
-    None
-}
+pub const PREFERRED: Preferred = Preferred {
+    kex: &[kex::CURVE25519],
+    key: &[key::ED25519],
+    cipher: &[cipher::CHACHA20POLY1305],
+    mac: &["hmac-sha2-256"],
+    compression: &["none"]
+};
 
-fn select_key(list:&[u8], keys:&[key::Algorithm]) -> Option<key::Algorithm> {
-    for l in list.split(|&x| x == b',') {
-        for k in keys {
-            if l == k.name().as_bytes() {
-                return Some(k.clone())
+
+pub trait Select {
+    fn select(a:&'static [&'static str], b:&[u8]) -> Option<&'static str>;
+
+    fn read_kex(buffer:&[u8], keys:&[key::Algorithm], pref: &Preferred) -> Result<Names,Error> {
+        if buffer[0] != msg::KEXINIT {
+            Err(Error::KexInit)
+        } else {
+
+            let mut r = buffer.reader(17);
+            let kex_algorithm = Self::select( pref.kex, try!(r.read_string()) );
+            let key_algorithm = Self::select( pref.key, try!(r.read_string()) )
+                .and_then(|algo| keys.iter().find(|a| a.name() == algo));
+
+            let cipher = Self::select( pref.cipher, try!(r.read_string()) );
+
+            try!(r.read_string()); // SERVER_TO_CLIENT
+            let mac = Self::select( pref.mac, try!(r.read_string()) );
+
+            try!(r.read_string()); // SERVER_TO_CLIENT
+            try!(r.read_string()); // 
+            try!(r.read_string()); // 
+            try!(r.read_string()); // 
+
+            let follows = try!(r.read_byte()) != 0;
+            match (kex_algorithm, key_algorithm, cipher, mac, follows) {
+                (Some(kex), Some(key), Some(cip), Some(mac), fol) => Ok(Names {
+
+                    kex: kex,
+                    key: key.clone(),
+                    cipher:cip,
+                    mac:mac,
+                    ignore_guessed:fol
+
+                }),
+                _ => Err(Error::KexInit)
             }
         }
     }
-    None
 }
 
+pub struct Server;
+pub struct Client;
 
-pub fn read_kex(buffer:&[u8], keys:&[key::Algorithm]) -> Result<Names,Error> {
-    if buffer[0] != msg::KEXINIT {
-        Err(Error::KexInit)
-    } else {
-        const FIELD_KEX_ALGORITHM: usize = 0;
-        const FIELD_KEY_ALGORITHM: usize = 1;
-        const FIELD_CIPHER_CLIENT_TO_SERVER: usize = 2;
-        // const FIELD_CIPHER_SERVER_TO_CLIENT: usize = 3;
-        const FIELD_MAC: usize = 4;
-        const FIELD_FOLLOWS: usize = 9;
-        let mut i = 17;
-        let mut field = 0;
-        let mut kex_algorithm = None;
-        let mut key_algorithm = None;
-        let mut cipher = None;
-        let mut mac = None;
-        let mut follows = None;
-        while field < 10 {
-            assert!(i+3 < buffer.len());
-            let len = BigEndian::read_u32(&buffer[i..]) as usize;
-            if field == FIELD_KEX_ALGORITHM {
-                debug!("kex_algorithms: {:?}", std::str::from_utf8(&buffer[(i+4)..(i+4+len)]));
-                kex_algorithm = select(&buffer[(i+4)..(i+4+len)])
-            } else  if field == FIELD_KEY_ALGORITHM {
-                debug!("key_algorithms: {:?}", std::str::from_utf8(&buffer[(i+4)..(i+4+len)]));
-
-                key_algorithm = select_key(&buffer[(i+4)..(i+4+len)], keys)
-
-            } else  if field == FIELD_CIPHER_CLIENT_TO_SERVER {
-                debug!("ciphers_client_to_server: {:?}", std::str::from_utf8(&buffer[(i+4)..(i+4+len)]));
-                cipher = select(&buffer[(i+4)..(i+4+len)])
-            } else  if field == FIELD_MAC {
-                debug!("mac: {:?}", std::str::from_utf8(&buffer[(i+4)..(i+4+len)]));
-                mac = select(&buffer[(i+4)..(i+4+len)])
-            } else  if field == FIELD_FOLLOWS {
-                debug!("follows: {:?}", buffer[i] != 0);
-                follows = Some(buffer[i] != 0)
+impl Select for Server {
+    fn select(server_list:&'static [&'static str], client_list:&[u8]) -> Option<&'static str> {
+        for c in client_list.split(|&x| x == b',') {
+            for s in server_list {
+                if c == s.as_bytes() {
+                    return Some(s)
+                }
             }
-            i+=4+len;
-            field += 1;
         }
-        match (kex_algorithm, key_algorithm, cipher, mac, follows) {
-            (Some(a), Some(b), Some(c), Some(d), Some(e)) => Ok((a,b,c,d,e)),
-            _ => Err(Error::KexInit)
-        }
+        None
     }
 }
 
-pub fn client_read_kex(buffer:&[u8], keys:&[key::Algorithm]) -> Result<Names,Error> {
-    if buffer[0] != msg::KEXINIT {
-        Err(Error::KexInit)
-    } else {
-        const FIELD_KEX_ALGORITHM: usize = 0;
-        const FIELD_KEY_ALGORITHM: usize = 1;
-        const FIELD_CIPHER_CLIENT_TO_SERVER: usize = 2;
-        // const FIELD_CIPHER_SERVER_TO_CLIENT: usize = 3;
-        const FIELD_MAC: usize = 4;
-        const FIELD_FOLLOWS: usize = 9;
-        let mut i = 17;
-        let mut field = 0;
-        let mut kex_algorithm = None;
-        let mut key_algorithm = None;
-        let mut cipher = None;
-        let mut mac = None;
-        let mut follows = None;
-        while field < 10 {
-            assert!(i+3 < buffer.len());
-            let len = BigEndian::read_u32(&buffer[i..]) as usize;
-            if field == FIELD_KEX_ALGORITHM {
-                debug!("kex_algorithms: {:?}", std::str::from_utf8(&buffer[(i+4)..(i+4+len)]));
-                kex_algorithm = select(&buffer[(i+4)..(i+4+len)])
-            } else  if field == FIELD_KEY_ALGORITHM {
-                debug!("key_algorithms: {:?}", std::str::from_utf8(&buffer[(i+4)..(i+4+len)]));
-
-                key_algorithm = select_key(&buffer[(i+4)..(i+4+len)], keys)
-
-            } else  if field == FIELD_CIPHER_CLIENT_TO_SERVER {
-                debug!("ciphers_client_to_server: {:?}", std::str::from_utf8(&buffer[(i+4)..(i+4+len)]));
-                cipher = select(&buffer[(i+4)..(i+4+len)])
-            } else  if field == FIELD_MAC {
-                debug!("mac: {:?}", std::str::from_utf8(&buffer[(i+4)..(i+4+len)]));
-                mac = select(&buffer[(i+4)..(i+4+len)])
-            } else  if field == FIELD_FOLLOWS {
-                debug!("follows: {:?}", buffer[i] != 0);
-                follows = Some(buffer[i] != 0)
+impl Select for Client {
+    fn select(client_list:&'static [&'static str], server_list:&[u8]) -> Option<&'static str> {
+        for c in client_list {
+            for s in server_list.split(|&x| x == b',') {
+                if s == c.as_bytes() {
+                    return Some(c)
+                }
             }
-            i+=4+len;
-            field += 1;
         }
-        match (kex_algorithm, key_algorithm, cipher, mac, follows) {
-            (Some(a), Some(b), Some(c), Some(d), Some(e)) => Ok((a,b,c,d,e)),
-            _ => Err(Error::KexInit)
-        }
+        None
     }
 }
 
 
-
-pub fn write_kex(keys:&[key::Algorithm], buf:&mut CryptoBuf) {
+pub fn write_kex(prefs:&Preferred, buf:&mut CryptoBuf) {
     // buf.clear();
     buf.push(msg::KEXINIT);
 
@@ -149,17 +120,17 @@ pub fn write_kex(keys:&[key::Algorithm], buf:&mut CryptoBuf) {
     randombytes::into(&mut cookie);
 
     buf.extend(&cookie); // cookie
-    buf.extend_list(kex::Name::preferred().iter()); // kex algo
+    buf.extend_list(prefs.kex.iter()); // kex algo
 
-    buf.extend_list(keys.iter());
+    buf.extend_list(prefs.key.iter());
 
-    buf.extend_list(cipher::Name::preferred().iter()); // cipher client to server
-    buf.extend_list(cipher::Name::preferred().iter()); // cipher server to client
+    buf.extend_list(prefs.cipher.iter()); // cipher client to server
+    buf.extend_list(prefs.cipher.iter()); // cipher server to client
 
-    buf.extend_list(mac::Mac::preferred().iter()); // mac client to server
-    buf.extend_list(mac::Mac::preferred().iter()); // mac server to client
-    buf.extend_list(compression::CompressionAlgorithm::preferred().iter()); // compress client to server
-    buf.extend_list(compression::CompressionAlgorithm::preferred().iter()); // compress server to client
+    buf.extend_list(prefs.mac.iter()); // mac client to server
+    buf.extend_list(prefs.mac.iter()); // mac server to client
+    buf.extend_list(prefs.compression.iter()); // compress client to server
+    buf.extend_list(prefs.compression.iter()); // compress server to client
 
     buf.write_empty_list(); // languages client to server
     buf.write_empty_list(); // languagesserver to client

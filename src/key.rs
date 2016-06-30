@@ -1,11 +1,7 @@
-use super::negociation::{ Named, Preferred };
 use super::{CryptoBuf, Error};
 pub use super::sodium::ed25519;
 
-#[derive(Debug,Clone)]
-pub enum Name {
-    Ed25519 // "ssh-ed25519"
-}
+pub const ED25519:&'static str = "ssh-ed25519";
 
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub enum PublicKey {
@@ -23,11 +19,11 @@ impl PublicKey {
             &PublicKey::Ed25519(ref public_host_key) => {
 
                 buffer.push_u32_be(
-                    (KEY_ED25519.len()
+                    (ED25519.len()
                      + ed25519::PUBLICKEYBYTES
                      + 8) as u32
                 );
-                buffer.extend_ssh_string(KEY_ED25519.as_bytes());
+                buffer.extend_ssh_string(ED25519.as_bytes());
                 buffer.extend_ssh_string(public_host_key.as_bytes());
             }
         }
@@ -47,26 +43,6 @@ pub struct Algorithm {
     pub secret_host_key: SecretKey,
 }
 
-
-pub const KEY_ED25519:&'static str = "ssh-ed25519";
-pub const KEY_ALGORITHMS: &'static [&'static str;1] = &[
-    KEY_ED25519
-];
-
-impl Named for Name {
-    fn from_name(name: &[u8]) -> Option<Self> {
-        if name == KEY_ED25519.as_bytes() {
-            return Some(Name::Ed25519)
-        }
-        None
-    }
-}
-
-impl Preferred for Algorithm {
-    fn preferred() -> &'static [&'static str] {
-        KEY_ALGORITHMS
-    }
-}
 use std::path::Path;
 impl Algorithm {
     pub fn load_keypair_ed25519<P:AsRef<Path>, Q:AsRef<Path>>(public:P, secret:Q) -> Result<Algorithm, Error> {
@@ -88,11 +64,11 @@ impl Algorithm {
                 ed25519::sign_detached(&mut sign, &hash, secret_host_key);
 
                 buffer.push_u32_be(
-                    (KEY_ED25519.len()
+                    (ED25519.len()
                      + ed25519::SIGNATUREBYTES
                      + 8) as u32
                 );
-                buffer.extend_ssh_string(KEY_ED25519.as_bytes());
+                buffer.extend_ssh_string(ED25519.as_bytes());
                 buffer.extend_ssh_string(sign.as_bytes());
             }
         }

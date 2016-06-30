@@ -71,7 +71,7 @@ impl From<rustc_serialize::base64::FromBase64Error> for Error {
 }
 
 mod negociation;
-use negociation::*;
+
 mod msg;
 mod kex;
 
@@ -358,7 +358,7 @@ impl SSHBuffers {
 
     pub fn cleartext_write_kex_init(
         &mut self,
-        keys: &[key::Algorithm],
+        preferred: &negociation::Preferred,
         is_server: bool,
         mut kexinit: KexInit) -> ServerState {
 
@@ -366,7 +366,7 @@ impl SSHBuffers {
             // println!("kexinit");
             let pos = self.write.buffer.len();
             self.write.buffer.extend(b"\0\0\0\0\0");
-            negociation::write_kex(&keys, &mut self.write.buffer);
+            negociation::write_kex(&preferred, &mut self.write.buffer);
 
             {
                 let buf = self.write.buffer.as_slice();
@@ -381,14 +381,10 @@ impl SSHBuffers {
             self.write.seqn += 1;
             kexinit.sent = true;
         }
-        if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
+        if let Some(names) = kexinit.algo {
             ServerState::Kex(Kex::KexDh(KexDh {
                 exchange: kexinit.exchange,
-                kex: kex,
-                key: key,
-                cipher: cipher,
-                mac: mac,
-                follows: follows,
+                names:names,
                 session_id: kexinit.session_id,
             }))
         } else {
@@ -561,12 +557,11 @@ impl KexInit {
         if !self.sent {
             Ok(Kex::KexInit(self))
         } else {
-            if let Some((kex,key,cipher,mac,follows)) = self.algo {
+            if let Some(names) = self.algo {
 
                 Ok(Kex::KexDh(KexDh {
                     exchange:self.exchange,
-                    kex:kex, key:key,
-                    cipher:cipher, mac:mac, follows:follows,
+                    names:names,
                     session_id: self.session_id
                 }))
             } else {
@@ -575,7 +570,7 @@ impl KexInit {
         }
     }
 
-    pub fn rekey(ex:Exchange, algo:Names, session_id:&kex::Digest) -> Self {
+    pub fn rekey(ex:Exchange, algo:negociation::Names, session_id:&kex::Digest) -> Self {
         let mut kexinit = KexInit {
             exchange: ex,
             algo: Some(algo),
@@ -593,23 +588,16 @@ impl KexInit {
 #[derive(Debug)]
 pub struct KexDh {
     exchange: Exchange,
-    kex: kex::Name,
-    key: key::Algorithm,
-    cipher: cipher::Name,
-    mac: Mac,
+    names:negociation::Names,
     session_id: Option<kex::Digest>,
-    follows: bool,
 }
 
 #[derive(Debug)]
 pub struct KexDhDone {
     exchange: Exchange,
     kex: kex::Algorithm,
-    key: key::Algorithm,
-    cipher: cipher::Name,
-    mac: Mac,
     session_id: Option<kex::Digest>,
-    follows: bool,
+    names: negociation::Names
 }
 
 impl KexDhDone {
@@ -618,24 +606,23 @@ impl KexDhDone {
                     buffer: &mut CryptoBuf,
                     buffer2: &mut CryptoBuf,
                     is_server:bool)
-                    -> NewKeys {
+                    -> Result<NewKeys, Error> {
         let session_id = if let Some(session_id) = self.session_id {
             session_id
         } else {
             hash.clone()
         };
         // Now computing keys.
-        let c = self.kex.compute_keys(&session_id, &hash, buffer, buffer2, &mut self.cipher, is_server);
-        NewKeys {
+        let c = try!(self.kex.compute_keys(&session_id, &hash, buffer, buffer2, &mut self.names.cipher, is_server));
+        Ok(NewKeys {
             exchange: self.exchange,
+            names: self.names,
             kex: self.kex,
-            key: self.key,
             cipher: c,
-            mac: self.mac,
             session_id: session_id,
             received: false,
             sent: false
-        }
+        })
     }
 
     fn client_compute_exchange_hash<C:ValidateKey>(&mut self, client:&C, payload:&[u8], buffer:&mut CryptoBuf) -> Result<kex::Digest, Error> {
@@ -682,10 +669,9 @@ impl KexDhDone {
 #[derive(Debug)]
 pub struct NewKeys {
     exchange: Exchange,
+    names: negociation::Names,
     kex: kex::Algorithm,
-    key: key::Algorithm,
     cipher: cipher::CipherPair,
-    mac: Mac,
     session_id: kex::Digest,
     received:bool,
     sent:bool
@@ -696,9 +682,9 @@ impl NewKeys {
         Encrypted {
             exchange: Some(self.exchange),
             kex: self.kex,
-            key: self.key,
+            key: self.names.key,
             cipher: self.cipher,
-            mac: self.mac,
+            mac: self.names.mac,
             session_id: self.session_id,
             state: Some(state),
             rekey: None,
@@ -713,7 +699,7 @@ pub struct Encrypted {
     kex: kex::Algorithm,
     key: key::Algorithm,
     cipher: cipher::CipherPair,
-    mac: Mac,
+    mac: &'static str,
     session_id: kex::Digest,
     state: Option<EncryptedState>,
     rekey: Option<Kex>,

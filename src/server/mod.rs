@@ -1,7 +1,7 @@
 use std::io::{Write, BufRead};
 use time;
 use std;
-
+use super::negociation::{Preferred,PREFERRED, Select};
 use super::*;
 pub use super::auth::*;
 use super::msg;
@@ -18,7 +18,8 @@ pub struct Config<Auth> {
     pub rekey_read_limit: usize,
     pub rekey_time_limit_s: f64,
     pub window_size: u32,
-    pub maximum_packet_size: u32
+    pub maximum_packet_size: u32,
+    pub preferred: Preferred
 }
 
 impl<A> Config<A> {
@@ -36,6 +37,7 @@ impl<A> Config<A> {
             rekey_write_limit: 1<<30, // 1 Gb
             rekey_read_limit: 1<<30, // 1Gb
             rekey_time_limit_s: 3600.0,
+            preferred: PREFERRED
         }
     }
 }
@@ -105,11 +107,11 @@ impl ServerSession {
                         transport!(payload);
                         if kexinit.algo.is_none() {
                             // read algo from packet.
-                            kexinit.algo = Some(try!(super::negociation::read_kex(payload, &config.keys)));
+                            kexinit.algo = Some(try!(super::negociation::Server::read_kex(payload, &config.keys, &config.preferred)));
                             kexinit.exchange.client_kex_init.extend(payload);
                         }
                     }
-                    self.state = Some(self.buffers.cleartext_write_kex_init(&config.keys, true, kexinit));
+                    self.state = Some(self.buffers.cleartext_write_kex_init(&config.preferred, true, kexinit));
                     Ok(ReturnCode::Ok)
                 } else {
                     self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
@@ -145,7 +147,7 @@ impl ServerSession {
 
                         transport!(buf); // return in case of a transport layer packet.
                         
-                        let rek = try!(enc.server_read_rekey(buf, &config.keys, buffer, buffer2, &mut self.buffers.write));
+                        let rek = try!(enc.server_read_rekey(buf, config, buffer, buffer2, &mut self.buffers.write));
                         if rek && enc.rekey.is_none() && buf[0] == msg::NEWKEYS {
                             // rekeying is finished.
                             (ReturnCode::Ok, true)
@@ -184,7 +186,7 @@ impl ServerSession {
                                     kexinit.exchange.server_ephemeral.clear();
 
                                     debug!("sending kexinit");
-                                    enc.write_kexinit(&config.keys, &mut kexinit, buffer, &mut self.buffers.write);
+                                    enc.write_kexinit(&config.preferred, &mut kexinit, buffer, &mut self.buffers.write);
                                     enc.rekey = Some(Kex::KexInit(kexinit))
                                 }
                             }

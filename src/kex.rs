@@ -1,6 +1,5 @@
 use byteorder::{ByteOrder,BigEndian};
 
-use super::negociation::{ Named, Preferred };
 use super::{ Error };
 use super::msg;
 use std;
@@ -24,27 +23,6 @@ impl Digest {
 }
 
 #[derive(Debug)]
-pub enum Algorithm {
-    Curve25519(Curve25519) // "curve25519-sha256@libssh.org"
-}
-
-#[derive(Debug)]
-pub enum Name {
-    Curve25519 // "curve25519-sha256@libssh.org"
-}
-
-const KEX_CURVE25519:&'static str = "curve25519-sha256@libssh.org";
-
-impl Named for Name {
-    fn from_name(name: &[u8]) -> Option<Self> {
-        if name == KEX_CURVE25519.as_bytes() {
-            return Some(Name::Curve25519)
-        }
-        None
-    }
-}
-
-#[derive(Debug)]
 pub struct Curve25519 {
     local_pubkey: curve25519::GroupElement,
     local_secret: curve25519::Scalar,
@@ -52,24 +30,21 @@ pub struct Curve25519 {
     shared_secret: Option<curve25519::GroupElement>,
 }
 
-const KEX_ALGORITHMS: &'static [&'static str;1] = &[
-    KEX_CURVE25519
-];
-
-impl Preferred for Name {
-    fn preferred() -> &'static [&'static str] {
-        KEX_ALGORITHMS
-    }
+#[derive(Debug)]
+pub enum Algorithm {
+    Curve25519(Curve25519) // "curve25519-sha256@libssh.org"
 }
 
 
-impl Name {
-    
-    pub fn server_dh(&mut self, exchange:&mut super::Exchange, payload:&[u8]) -> Result<Algorithm,Error> {
+pub const CURVE25519:&'static str = "curve25519-sha256@libssh.org";
 
-        match self {
+impl Algorithm {
 
-            &mut Name::Curve25519 if payload[0] == msg::KEX_ECDH_INIT => {
+    pub fn server_dh(name:&str, exchange:&mut super::Exchange, payload:&[u8]) -> Result<Algorithm,Error> {
+
+        match name {
+
+            CURVE25519 if payload[0] == msg::KEX_ECDH_INIT => {
 
                 let client_pubkey = {
                     let pubkey_len = BigEndian::read_u32(&payload[1..]) as usize;
@@ -110,11 +85,11 @@ impl Name {
             _ => Err(Error::Kex)
         }
     }
-    pub fn client_dh(&mut self, exchange:&mut super::Exchange, buf:&mut CryptoBuf) -> Algorithm {
+    pub fn client_dh(name:&str, exchange:&mut super::Exchange, buf:&mut CryptoBuf) -> Result<Algorithm,Error> {
 
-        match self {
+        match name {
 
-            &mut Name::Curve25519 => {
+            CURVE25519 => {
 
                 let client_secret = {
                     let mut secret = [0;curve25519::SCALARBYTES];
@@ -138,20 +113,20 @@ impl Name {
                 buf.push(msg::KEX_ECDH_INIT);
                 buf.extend_ssh_string(client_pubkey.as_bytes());
 
-
-                Algorithm::Curve25519(Curve25519 {
+                
+                Ok(Algorithm::Curve25519(Curve25519 {
                     local_pubkey: client_pubkey,
                     local_secret: client_secret,
                     remote_pubkey: None,
                     shared_secret: None
-                })
+                }))
             },
-            // _ => Err(Error::Kex)
+            _ => Err(Error::Kex)
         }
     }
-}
 
-impl Algorithm {
+
+
     pub fn compute_shared_secret(&mut self, remote_pubkey:&[u8]) -> Result<(), Error> {
 
         match self {
@@ -224,9 +199,9 @@ impl Algorithm {
                         exchange_hash:&Digest,
                         buffer:&mut CryptoBuf,
                         key:&mut CryptoBuf,
-                        cipher:&super::cipher::Name,
+                        cipher:&'static str,
                         is_server:bool
-    ) -> super::cipher::CipherPair {
+    ) -> Result<super::cipher::CipherPair, Error> {
         match self {
             &Algorithm::Curve25519(ref kex) => {
 
@@ -264,22 +239,22 @@ impl Algorithm {
                 };
                 
                 match cipher {
-                    &super::cipher::Name::Chacha20Poly1305 => {
+                    super::cipher::CHACHA20POLY1305 => {
 
                         let client_to_server = {
-                            compute_key(b'C', key, cipher.key_size());
+                            compute_key(b'C', key, super::cipher::key_size(cipher));
                             super::cipher::Cipher::Chacha20Poly1305 (
                                 super::cipher::chacha20poly1305::Cipher::init(key.as_slice())
                             )
                         };
                         let server_to_client = {
-                            compute_key(b'D', key, cipher.key_size());
+                            compute_key(b'D', key, super::cipher::key_size(cipher));
                             super::cipher::Cipher::Chacha20Poly1305 (
                                 super::cipher::chacha20poly1305::Cipher::init(key.as_slice())
                             )
                         };
                         
-                        if is_server {
+                        Ok(if is_server {
                             super::cipher::CipherPair {
                                 local_to_remote: server_to_client,
                                 remote_to_local: client_to_server,
@@ -289,8 +264,9 @@ impl Algorithm {
                                 local_to_remote: client_to_server,
                                 remote_to_local: server_to_client,
                             }
-                        }
-                    }
+                        })
+                    },
+                    _ => Err(Error::DH)
                 }
             },
             // _ => unimplemented!()

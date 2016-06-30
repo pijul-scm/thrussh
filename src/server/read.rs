@@ -5,6 +5,7 @@ use super::super::msg;
 use super::super::negociation;
 use super::super::encoding::Reader;
 use super::super::cipher::CipherT;
+use negociation::Select;
 
 use rand::{thread_rng, Rng};
 use std;
@@ -21,7 +22,7 @@ impl ServerSession {
             debug!("payload = {:?}", payload);
             assert!(payload[0] == msg::KEX_ECDH_INIT);
             kexdh.exchange.client_ephemeral.extend(&payload[5..]);
-            try!(kexdh.kex.server_dh(&mut kexdh.exchange, payload))
+            try!(super::super::kex::Algorithm::server_dh(kexdh.names.kex, &mut kexdh.exchange, payload))
         };
 
         // Then, we fill the write buffer right away, so that we
@@ -29,20 +30,17 @@ impl ServerSession {
         let kexdhdone = KexDhDone {
             exchange: kexdh.exchange,
             kex: kex,
-            key: kexdh.key,
-            cipher: kexdh.cipher,
-            mac: kexdh.mac,
-            follows: kexdh.follows,
+            names: kexdh.names,
             session_id: kexdh.session_id,
         };
 
-        let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key.public_host_key,
+        let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.names.key.public_host_key,
                                                             &kexdhdone.exchange,
                                                             buffer));
         self.server_cleartext_kex_ecdh_reply(&kexdhdone, &hash);
         self.server_cleartext_send_newkeys();
 
-        self.state = Some(ServerState::Kex(Kex::NewKeys(kexdhdone.compute_keys(hash, buffer, buffer2, true))));
+        self.state = Some(ServerState::Kex(Kex::NewKeys(try!(kexdhdone.compute_keys(hash, buffer, buffer2, true)))));
         // self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
         Ok(ReturnCode::Ok)
     }
@@ -385,31 +383,27 @@ impl Encrypted {
         Ok(())
     }
 
-    pub fn server_read_rekey(&mut self, buf:&[u8], keys:&[key::Algorithm], buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<bool, Error> {
+    pub fn server_read_rekey<A>(&mut self, buf:&[u8], config:&super::Config<A>, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<bool, Error> {
         debug!("server_read_rekey {:?}", buf);
         if buf[0] == msg::KEXINIT {
             match std::mem::replace(&mut self.rekey, None) {
                 Some(Kex::KexInit(mut kexinit)) => {
                     debug!("received KEXINIT");
                     if kexinit.algo.is_none() {
-                        kexinit.algo = Some(try!(negociation::read_kex(buf, keys)));
+                        kexinit.algo = Some(try!(negociation::Server::read_kex(buf, &config.keys, &config.preferred)));
                     }
                     kexinit.exchange.client_kex_init.extend(buf);
 
                     if !kexinit.sent {
                         debug!("sending kexinit");
-                        self.write_kexinit(keys, &mut kexinit, buffer, write_buffer);
+                        self.write_kexinit(&config.preferred, &mut kexinit, buffer, write_buffer);
                         kexinit.sent = true;
                     }
-                    if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
+                    if let Some(names) = kexinit.algo {
                         debug!("rekey ok");
                         self.rekey = Some(Kex::KexDh(KexDh {
                             exchange: kexinit.exchange,
-                            kex: kex,
-                            key: key,
-                            cipher: cipher,
-                            mac: mac,
-                            follows: follows,
+                            names: names,
                             session_id: kexinit.session_id,
                         }))
                     } else {
@@ -423,26 +417,22 @@ impl Encrypted {
                     if let Some(exchange) = std::mem::replace(&mut self.exchange, None) {
                         let mut kexinit = KexInit::rekey(
                             exchange,
-                            try!(negociation::read_kex(buf, &keys)),
+                            try!(negociation::Server::read_kex(buf, &config.keys, &config.preferred)),
                             &self.session_id
                         );
                         debug!("sending kexinit");
                         buffer.clear();
-                        negociation::write_kex(keys, buffer);
+                        negociation::write_kex(&config.preferred, buffer);
                         kexinit.exchange.server_kex_init.extend(buffer.as_slice());
                         self.cipher.write(buffer.as_slice(), write_buffer);
                         kexinit.sent = true;
                         kexinit.exchange.client_kex_init.extend(buf);
 
-                        if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
+                        if let Some(names) = kexinit.algo {
                             debug!("rekey ok");
                             self.rekey = Some(Kex::KexDh(KexDh {
                                 exchange: kexinit.exchange,
-                                kex: kex,
-                                key: key,
-                                cipher: cipher,
-                                mac: mac,
-                                follows: follows,
+                                names: names,
                                 session_id: kexinit.session_id,
                             }))
                         } else {
@@ -472,29 +462,27 @@ impl Encrypted {
                         debug!("KexDH");
                         let kex = {
                             kexdh.exchange.client_ephemeral.extend(&buf[5..]);
-                            try!(kexdh.kex.server_dh(&mut kexdh.exchange, buf))
+                            try!(super::super::kex::Algorithm::server_dh(kexdh.names.kex, &mut kexdh.exchange, buf))
                         };
                         let kexdhdone = KexDhDone {
                             exchange: kexdh.exchange,
+                            names: kexdh.names,
                             kex: kex,
-                            key: kexdh.key,
-                            cipher: kexdh.cipher,
-                            mac: kexdh.mac,
-                            follows: kexdh.follows,
                             session_id: kexdh.session_id,
                         };
-                        let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key.public_host_key,
-                                                                            &kexdhdone.exchange,
-                                                                            buffer));
+                        let hash = try!(kexdhdone.kex.compute_exchange_hash(
+                            &kexdhdone.names.key.public_host_key,
+                            &kexdhdone.exchange,
+                            buffer));
 
                         // http://tools.ietf.org/html/rfc5656#section-4
                         buffer.clear();
                         buffer.push(msg::KEX_ECDH_REPLY);
-                        kexdhdone.key.public_host_key.extend_pubkey(buffer);
+                        kexdhdone.names.key.public_host_key.extend_pubkey(buffer);
                         // Server ephemeral
                         buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
                         // Hash signature
-                        kexdhdone.key.add_signature(buffer, hash.as_bytes());
+                        kexdhdone.names.key.add_signature(buffer, hash.as_bytes());
                         //
                         self.cipher.write(buffer.as_slice(), write_buffer);
 
@@ -503,7 +491,7 @@ impl Encrypted {
                         self.cipher.write(buffer.as_slice(), write_buffer);
 
                         debug!("new keys");
-                        let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2, true);
+                        let new_keys = try!(kexdhdone.compute_keys(hash, buffer, buffer2, true));
                         self.rekey = Some(Kex::NewKeys(new_keys));
                         Ok(true)
 
@@ -513,9 +501,9 @@ impl Encrypted {
                         if buf[0] == msg::NEWKEYS {
                             self.exchange = Some(kexinit.exchange);
                             self.kex = kexinit.kex;
-                            self.key = kexinit.key;
+                            self.key = kexinit.names.key;
                             self.cipher = kexinit.cipher;
-                            self.mac = kexinit.mac;
+                            self.mac = kexinit.names.mac;
                         } else {
                             self.rekey = Some(Kex::NewKeys(kexinit))
                         }

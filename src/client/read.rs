@@ -5,9 +5,10 @@ use super::super::cipher::CipherT;
 use std::io::BufRead;
 use auth::AuthRequest;
 use encoding::Reader;
+use negociation::{Select,Preferred};
 
 impl<'a> super::ClientSession<'a> {
-    pub fn client_read_server_id<R:BufRead>(&mut self, stream:&mut R, mut exchange:Exchange, keys:&[key::Algorithm]) -> Result<ReturnCode, Error> {
+    pub fn client_read_server_id<R:BufRead>(&mut self, stream:&mut R, mut exchange:Exchange, preferred:&Preferred) -> Result<ReturnCode, Error> {
         let read_server_id = {
             let server_id = try!(self.buffers.read.read_ssh_id(stream));
             println!("server_id = {:?}", server_id);
@@ -27,7 +28,7 @@ impl<'a> super::ClientSession<'a> {
                 session_id: None,
             };
             self.state = Some(self.buffers.cleartext_write_kex_init(
-                keys,
+                preferred,
                 false, // is_server
                 kexinit));
             Ok(ReturnCode::Ok)
@@ -37,14 +38,14 @@ impl<'a> super::ClientSession<'a> {
         }
 
     }
-    pub fn client_kexinit(&mut self, mut kexinit:KexInit, keys:&[key::Algorithm]) -> Result<ReturnCode, Error> {
+    pub fn client_kexinit(&mut self, mut kexinit:KexInit, keys:&[key::Algorithm], pref:&negociation::Preferred) -> Result<ReturnCode, Error> {
         // Have we determined the algorithm yet?
         if kexinit.algo.is_none() {
             {
                 let payload = self.buffers.get_current_payload();
                 transport!(payload);
                 if payload[0] == msg::KEXINIT {
-                    kexinit.algo = Some(try!(negociation::client_read_kex(payload, keys)));
+                    kexinit.algo = Some(try!(negociation::Client::read_kex(payload, keys, pref)));
                     kexinit.exchange.server_kex_init.extend(payload);
                 } else {
                     println!("unknown packet, expecting KEXINIT, received {:?}", payload);
@@ -52,21 +53,18 @@ impl<'a> super::ClientSession<'a> {
             }
         }
 
-        if let Some((mut kex, key, cipher, mac, follows)) = kexinit.algo {
+        if let Some(names) = kexinit.algo {
 
             self.buffers.write.buffer.extend(b"\0\0\0\0\0");
             ////
-            let kex = kex.client_dh(&mut kexinit.exchange, &mut self.buffers.write.buffer);
+            let kex = try!(super::super::kex::Algorithm::client_dh(names.kex, &mut kexinit.exchange, &mut self.buffers.write.buffer));
 
             super::super::complete_packet(&mut self.buffers.write.buffer, 0);
             self.buffers.write.seqn += 1;
             self.state = Some(ServerState::Kex(Kex::KexDhDone(KexDhDone {
                 exchange: kexinit.exchange,
+                names: names,
                 kex: kex,
-                key: key,
-                cipher: cipher,
-                mac: mac,
-                follows: follows,
                 session_id: kexinit.session_id,
             })));
         } else {
@@ -87,7 +85,7 @@ impl<'a> super::ClientSession<'a> {
             }
             try!(kexdhdone.client_compute_exchange_hash(client, payload, buffer))
         };
-        let mut newkeys = kexdhdone.compute_keys(hash, buffer, buffer2, false);
+        let mut newkeys = try!(kexdhdone.compute_keys(hash, buffer, buffer2, false));
 
         debug!("sending NEWKEYS");
         self.buffers.write.buffer.extend(b"\0\0\0\0\0");
@@ -128,25 +126,21 @@ impl<'a> super::ClientSession<'a> {
 
 impl Encrypted {
 
-    pub fn client_rekey<C:ValidateKey>(&mut self, client:&C, buf:&[u8], rekey:Kex, keys:&[key::Algorithm], buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<bool, Error> {
+    pub fn client_rekey<C:ValidateKey>(&mut self, client:&C, buf:&[u8], rekey:Kex, config:&super::Config, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<bool, Error> {
         match rekey {
             Kex::KexInit(mut kexinit) => {
 
                 if buf[0] == msg::KEXINIT {
                     debug!("received KEXINIT");
                     if kexinit.algo.is_none() {
-                        kexinit.algo = Some(try!(negociation::client_read_kex(buf, keys)));
+                        kexinit.algo = Some(try!(negociation::Client::read_kex(buf, &config.keys, &config.preferred)));
                         kexinit.exchange.server_kex_init.extend(buf);
                     }
                     if kexinit.sent {
-                        if let Some((kex, key, cipher, mac, follows)) = kexinit.algo {
+                        if let Some(names) = kexinit.algo {
                             self.rekey = Some(Kex::KexDh(KexDh {
                                 exchange: kexinit.exchange,
-                                kex: kex,
-                                key: key,
-                                cipher: cipher,
-                                mac: mac,
-                                follows: follows,
+                                names:names,
                                 session_id: kexinit.session_id,
                             }))
                         } else {
@@ -162,7 +156,7 @@ impl Encrypted {
             Kex::KexDhDone(mut kexdhdone) => {
                 if buf[0] == msg::KEX_ECDH_REPLY {
                     let hash = try!(kexdhdone.client_compute_exchange_hash(client, buf, buffer));
-                    let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2, false);
+                    let new_keys = try!(kexdhdone.compute_keys(hash, buffer, buffer2, false));
                     self.rekey = Some(Kex::NewKeys(new_keys));
                 } else {
                     self.rekey = Some(Kex::KexDhDone(kexdhdone))
@@ -179,9 +173,9 @@ impl Encrypted {
 
                         self.exchange = Some(newkeys.exchange);
                         self.kex = newkeys.kex;
-                        self.key = newkeys.key;
+                        self.key = newkeys.names.key;
                         self.cipher = newkeys.cipher;
-                        self.mac = newkeys.mac;
+                        self.mac = newkeys.names.mac;
                         return Ok(true)
                     }
                 } else {

@@ -4,6 +4,7 @@ use super::key;
 use super::msg;
 use super::auth;
 use super::cipher::CipherT;
+use super::negociation;
 use std::io::{Write,BufRead};
 use time;
 use ReturnCode;
@@ -12,6 +13,7 @@ mod write;
 // use self::write::*;
 mod read;
 // use self::read::*;
+use negociation::Select;
 
 #[derive(Debug)]
 pub struct Config {
@@ -21,7 +23,8 @@ pub struct Config {
     pub rekey_read_limit: usize,
     pub rekey_time_limit_s: f64,
     pub window_size: u32,
-    pub maxpacket: u32
+    pub maxpacket: u32,
+    pub preferred: negociation::Preferred
 }
 
 impl std::default::Default for Config {
@@ -35,7 +38,8 @@ impl std::default::Default for Config {
             rekey_read_limit: 1<<30, // 1 Gb
             rekey_time_limit_s: 3600.0,
             window_size:200000,
-            maxpacket:200000
+            maxpacket:200000,
+            preferred: negociation::PREFERRED
         }
     }
 }
@@ -79,16 +83,16 @@ impl<'a> ClientSession<'a> {
                 self.buffers.write.send_ssh_id(config.client_id.as_bytes());
                 exchange.client_id.extend(config.client_id.as_bytes());
                 //
-                self.client_read_server_id(stream, exchange, &config.keys)
+                self.client_read_server_id(stream, exchange, &config.preferred)
             },
             Some(ServerState::VersionOk(exchange)) => {
                 // We've sent our id, and are waiting for the server's id.
-                self.client_read_server_id(stream, exchange, &config.keys)
+                self.client_read_server_id(stream, exchange, &config.preferred)
             },
             Some(ServerState::Kex(Kex::KexInit(kexinit))) => {
                 try!(self.buffers.set_clear_len(stream));
                 if try!(self.buffers.read(stream)) {
-                    self.client_kexinit(kexinit, &config.keys)
+                    self.client_kexinit(kexinit, &config.keys, &config.preferred)
                 } else {
                     self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
                     Ok(ReturnCode::NotEnoughBytes)
@@ -198,14 +202,14 @@ impl<'a> ClientSession<'a> {
                             println!("msg: {:?} {:?}", buf, enc.rekey);
                             match std::mem::replace(&mut enc.rekey, None) {
                                 Some(rekey) => {
-                                    is_newkeys = try!(enc.client_rekey(client, buf, rekey, &config.keys, buffer, buffer2))
+                                    is_newkeys = try!(enc.client_rekey(client, buf, rekey, &config, buffer, buffer2))
                                 }
                                 None if buf[0] == msg::KEXINIT => {
                                     if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
                                         // The server is initiating a rekeying.
                                         let mut kexinit = KexInit::rekey(
                                             exchange,
-                                            try!(super::negociation::read_kex(buf, &config.keys)),
+                                            try!(super::negociation::Client::read_kex(buf, &config.keys, &config.preferred)),
                                             &enc.session_id
                                         );
                                         kexinit.exchange.server_kex_init.extend(buf);
@@ -450,13 +454,13 @@ impl<'a> ClientSession<'a> {
                         } else {
                             enc.exchange = Some(newkeys.exchange);
                             enc.kex = newkeys.kex;
-                            enc.key = newkeys.key;
+                            enc.key = newkeys.names.key;
                             enc.cipher = newkeys.cipher;
-                            enc.mac = newkeys.mac;
+                            enc.mac = newkeys.names.mac;
                         }
                     },
                     Some(Kex::KexDh(kexdh)) => {
-                        enc.client_write_kexdh(buffer, &mut self.buffers.write, kexdh);
+                        try!(enc.client_write_kexdh(buffer, &mut self.buffers.write, kexdh));
                         try!(self.buffers.write_all(stream));
                     }
                     x => enc.rekey = x
