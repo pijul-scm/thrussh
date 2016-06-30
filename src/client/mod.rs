@@ -58,7 +58,7 @@ impl<'a> ClientSession<'a> {
         }
     }
     // returns whether a complete packet has been read.
-    pub fn read<R: BufRead, C:super::Client>(
+    pub fn read<R: BufRead, C:super::Client + super::ValidateKey>(
         &mut self,
         config: &Config,
         client: &mut C,
@@ -92,7 +92,7 @@ impl<'a> ClientSession<'a> {
                 self.state = Some(ServerState::Kex(Kex::KexDh(kexdh)));
                 Ok(true)
             }
-            Some(ServerState::Kex(Kex::KexDhDone(kexdhdone))) => self.client_kexdhdone(stream, kexdhdone, buffer, buffer2),
+            Some(ServerState::Kex(Kex::KexDhDone(kexdhdone))) => self.client_kexdhdone(client, stream, kexdhdone, buffer, buffer2),
             Some(ServerState::Kex(Kex::NewKeys(newkeys))) => self.client_newkeys(stream, buffer, newkeys),
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("encrypted state");
@@ -146,7 +146,7 @@ impl<'a> ClientSession<'a> {
                             println!("msg: {:?} {:?}", buf, enc.rekey);
                             match std::mem::replace(&mut enc.rekey, None) {
                                 Some(rekey) => {
-                                    is_newkeys = try!(enc.client_rekey(buf, rekey, &config.keys, buffer, buffer2))
+                                    is_newkeys = try!(enc.client_rekey(client, buf, rekey, &config.keys, buffer, buffer2))
                                 }
                                 None if buf[0] == msg::KEXINIT => {
                                     if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {

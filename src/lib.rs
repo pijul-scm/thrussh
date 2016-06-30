@@ -45,6 +45,7 @@ pub enum Error {
     HUP,
     IndexOutOfBounds,
     Utf8(std::str::Utf8Error),
+    UnknownKey,
     IO(std::io::Error),
 }
 
@@ -116,6 +117,13 @@ pub trait Client {
         Ok(())
     }
 }
+
+pub trait ValidateKey {
+    fn check_server_key(&self, key:&key::PublicKey) -> bool {
+        false
+    }
+}
+
 #[derive(Debug)]
 pub struct SSHBuffers {
     read: SSHBuffer,
@@ -492,18 +500,21 @@ impl KexDhDone {
         }
     }
 
-    fn client_compute_exchange_hash(&mut self, payload:&[u8], buffer:&mut CryptoBuf) -> Result<kex::Digest, Error> {
+    fn client_compute_exchange_hash<C:ValidateKey>(&mut self, client:&C, payload:&[u8], buffer:&mut CryptoBuf) -> Result<kex::Digest, Error> {
         assert!(payload[0] == msg::KEX_ECDH_REPLY);
         let mut reader = payload.reader(1);
 
-        let pubkey = try!(reader.read_string());
+        let pubkey = try!(reader.read_string()); // server public key.
+        let pubkey = try!(read_public_key(pubkey));
+        if ! client.check_server_key(&pubkey) {
+            return Err(Error::UnknownKey)
+        }
         let server_ephemeral = try!(reader.read_string());
         self.exchange.server_ephemeral.extend(server_ephemeral);
         let signature = try!(reader.read_string());
 
         try!(self.kex.compute_shared_secret(&self.exchange.server_ephemeral));
 
-        let pubkey = try!(read_public_key(pubkey));
         let hash = try!(self.kex.compute_exchange_hash(&pubkey,
                                                        &self.exchange,
                                                        buffer));
@@ -523,8 +534,8 @@ impl KexDhDone {
 
             }
         };
-        println!("signature = {:?}", signature);
-        println!("exchange = {:?}", self.exchange);
+        debug!("signature = {:?}", signature);
+        debug!("exchange = {:?}", self.exchange);
         Ok(hash)
     }
 

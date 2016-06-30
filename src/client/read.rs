@@ -85,7 +85,7 @@ impl<'a> super::ClientSession<'a> {
 
     }
 
-    pub fn client_kexdhdone<R:BufRead>(&mut self, stream:&mut R, mut kexdhdone:KexDhDone, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<bool, Error> {
+    pub fn client_kexdhdone<R:BufRead, C:ValidateKey>(&mut self, client:&C, stream:&mut R, mut kexdhdone:KexDhDone, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<bool, Error> {
         debug!("kexdhdone");
         // We've sent ECDH_INIT, waiting for ECDH_REPLY
         if self.buffers.read.len == 0 {
@@ -93,8 +93,14 @@ impl<'a> super::ClientSession<'a> {
         }
 
         if try!(self.buffers.read(stream)) {
-
-            let hash = try!(kexdhdone.client_compute_exchange_hash(self.buffers.get_current_payload(), buffer));
+            let hash = {
+                let payload = self.buffers.get_current_payload();
+                if payload[0] != msg::KEX_ECDH_REPLY {
+                    self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
+                    return Ok(true)
+                }
+                try!(kexdhdone.client_compute_exchange_hash(client, payload, buffer))
+            };
             let mut newkeys = kexdhdone.compute_keys(hash, buffer, buffer2);
 
             self.buffers.read.seqn += 1;
@@ -110,7 +116,6 @@ impl<'a> super::ClientSession<'a> {
             self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
 
             Ok(true)
-
         } else {
             self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
             Ok(false)
@@ -159,7 +164,7 @@ impl<'a> super::ClientSession<'a> {
 
 impl Encrypted {
 
-    pub fn client_rekey(&mut self, buf:&[u8], rekey:Kex, keys:&[key::Algorithm], buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<bool, Error> {
+    pub fn client_rekey<C:ValidateKey>(&mut self, client:&C, buf:&[u8], rekey:Kex, keys:&[key::Algorithm], buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<bool, Error> {
         match rekey {
             Kex::KexInit(mut kexinit) => {
 
@@ -192,7 +197,7 @@ impl Encrypted {
             },
             Kex::KexDhDone(mut kexdhdone) => {
                 if buf[0] == msg::KEX_ECDH_REPLY {
-                    let hash = try!(kexdhdone.client_compute_exchange_hash(buf, buffer));
+                    let hash = try!(kexdhdone.client_compute_exchange_hash(client, buf, buffer));
                     let new_keys = kexdhdone.compute_keys(hash, buffer, buffer2);
                     self.rekey = Some(Kex::NewKeys(new_keys));
                 } else {
