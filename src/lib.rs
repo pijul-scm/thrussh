@@ -89,6 +89,19 @@ mod encoding;
 use encoding::*;
 
 pub mod auth;
+macro_rules! transport {
+    ( $x:expr ) => {
+        {
+            match $x[0] {
+                msg::DISCONNECT => return Ok(ReturnCode::Disconnect),
+                msg::IGNORE => return Ok(ReturnCode::Ok),
+                msg::UNIMPLEMENTED => return Ok(ReturnCode::Ok),
+                msg::DEBUG => return Ok(ReturnCode::Ok),
+                _ => {}
+            }
+        }
+    };
+}
 
 pub mod server;
 pub mod client;
@@ -393,14 +406,15 @@ impl SSHBuffers {
 
     }
     fn set_clear_len<R: BufRead>(&mut self, stream: &mut R) -> Result<(), Error> {
-        debug_assert!(self.read.len == 0);
-        // Packet lengths are always multiples of 8, so is a StreamBuf.
-        // Therefore, this can never block.
-        self.read.buffer.clear();
-        try!(self.read.buffer.read(4, stream));
+        if self.read.len == 0 {
+            // Packet lengths are always multiples of 8, so is a StreamBuf.
+            // Therefore, this can never block.
+            self.read.buffer.clear();
+            try!(self.read.buffer.read(4, stream));
 
-        self.read.len = self.read.buffer.read_u32_be(0) as usize;
-        // println!("clear_len: {:?}", self.read_len);
+            self.read.len = self.read.buffer.read_u32_be(0) as usize;
+            // println!("clear_len: {:?}", self.read_len);
+        }
         Ok(())
     }
 

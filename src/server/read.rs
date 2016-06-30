@@ -8,104 +8,60 @@ use super::super::cipher::CipherT;
 
 use rand::{thread_rng, Rng};
 use std;
-use std::io::BufRead;
 use byteorder::{ByteOrder, ReadBytesExt};
 use std::collections::hash_map::{Entry};
 
 impl ServerSession {
 
-    pub fn server_read_cleartext_kexinit<R: BufRead>(&mut self,
-                                                     stream: &mut R,
-                                                     kexinit: &mut KexInit,
-                                                     keys: &[key::Algorithm])
-                                                     -> Result<bool, Error> {
-        if kexinit.algo.is_none() {
-            // read algo from packet.
-            if self.buffers.read.len == 0 {
-                try!(self.buffers.set_clear_len(stream));
-            }
-            if try!(self.buffers.read(stream)) {
-                {
-                    let payload = self.buffers.get_current_payload();
-                    kexinit.algo = Some(try!(negociation::read_kex(payload, keys)));
-                    kexinit.exchange.client_kex_init.extend(payload);
-                }
-                self.buffers.read.clear_incr();
-                Ok(true)
-            } else {
-                // A complete packet could not be read, we need to read more.
-                Ok(false)
-            }
-        } else {
-            Ok(true)
-        }
+    pub fn server_read_cleartext_kexdh(&mut self, mut kexdh:KexDh, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<ReturnCode, Error> {
+        let kex = {
+            let payload = self.buffers.get_current_payload();
+            transport!(payload);
+
+            debug!("payload = {:?}", payload);
+            assert!(payload[0] == msg::KEX_ECDH_INIT);
+            kexdh.exchange.client_ephemeral.extend(&payload[5..]);
+            try!(kexdh.kex.server_dh(&mut kexdh.exchange, payload))
+        };
+        self.buffers.read.clear_incr();
+
+        // Then, we fill the write buffer right away, so that we
+        // can output it immediately when the time comes.
+        let kexdhdone = KexDhDone {
+            exchange: kexdh.exchange,
+            kex: kex,
+            key: kexdh.key,
+            cipher: kexdh.cipher,
+            mac: kexdh.mac,
+            follows: kexdh.follows,
+            session_id: kexdh.session_id,
+        };
+
+        let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key.public_host_key,
+                                                            &kexdhdone.exchange,
+                                                            buffer));
+        self.server_cleartext_kex_ecdh_reply(&kexdhdone, &hash);
+        self.server_cleartext_send_newkeys();
+
+        self.state = Some(ServerState::Kex(Kex::NewKeys(kexdhdone.compute_keys(hash, buffer, buffer2, true))));
+        // self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
+        Ok(ReturnCode::Ok)
     }
-    pub fn server_read_cleartext_kexdh<R: BufRead>(&mut self, stream:&mut R, mut kexdh:KexDh, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<bool, Error> {
 
-        if self.buffers.read.len == 0 {
-            try!(self.buffers.set_clear_len(stream));
-        }
-
-        if try!(self.buffers.read(stream)) {
-
-            let kex = {
-                let payload = self.buffers.get_current_payload();
-                debug!("payload = {:?}", payload);
-                assert!(payload[0] == msg::KEX_ECDH_INIT);
-                kexdh.exchange.client_ephemeral.extend(&payload[5..]);
-                try!(kexdh.kex.server_dh(&mut kexdh.exchange, payload))
-            };
-            self.buffers.read.clear_incr();
-
-            // Then, we fill the write buffer right away, so that we
-            // can output it immediately when the time comes.
-            let kexdhdone = KexDhDone {
-                exchange: kexdh.exchange,
-                kex: kex,
-                key: kexdh.key,
-                cipher: kexdh.cipher,
-                mac: kexdh.mac,
-                follows: kexdh.follows,
-                session_id: kexdh.session_id,
-            };
-
-            let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.key.public_host_key,
-                                                                &kexdhdone.exchange,
-                                                                buffer));
-            self.server_cleartext_kex_ecdh_reply(&kexdhdone, &hash);
-            self.server_cleartext_send_newkeys();
-
-            self.state = Some(ServerState::Kex(Kex::NewKeys(kexdhdone.compute_keys(hash, buffer, buffer2, true))));
-            // self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
-
-            Ok(true)
-
-        } else {
-            // not enough bytes.
-            self.state = Some(ServerState::Kex(Kex::KexDh(kexdh)));
-            Ok(false)
-        }
-    }
-    pub fn server_read_cleartext_newkeys<R:BufRead>(&mut self, stream:&mut R, newkeys: NewKeys) -> Result<bool, Error> {
+    pub fn server_read_cleartext_newkeys(&mut self, newkeys: NewKeys) -> Result<ReturnCode, Error> {
         // We have sent a NEWKEYS packet, and are waiting to receive one. Is it this one?
-        if self.buffers.read.len == 0 {
-            try!(self.buffers.set_clear_len(stream));
-        }
-        if try!(self.buffers.read(stream)) {
-
-            let payload_is_newkeys = self.buffers.get_current_payload()[0] == msg::NEWKEYS;
-            if payload_is_newkeys {
-                // Ok, NEWKEYS received, now encrypted.
-                self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest)));
-                self.buffers.read.clear_incr();
-                Ok(true)
-            } else {
-                Err(Error::NewKeys)
-            }
+        let payload_is_newkeys = {
+            let payload = self.buffers.get_current_payload();
+            transport!(payload);
+            payload[0] == msg::NEWKEYS
+        };
+        if payload_is_newkeys {
+            // Ok, NEWKEYS received, now encrypted.
+            self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest)));
+            self.buffers.read.clear_incr();
+            Ok(ReturnCode::Ok)
         } else {
-            // Not enough bytes
-            self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
-            Ok(false)
+            Err(Error::NewKeys)
         }
     }
         

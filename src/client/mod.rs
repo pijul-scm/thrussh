@@ -270,7 +270,9 @@ impl<'a> ClientSession<'a> {
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                         // This cannot be moved to read, because we
                         // might need to change the auth method (using
-                        // user input) between read and write.
+                        // user input) between read and write: if we
+                        // don't do it exactly there, the event loop
+                        // won't call read/write again.
                         enc.client_waiting_auth_request(&mut self.buffers.write, auth_request, &self.auth_method, buffer);
                         try!(self.buffers.write_all(stream));
                     },
