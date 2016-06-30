@@ -325,7 +325,7 @@ impl Encrypted {
 
                     channels.recipient_channel = id_recv;
                     channels.recipient_window_size = window;
-                    channels.maximum_packet_size = std::cmp::min(max_packet, channels.maximum_packet_size);
+                    channels.recipient_maximum_packet_size = max_packet;
 
                     println!("id_send = {:?}", id_send);
                     self.channels.insert(channels.sender_channel, channels);

@@ -577,7 +577,8 @@ pub struct ChannelParameters {
     pub sender_channel: u32,
     pub recipient_window_size: u32,
     pub sender_window_size: u32,
-    pub maximum_packet_size: u32,
+    pub recipient_maximum_packet_size: u32,
+    pub sender_maximum_packet_size: u32,
 }
 
 

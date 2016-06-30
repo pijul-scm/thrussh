@@ -105,8 +105,9 @@ impl Encrypted {
                 recipient_channel: 0,
                 sender_channel: sender_channel,
                 sender_window_size: config.window,
-                recipient_window_size: config.window,
-                maximum_packet_size: config.maxpacket,
+                recipient_window_size: 0,
+                sender_maximum_packet_size: config.maxpacket,
+                recipient_maximum_packet_size: 0,
             }
         ));
         Ok(())

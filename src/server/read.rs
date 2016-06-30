@@ -285,7 +285,8 @@ impl Encrypted {
             sender_channel: sender_channel, // "sender" is the local end, i.e. we're the sender, the remote is the recipient.
             recipient_window_size: window,
             sender_window_size: config.window_size,
-            maximum_packet_size: maxpacket,
+            recipient_maximum_packet_size: maxpacket,
+            sender_maximum_packet_size: config.maximum_packet_size
         };
 
         // Write the response immediately, so that we're ready when the stream becomes writable.

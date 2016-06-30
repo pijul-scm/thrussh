@@ -46,7 +46,7 @@ impl Encrypted {
         buffer.push_u32_be(channel.recipient_channel); // remote channel number.
         buffer.push_u32_be(channel.sender_channel); // our channel number.
         buffer.push_u32_be(config.window_size);
-        buffer.push_u32_be(channel.maximum_packet_size);
+        buffer.push_u32_be(config.maximum_packet_size);
         self.cipher.write_server_packet(write_buffer.seqn, buffer.as_slice(), &mut write_buffer.buffer);
         write_buffer.seqn += 1;
     }
