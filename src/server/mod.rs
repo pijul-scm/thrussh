@@ -64,8 +64,8 @@ pub struct ServerSession {
 mod read;
 mod write;
 
-impl ServerSession {
-    pub fn new() -> Self {
+impl Default for ServerSession {
+    fn default() -> Self {
         super::SODIUM_INIT.call_once(|| {
             super::sodium::init();
         });
@@ -73,6 +73,12 @@ impl ServerSession {
             buffers: super::SSHBuffers::new(),
             state: None,
         }
+    }
+}
+
+impl ServerSession {
+    pub fn new() -> Self {
+        ServerSession::default()
     }
 
     // returns whether a complete packet has been read.
@@ -95,7 +101,7 @@ impl ServerSession {
                     let client_id = try!(self.buffers.read.read_ssh_id(stream));
                     if let Some(client_id) = client_id {
                         exchange = Exchange::new();
-                        exchange.client_id.extend(client_id);
+                        exchange.client_id.extend_from_slice(client_id);
                         debug!("client id, exchange = {:?}", exchange);
                     } else {
                         return Ok(ReturnCode::WrongPacket)
@@ -114,7 +120,7 @@ impl ServerSession {
             },
 
             Some(ServerState::Kex(Kex::KexInit(mut kexinit))) => {
-                
+
                 try!(self.buffers.set_clear_len(stream));
                 if try!(self.buffers.read(stream)) {
                     {
@@ -123,12 +129,12 @@ impl ServerSession {
                         if kexinit.algo.is_none() {
                             // read algo from packet.
                             kexinit.algo = Some(try!(super::negociation::Server::read_kex(payload, &config.keys, &config.preferred)));
-                            kexinit.exchange.client_kex_init.extend(payload);
+                            kexinit.exchange.client_kex_init.extend_from_slice(payload);
                         }
                     }
                     self.state = Some(self.buffers.cleartext_write_kex_init(&config.preferred, true, kexinit));
                     Ok(ReturnCode::Ok)
-                        
+
                 } else {
                     self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
                     Ok(ReturnCode::NotEnoughBytes)
@@ -162,7 +168,7 @@ impl ServerSession {
                     Ok(ReturnCode::NotEnoughBytes)
                 }
             },
-            
+
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("read: encrypted {:?} {:?}", enc.state, enc.rekey);
                 let (ret_code, rekeying_done) =
@@ -170,7 +176,7 @@ impl ServerSession {
                         debug!("read buf {:?}", buf);
 
                         transport!(buf); // return in case of a transport layer packet.
-                        
+
                         let rek = try!(enc.server_read_rekey(buf, config, buffer, buffer2, &mut self.buffers.write));
                         if rek && enc.rekey.is_none() && buf[0] == msg::NEWKEYS {
                             // rekeying is finished.
@@ -183,7 +189,7 @@ impl ServerSession {
                     } else {
                         (ReturnCode::NotEnoughBytes, false)
                     };
-                
+
                 match ret_code {
                     ReturnCode::Ok => {
                         if rekeying_done {
@@ -197,7 +203,7 @@ impl ServerSession {
                              || time::precise_time_s() >= self.buffers.last_rekey_s + config.rekey_time_limit_s) {
 
                                 if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
-                                    
+
                                     let mut kexinit = KexInit {
                                         exchange: exchange,
                                         algo: None,

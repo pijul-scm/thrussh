@@ -13,9 +13,9 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 */
-use byteorder::{ByteOrder,BigEndian,WriteBytesExt};
+use byteorder::{ByteOrder,BigEndian};
 use super::super::{Error,SSHBuffer};
-use std::io::{Read, BufRead};
+use std::io::{BufRead};
 
 use super::super::sodium;
 use sodium::chacha20;

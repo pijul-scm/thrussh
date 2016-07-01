@@ -29,7 +29,7 @@ unsafe impl Send for CryptoBuf {}
 
 impl std::ops::Index<usize> for CryptoBuf {
     type Output = u8;
-    fn index<'a>(&'a self, index:usize) -> &'a u8 {
+    fn index(&self, index:usize) -> &u8 {
         assert!(index < self.size);
         unsafe {
             &* self.p.offset(index as isize)
@@ -46,25 +46,36 @@ impl std::io::Write for CryptoBuf {
 }
 
 
-
-
-
-impl CryptoBuf {
-    pub fn new() -> CryptoBuf {
+impl Default for CryptoBuf {
+    fn default() -> Self {
         let mut buf = CryptoBuf {
-            p:std::ptr::null_mut(),
-            size:0,
-            capacity:0,
-            zero:0
+            p: std::ptr::null_mut(),
+            size: 0,
+            capacity: 0,
+            zero: 0
         };
         // This avoids potential problems in as_slice().
         buf.p = &mut buf.zero;
         //
         buf
     }
+}
+
+
+impl CryptoBuf {
+    pub fn new() -> CryptoBuf {
+        CryptoBuf::default()
+    }
+    
     pub fn len(&self) -> usize {
         self.size
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+
     pub fn resize(&mut self, size:usize) {
         if size <= self.capacity {
             self.size = size
@@ -161,13 +172,13 @@ impl CryptoBuf {
         }
     }
 
-    pub fn as_slice<'a>(&'a self) -> &'a[u8] {
+    pub fn as_slice(&self) -> &[u8] {
         unsafe {
             std::slice::from_raw_parts(self.p, self.size)
         }
     }
 
-    pub fn as_mut_slice<'a>(&'a mut self) -> &'a mut [u8] {
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe {
             std::slice::from_raw_parts_mut(self.p, self.size)
         }

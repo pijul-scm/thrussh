@@ -66,7 +66,7 @@ macro_rules! from_slice (($newtype:ident, $len:expr) => (
 ));
 macro_rules! as_bytes (($newtype:ident) => (
     impl $newtype {
-        pub fn as_bytes<'a>(&'a self) -> &'a[u8] {
+        pub fn as_bytes(&self) -> &[u8] {
             &self.0
         }
     }
@@ -194,7 +194,7 @@ pub mod curve25519 {
     from_slice!(GroupElement, GROUPELEMENTBYTES);
     new_blank!(GroupElement, GROUPELEMENTBYTES);
     impl GroupElement {
-        pub fn as_bytes<'a>(&'a self) -> &'a[u8] { &self.0 }
+        pub fn as_bytes(&self) -> &[u8] { &self.0 }
     }
 
     pub fn scalarmult(q: &mut GroupElement,

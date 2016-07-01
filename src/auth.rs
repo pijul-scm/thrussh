@@ -35,11 +35,11 @@ pub enum Method<'a> {
 }
 impl<'a> Method<'a> {
     fn num(&self) -> M {
-        match self {
-            &Method::None => NONE,
-            &Method::Password { .. } => PASSWORD,
-            &Method::Pubkey { .. } => PUBKEY,
-            &Method::Hostbased => HOSTBASED
+        match *self {
+            Method::None => NONE,
+            Method::Password { .. } => PASSWORD,
+            Method::Pubkey { .. } => PUBKEY,
+            Method::Hostbased => HOSTBASED
         }
     }
 }

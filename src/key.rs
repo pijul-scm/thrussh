@@ -70,13 +70,13 @@ impl Algorithm {
     pub fn name(&self) -> &'static str {
         self.public_host_key.name()
     }
-    
+
     pub fn add_signature(&self, buffer: &mut CryptoBuf, hash:&[u8]) {
         match self.secret_host_key {
             SecretKey::Ed25519(ref secret_host_key) => {
 
                 let mut sign = ed25519::Signature::new_blank();
-                ed25519::sign_detached(&mut sign, &hash, secret_host_key);
+                ed25519::sign_detached(&mut sign, hash, secret_host_key);
 
                 buffer.push_u32_be(
                     (ED25519.len()

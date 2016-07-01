@@ -29,7 +29,7 @@ pub mod sodium;
 mod cryptobuf;
 pub use cryptobuf::CryptoBuf;
 use std::sync::{Once, ONCE_INIT};
-use std::io::{Read, Write, BufRead, BufReader};
+use std::io::{Read, BufRead, BufReader};
 
 
 use byteorder::{ByteOrder, BigEndian};
@@ -217,7 +217,7 @@ impl<'a> ChannelBuf<'a> {
     pub fn close(mut self) {
         self.reply(msg::CHANNEL_CLOSE);
     }
-    
+
     pub fn exit_status(&mut self, exit_status: u32) {
         // https://tools.ietf.org/html/rfc4254#section-6.10
         self.buffer.clear();
@@ -368,14 +368,14 @@ impl SSHBuffers {
         if !kexinit.sent {
             let pos = self.write.buffer.len();
             self.write.buffer.extend(b"\0\0\0\0\0");
-            negociation::write_kex(&preferred, &mut self.write.buffer);
+            negociation::write_kex(preferred, &mut self.write.buffer);
 
             {
                 let buf = self.write.buffer.as_slice();
                 if is_server {
-                    kexinit.exchange.server_kex_init.extend(&buf[5..]);
+                    kexinit.exchange.server_kex_init.extend_from_slice(&buf[5..]);
                 } else {
-                    kexinit.exchange.client_kex_init.extend(&buf[5..]);
+                    kexinit.exchange.client_kex_init.extend_from_slice(&buf[5..]);
                 }
             }
 
@@ -406,15 +406,13 @@ impl SSHBuffers {
         Ok(())
     }
 
-    fn get_current_payload<'b>(&'b mut self) -> &'b [u8] {
+    fn get_current_payload(&mut self) -> &[u8] {
         let packet_length = self.read.buffer.read_u32_be(0) as usize;
         let padding_length = self.read.buffer[4] as usize;
 
         let buf = self.read.buffer.as_slice();
-        let payload = {
-            &buf[5..(4 + packet_length - padding_length)]
-        };
-        payload
+
+        &buf[5..(4 + packet_length - padding_length)]
     }
 
     /// Fills the read buffer, and returns whether a complete message has been read.
@@ -598,7 +596,7 @@ pub struct KexDhDone {
 }
 
 impl KexDhDone {
-    fn compute_keys(mut self,
+    fn compute_keys(self,
                     hash: kex::Digest,
                     buffer: &mut CryptoBuf,
                     buffer2: &mut CryptoBuf,
@@ -610,7 +608,7 @@ impl KexDhDone {
             hash.clone()
         };
         // Now computing keys.
-        let c = try!(self.kex.compute_keys(&session_id, &hash, buffer, buffer2, &mut self.names.cipher, is_server));
+        let c = try!(self.kex.compute_keys(&session_id, &hash, buffer, buffer2, &self.names.cipher, is_server));
         Ok(NewKeys {
             exchange: self.exchange,
             names: self.names,
@@ -632,7 +630,7 @@ impl KexDhDone {
             return Err(Error::UnknownKey)
         }
         let server_ephemeral = try!(reader.read_string());
-        self.exchange.server_ephemeral.extend(server_ephemeral);
+        self.exchange.server_ephemeral.extend_from_slice(server_ephemeral);
         let signature = try!(reader.read_string());
 
         try!(self.kex.compute_shared_secret(&self.exchange.server_ephemeral));
@@ -826,7 +824,7 @@ pub fn load_secret_key<P:AsRef<Path>>(p:P) -> Result<key::SecretKey, Error> {
                  std::str::from_utf8(kdfoptions));
 
         let nkeys = try!(position.read_u32());
-        
+
         for _ in 0..nkeys {
             let public_string = try!(position.read_string());
             let mut pos = public_string.reader(0);

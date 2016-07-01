@@ -19,16 +19,16 @@ use super::{CryptoBuf, Error};
 use super::key;
 
 pub trait Bytes {
-    fn bytes<'a>(&'a self) -> &'a[u8];
+    fn bytes(&self) -> &[u8];
 }
 impl<'b> Bytes for &'b[u8] {
-    fn bytes<'a>(&'a self) -> &'a[u8] { self }
+    fn bytes(&self) -> &[u8] { self }
 }
 impl<'b> Bytes for &'b &'b str {
-    fn bytes<'a>(&'a self) -> &'a[u8] { self.as_bytes() }
+    fn bytes(&self) -> &[u8] { self.as_bytes() }
 }
 impl<'b> Bytes for &'b key::Algorithm {
-    fn bytes<'a>(&'a self) -> &'a[u8] { self.name().as_bytes() }
+    fn bytes(&self) -> &[u8] { self.name().as_bytes() }
 }
 impl CryptoBuf {
     pub fn extend_ssh_string(&mut self, s:&[u8]) {

@@ -28,7 +28,7 @@ impl<'a> super::ClientSession<'a> {
             let server_id = try!(self.buffers.read.read_ssh_id(stream));
             debug!("server_id = {:?}", server_id);
             if let Some(server_id) = server_id {
-                exchange.server_id.extend(server_id);
+                exchange.server_id.extend_from_slice(server_id);
                 true
             } else {
                 false
@@ -61,7 +61,7 @@ impl<'a> super::ClientSession<'a> {
                 transport!(payload);
                 if payload[0] == msg::KEXINIT {
                     kexinit.algo = Some(try!(negociation::Client::read_kex(payload, keys, pref)));
-                    kexinit.exchange.server_kex_init.extend(payload);
+                    kexinit.exchange.server_kex_init.extend_from_slice(payload);
                 } else {
                     debug!("unknown packet, expecting KEXINIT, received {:?}", payload);
                 }
@@ -128,7 +128,7 @@ impl<'a> super::ClientSession<'a> {
             buffer.clear();
             buffer.push(msg::SERVICE_REQUEST);
             buffer.extend_ssh_string(b"ssh-userauth");
-            
+
             encrypted.cipher.write(buffer.as_slice(), &mut self.buffers.write);
             debug!("sending SERVICE_REQUEST");
 
@@ -149,7 +149,7 @@ impl Encrypted {
                     debug!("received KEXINIT");
                     if kexinit.algo.is_none() {
                         kexinit.algo = Some(try!(negociation::Client::read_kex(buf, &config.keys, &config.preferred)));
-                        kexinit.exchange.server_kex_init.extend(buf);
+                        kexinit.exchange.server_kex_init.extend_from_slice(buf);
                     }
                     if kexinit.sent {
                         if let Some(names) = kexinit.algo {
@@ -260,18 +260,18 @@ impl Encrypted {
             let max_packet = try!(reader.read_u32());
 
             if channels.sender_channel == id_send {
-                
+
                 channels.recipient_channel = id_recv;
                 channels.recipient_window_size = window;
                 channels.recipient_maximum_packet_size = max_packet;
-                
+
                 debug!("id_send = {:?}", id_send);
                 self.channels.insert(channels.sender_channel, channels);
-                
+
                 self.state = Some(EncryptedState::ChannelOpened(Some(id_send)));
-                
+
             } else {
-                
+
                 unimplemented!()
             }
         } else {

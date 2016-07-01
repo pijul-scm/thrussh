@@ -24,7 +24,6 @@ use negociation::Select;
 
 use rand::{thread_rng, Rng};
 use std;
-use byteorder::{ByteOrder, ReadBytesExt};
 use std::collections::hash_map::{Entry};
 
 impl ServerSession {
@@ -36,7 +35,7 @@ impl ServerSession {
 
             debug!("payload = {:?}", payload);
             assert!(payload[0] == msg::KEX_ECDH_INIT);
-            kexdh.exchange.client_ephemeral.extend(&payload[5..]);
+            kexdh.exchange.client_ephemeral.extend_from_slice(&payload[5..]);
             try!(super::super::kex::Algorithm::server_dh(kexdh.names.kex, &mut kexdh.exchange, payload))
         };
 
@@ -75,7 +74,7 @@ impl ServerSession {
             Err(Error::NewKeys)
         }
     }
-        
+
 }
 
 impl Encrypted {
@@ -137,72 +136,65 @@ impl Encrypted {
                     buf_0 => {
                         let mut r = buf.reader(1);
                         let channel_num = try!(r.read_u32());
-                        match self.channels.entry(channel_num) {
 
-                            Entry::Occupied(mut e) => {
-                                buffer.clear();
-                                debug!("buf: {:?}", buf);
-                                match buf_0 {
-                                    msg::CHANNEL_DATA => {
-                                        let channel = e.get_mut();
-                                        let data = try!(r.read_string());
+                        if let Entry::Occupied(mut e) = self.channels.entry(channel_num) {
+                            buffer.clear();
+                            debug!("buf: {:?}", buf);
+                            match buf_0 {
+                                msg::CHANNEL_DATA => {
+                                    let channel = e.get_mut();
+                                    let data = try!(r.read_string());
 
-                                        // Ignore extra data.
-                                        // https://tools.ietf.org/html/rfc4254#section-5.2
-                                        if data.len() as u32 <= channel.sender_window_size {
-                                            channel.sender_window_size -= data.len() as u32;
-                                            let server_buf = ChannelBuf {
-                                                buffer:buffer,
-                                                channel: channel,
-                                                write_buffer: write_buffer,
-                                                cipher: &mut self.cipher,
-                                                wants_reply: false
-                                            };
-                                            try!(server.data(&data, server_buf))
-                                        }
-                                        debug!("{:?} / {:?}", channel.sender_window_size, config.window_size);
-                                        if channel.sender_window_size < config.window_size/2 {
-                                            super::super::adjust_window_size(write_buffer, &mut self.cipher,
-                                                                             config.window_size, buffer, channel)
-                                        }
-                                    },
-                                    msg::CHANNEL_WINDOW_ADJUST => {
-                                        let amount = try!(r.read_u32());
-                                        e.get_mut().recipient_window_size += amount
-                                    },
-                                    msg::CHANNEL_REQUEST => {
-                                        let req_type = try!(r.read_string());
-                                        let wants_reply = try!(r.read_byte());
+                                    // Ignore extra data.
+                                    // https://tools.ietf.org/html/rfc4254#section-5.2
+                                    if data.len() as u32 <= channel.sender_window_size {
+                                        channel.sender_window_size -= data.len() as u32;
                                         let server_buf = ChannelBuf {
                                             buffer:buffer,
-                                            channel: e.get_mut(),
+                                            channel: channel,
                                             write_buffer: write_buffer,
                                             cipher: &mut self.cipher,
-                                            wants_reply: wants_reply != 0
+                                            wants_reply: false
                                         };
-                                        match req_type {
-                                            b"exec" => {
-                                                let req = try!(r.read_string());
-                                                try!(server.exec(req, server_buf));
-                                            },
-                                            x => {
-                                                debug!("{:?}, line {:?} req_type = {:?}", file!(), line!(), std::str::from_utf8(x))
-                                            }
-                                        }
-                                    },
-                                    msg::CHANNEL_EOF => {
-                                        e.remove();
-                                    },
-                                    msg::CHANNEL_CLOSE => {
-                                        e.remove();
-                                    },
-                                    _ => {
-                                        unimplemented!()
+                                        try!(server.data(&data, server_buf))
                                     }
+                                    debug!("{:?} / {:?}", channel.sender_window_size, config.window_size);
+                                    if channel.sender_window_size < config.window_size/2 {
+                                        super::super::adjust_window_size(write_buffer, &mut self.cipher,
+                                                                         config.window_size, buffer, channel)
+                                    }
+                                },
+                                msg::CHANNEL_WINDOW_ADJUST => {
+                                    let amount = try!(r.read_u32());
+                                    e.get_mut().recipient_window_size += amount
+                                },
+                                msg::CHANNEL_REQUEST => {
+                                    let req_type = try!(r.read_string());
+                                    let wants_reply = try!(r.read_byte());
+                                    let server_buf = ChannelBuf {
+                                        buffer:buffer,
+                                        channel: e.get_mut(),
+                                        write_buffer: write_buffer,
+                                        cipher: &mut self.cipher,
+                                        wants_reply: wants_reply != 0
+                                    };
+                                    match req_type {
+                                        b"exec" => {
+                                            let req = try!(r.read_string());
+                                            try!(server.exec(req, server_buf));
+                                        },
+                                        x => {
+                                            debug!("{:?}, line {:?} req_type = {:?}", file!(), line!(), std::str::from_utf8(x))
+                                        }
+                                    }
+                                },
+                                msg::CHANNEL_EOF |
+                                msg::CHANNEL_CLOSE => {
+                                    e.remove();
+                                },
+                                _ => {
+                                    unimplemented!()
                                 }
-                            },
-                            _ => {
-
                             }
                         }
                     }
@@ -261,7 +253,7 @@ impl Encrypted {
         Ok(())
 
     }
-    
+
     pub fn server_read_auth_request<A:Authenticate>(&mut self, auth:&A, buf:&[u8], mut auth_request:AuthRequest, buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<(), Error> {
         // https://tools.ietf.org/html/rfc4252#section-5
         let mut r = buf.reader(1);
@@ -326,7 +318,7 @@ impl Encrypted {
                         auth_request.public_key_algorithm.extend(pubkey_algo);
                         self.server_send_pk_ok(buffer, &mut auth_request, write_buffer);
                         self.state = Some(EncryptedState::WaitingSignature(auth_request))
-                        
+
                     },
                     Auth::Reject { remaining_methods, partial_success } => {
 
@@ -389,7 +381,7 @@ impl Encrypted {
                         buffer.extend(&buf[0..pos0]);
                         // Verify signature.
                         if sodium::ed25519::verify_detached(&sig, buffer.as_slice(), &key) {
-                            
+
                             // EncryptedState::AuthRequestSuccess(auth_request)
                             self.server_auth_request_success(buffer, write_buffer)
                         } else {
@@ -418,7 +410,7 @@ impl Encrypted {
                     if kexinit.algo.is_none() {
                         kexinit.algo = Some(try!(negociation::Server::read_kex(buf, &config.keys, &config.preferred)));
                     }
-                    kexinit.exchange.client_kex_init.extend(buf);
+                    kexinit.exchange.client_kex_init.extend_from_slice(buf);
 
                     if !kexinit.sent {
                         debug!("sending kexinit");
@@ -452,7 +444,7 @@ impl Encrypted {
                         kexinit.exchange.server_kex_init.extend(buffer.as_slice());
                         self.cipher.write(buffer.as_slice(), write_buffer);
                         kexinit.sent = true;
-                        kexinit.exchange.client_kex_init.extend(buf);
+                        kexinit.exchange.client_kex_init.extend_from_slice(buf);
 
                         if let Some(names) = kexinit.algo {
                             debug!("rekey ok");
@@ -487,7 +479,7 @@ impl Encrypted {
                     Some(Kex::KexDh(mut kexdh)) => {
                         debug!("KexDH");
                         let kex = {
-                            kexdh.exchange.client_ephemeral.extend(&buf[5..]);
+                            kexdh.exchange.client_ephemeral.extend_from_slice(&buf[5..]);
                             try!(super::super::kex::Algorithm::server_dh(kexdh.names.kex, &mut kexdh.exchange, buf))
                         };
                         let kexdhdone = KexDhDone {

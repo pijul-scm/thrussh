@@ -67,8 +67,8 @@ pub struct ClientSession<'a> {
     auth_method: Option<auth::Method<'a>>,
 }
 
-impl<'a> ClientSession<'a> {
-    pub fn new() -> Self {
+impl<'a> Default for ClientSession<'a> {
+    fn default() -> Self {
         super::SODIUM_INIT.call_once(|| {
             super::sodium::init();
         });
@@ -77,6 +77,12 @@ impl<'a> ClientSession<'a> {
             state: None,
             auth_method: None
         }
+    }
+}
+
+impl<'a> ClientSession<'a> {
+    pub fn new() -> Self {
+        ClientSession::default()
     }
     // returns whether a complete packet has been read.
     pub fn read<R: BufRead, C:super::Client + super::ValidateKey>(
@@ -111,7 +117,7 @@ impl<'a> ClientSession<'a> {
                 if try!(self.buffers.read(stream)) {
 
                     self.client_kexinit(kexinit, &config.keys, &config.preferred)
-                    
+
                 } else {
                     self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
                     Ok(ReturnCode::NotEnoughBytes)
@@ -150,7 +156,7 @@ impl<'a> ClientSession<'a> {
             },
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("encrypted state {:?}", enc);
-                self.try_rekey(&mut enc, &config);
+                self.try_rekey(&mut enc, config);
                 let state = std::mem::replace(&mut enc.state, None);
 
                 let read_complete;
@@ -185,7 +191,7 @@ impl<'a> ClientSession<'a> {
                         if let Some(buf) = try!(enc.cipher.read(stream, &mut self.buffers.read)) {
 
                             transport!(buf);
-                            
+
                             read_complete = true;
                             if buf[0] == msg::USERAUTH_BANNER {
                                 let mut r = buf.reader(1);
@@ -238,7 +244,7 @@ impl<'a> ClientSession<'a> {
                                             try!(super::negociation::Client::read_kex(buf, &config.keys, &config.preferred)),
                                             &enc.session_id
                                         );
-                                        kexinit.exchange.server_kex_init.extend(buf);
+                                        kexinit.exchange.server_kex_init.extend_from_slice(buf);
                                         enc.rekey = Some(try!(kexinit.kexinit()));
                                     }
                                 },
@@ -298,11 +304,9 @@ impl<'a> ClientSession<'a> {
                         } else {
                             read_complete = false
                         };
-                        if read_complete {
-                            if is_newkeys {
-                                self.buffers.read.bytes = 0;
-                                self.buffers.write.bytes = 0;
-                            }
+                        if read_complete && is_newkeys {
+                            self.buffers.read.bytes = 0;
+                            self.buffers.write.bytes = 0;
                         }
                         enc.state = state;
                     }
@@ -348,7 +352,7 @@ impl<'a> ClientSession<'a> {
             },
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("encrypted");
-                self.try_rekey(&mut enc, &config);
+                self.try_rekey(&mut enc, config);
                 let state = std::mem::replace(&mut enc.state, None);
                 match state {
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
@@ -361,11 +365,8 @@ impl<'a> ClientSession<'a> {
                         try!(self.buffers.write_all(stream));
                     },
                     state => {
-                        match std::mem::replace(&mut enc.rekey, None) {
-                            Some(rekey) => {
-                                try!(enc.client_write_rekey(stream, &mut self.buffers, rekey, config, buffer))
-                            }
-                            None => {},
+                        if let Some(rekey) = std::mem::replace(&mut enc.rekey, None) {
+                            try!(enc.client_write_rekey(stream, &mut self.buffers, rekey, config, buffer));
                         }
                         enc.state = state
                     }
@@ -379,7 +380,7 @@ impl<'a> ClientSession<'a> {
                 Ok(true)
             }
         }
-        
+
     }
 
     fn try_rekey(&mut self, enc: &mut super::Encrypted, config:&Config) {
@@ -415,7 +416,7 @@ impl<'a> ClientSession<'a> {
 
                         debug!("needs_auth_method: {:?}", auth_request);
                         Some(auth_request.methods)
-                        
+
                     },
                     _ => None
                 }
@@ -435,7 +436,7 @@ impl<'a> ClientSession<'a> {
                         => {
 
                         true
-                        
+
                     },
                     _ => false
                 }
@@ -462,7 +463,7 @@ impl<'a> ClientSession<'a> {
     }
 
     pub fn msg<W:Write>(&mut self, stream:&mut W, buffer:&mut CryptoBuf, msg:&[u8], channel:u32) -> Result<Option<usize>,Error> {
-       
+
         match self.state {
             Some(ServerState::Encrypted(ref mut enc)) => {
                 debug!("msg, encrypted, {:?} {:?}", enc.state, enc.rekey);

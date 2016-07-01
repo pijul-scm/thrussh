@@ -30,7 +30,7 @@ pub enum Digest {
     Sha256(sha256::Digest)
 }
 impl Digest {
-    pub fn as_bytes<'a>(&'a self) -> &'a[u8] {
+    pub fn as_bytes(&self) -> &[u8] {
         match self {
             &Digest::Sha256(ref d) => d.as_bytes()
         }
