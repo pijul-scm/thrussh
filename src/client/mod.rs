@@ -30,7 +30,9 @@ pub struct Config {
 impl std::default::Default for Config {
     fn default() -> Config {
         Config {
-            client_id: "SSH-2.0-Russht_0.1".to_string(),
+            client_id: format!("SSH-2.0-{}_{}",
+                               "Thrussh", // env!("CARGO_PKG_NAME")
+                               env!("CARGO_PKG_VERSION")),
             keys: Vec::new(),
             // Following the recommendations of
             // https://tools.ietf.org/html/rfc4253#section-9
@@ -92,7 +94,9 @@ impl<'a> ClientSession<'a> {
             Some(ServerState::Kex(Kex::KexInit(kexinit))) => {
                 try!(self.buffers.set_clear_len(stream));
                 if try!(self.buffers.read(stream)) {
+
                     self.client_kexinit(kexinit, &config.keys, &config.preferred)
+                    
                 } else {
                     self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
                     Ok(ReturnCode::NotEnoughBytes)
@@ -104,10 +108,17 @@ impl<'a> ClientSession<'a> {
                 self.state = Some(ServerState::Kex(Kex::KexDh(kexdh)));
                 Ok(ReturnCode::Ok)
             }
-            Some(ServerState::Kex(Kex::KexDhDone(kexdhdone))) => {
+            Some(ServerState::Kex(Kex::KexDhDone(mut kexdhdone))) => {
                 try!(self.buffers.set_clear_len(stream));
                 if try!(self.buffers.read(stream)) {
-                    self.client_kexdhdone(client, kexdhdone, buffer, buffer2)
+
+                    if kexdhdone.names.ignore_guessed {
+                        kexdhdone.names.ignore_guessed = false;
+                        self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
+                        Ok(ReturnCode::Ok)
+                    } else {
+                        self.client_kexdhdone(client, kexdhdone, buffer, buffer2)
+                    }
                 } else {
                     self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
                     Ok(ReturnCode::NotEnoughBytes)

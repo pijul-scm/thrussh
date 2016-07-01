@@ -24,8 +24,9 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Config {
         Config {
-            // Must begin with "SSH-2.0-".
-            server_id: "SSH-2.0-SSH.rs_0.1".to_string(),
+            server_id: format!("SSH-2.0-{}_{}",
+                               "Thrussh", // env!("CARGO_PKG_NAME")
+                               env!("CARGO_PKG_VERSION")),
             methods: auth::Methods::all(),
             auth_banner: Some("SSH Authentication\r\n"), // CRLF separated lines.
             keys: Vec::new(),
@@ -112,16 +113,25 @@ impl ServerSession {
                     }
                     self.state = Some(self.buffers.cleartext_write_kex_init(&config.preferred, true, kexinit));
                     Ok(ReturnCode::Ok)
+                        
                 } else {
                     self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
                     Ok(ReturnCode::NotEnoughBytes)
                 }
             },
 
-            Some(ServerState::Kex(Kex::KexDh(kexdh))) => {
+            Some(ServerState::Kex(Kex::KexDh(mut kexdh))) => {
                 try!(self.buffers.set_clear_len(stream));
                 if try!(self.buffers.read(stream)) {
-                    self.server_read_cleartext_kexdh(kexdh, buffer, buffer2)
+
+                    if kexdh.names.ignore_guessed {
+                        kexdh.names.ignore_guessed = false;
+                        self.state = Some(ServerState::Kex(Kex::KexDh(kexdh)));
+                        Ok(ReturnCode::Ok)
+                    } else {
+                        self.server_read_cleartext_kexdh(kexdh, buffer, buffer2)
+                    }
+
                 } else {
                     self.state = Some(ServerState::Kex(Kex::KexDh(kexdh)));
                     Ok(ReturnCode::NotEnoughBytes)

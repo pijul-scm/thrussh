@@ -41,7 +41,7 @@ pub const PREFERRED: Preferred = Preferred {
 
 
 pub trait Select {
-    fn select(a:&'static [&'static str], b:&[u8]) -> Option<&'static str>;
+    fn select(a:&'static [&'static str], b:&[u8]) -> Option<(bool, &'static str)>;
 
     fn read_kex(buffer:&[u8], keys:&[key::Algorithm], pref: &Preferred) -> Result<Names,Error> {
         if buffer[0] != msg::KEXINIT {
@@ -49,9 +49,19 @@ pub trait Select {
         } else {
 
             let mut r = buffer.reader(17);
-            let kex_algorithm = Self::select( pref.kex, try!(r.read_string()) );
-            let key_algorithm = Self::select( pref.key, try!(r.read_string()) )
-                .and_then(|algo| keys.iter().find(|a| a.name() == algo));
+            let (kex_both_first, kex_algorithm) =
+                if let Some(x) = Self::select( pref.kex, try!(r.read_string()) ) {
+                    x
+                } else {
+                    return Err(Error::KexInit)
+                };
+                    
+            let (key_both_first, key_algorithm) =
+                if let Some((a,b)) = Self::select( pref.key, try!(r.read_string()) ) {
+                    (a, keys.iter().find(|a| a.name() == b))
+                } else {
+                    return Err(Error::KexInit)
+                };
 
             let cipher = Self::select( pref.cipher, try!(r.read_string()) );
 
@@ -64,16 +74,17 @@ pub trait Select {
             try!(r.read_string()); // 
 
             let follows = try!(r.read_byte()) != 0;
-            match (kex_algorithm, key_algorithm, cipher, mac, follows) {
-                (Some(kex), Some(key), Some(cip), Some(mac), fol) => Ok(Names {
+            match (key_algorithm, cipher, mac, follows) {
+                (Some(key), Some((_, cip)), Some((_, mac)), fol) =>
 
-                    kex: kex,
-                    key: key.clone(),
-                    cipher:cip,
-                    mac:mac,
-                    ignore_guessed:fol
-
-                }),
+                    Ok(Names {
+                        kex: kex_algorithm,
+                        key: key.clone(),
+                        cipher:cip,
+                        mac:mac,
+                        // Ignore the next packet if (1) it follows and (2) it's not the correct guess.
+                        ignore_guessed: fol && !(kex_both_first && key_both_first)
+                    }),
                 _ => Err(Error::KexInit)
             }
         }
@@ -84,12 +95,14 @@ pub struct Server;
 pub struct Client;
 
 impl Select for Server {
-    fn select(server_list:&'static [&'static str], client_list:&[u8]) -> Option<&'static str> {
+    fn select(server_list:&'static [&'static str], client_list:&[u8]) -> Option<(bool, &'static str)> {
+        let mut both_first_choice = true;
         for c in client_list.split(|&x| x == b',') {
             for s in server_list {
                 if c == s.as_bytes() {
-                    return Some(s)
+                    return Some((both_first_choice, s))
                 }
+                both_first_choice = false
             }
         }
         None
@@ -97,12 +110,14 @@ impl Select for Server {
 }
 
 impl Select for Client {
-    fn select(client_list:&'static [&'static str], server_list:&[u8]) -> Option<&'static str> {
+    fn select(client_list:&'static [&'static str], server_list:&[u8]) -> Option<(bool, &'static str)> {
+        let mut both_first_choice = true;
         for c in client_list {
             for s in server_list.split(|&x| x == b',') {
                 if s == c.as_bytes() {
-                    return Some(c)
+                    return Some((both_first_choice, c))
                 }
+                both_first_choice = false
             }
         }
         None

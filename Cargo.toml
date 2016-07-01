@@ -1,5 +1,5 @@
 [package]
-name = "russht"
+name = "thrussh"
 version = "0.1.0"
 authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
 
