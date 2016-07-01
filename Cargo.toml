@@ -5,6 +5,7 @@ version = "0.1.0"
 authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
 repository = "https://pijul.org/thrussh"
 homepage = "https://pijul.org/thrussh"
+license = "Apache-2.0"
 include = [
         "Cargo.toml",
         "src/sodium.rs",
@@ -25,7 +26,6 @@ include = [
         "src/client/mod.rs",
         "src/client/write.rs",
         "src/client/read.rs",
-        "src/client/config.rs",
         "src/key.rs"
         ]
 
