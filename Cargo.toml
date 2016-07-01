@@ -30,11 +30,10 @@ include = [
         ]
 
 [dependencies]
-rand = "*"
-time = "*"
-log = "*"
-rustc-serialize = "*"
-byteorder = "*"
-
-libc = "*"
-libsodium-sys = "*"
+byteorder = "0.5"
+libc = "0.2"
+libsodium-sys = "0.0.10"
+log = "0.3"
+rand = "0.3"
+rustc-serialize = "0.3"
+time = "0.1"
