@@ -65,7 +65,7 @@ impl ServerSession {
 
 impl Encrypted {
 
-    pub fn server_read_encrypted<A:Authenticate, S:Server>(&mut self, config:&Config<A>, server:&mut S,
+    pub fn server_read_encrypted<A:Authenticate, S:Server>(&mut self, config:&Config, server:&mut S, auth:&A,
                                                            buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<(),Error> {
         // If we've successfully read a packet.
         debug!("buf = {:?}", buf);
@@ -94,7 +94,7 @@ impl Encrypted {
             Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                 if buf[0] == msg::USERAUTH_REQUEST {
 
-                    try!(self.server_read_auth_request(&config.auth, buf, auth_request, buffer, write_buffer))
+                    try!(self.server_read_auth_request(auth, buf, auth_request, buffer, write_buffer))
 
                 } else {
                     // Wrong request
@@ -117,7 +117,7 @@ impl Encrypted {
                 println!("buf = {:?}", buf);
                 match buf[0] {
                     msg::CHANNEL_OPEN => {
-                        try!(self.server_handle_channel_open(config, server, buf, buffer, write_buffer))
+                        try!(self.server_handle_channel_open(config, auth, server, buf, buffer, write_buffer))
                     },
                     buf_0 => {
                         let mut r = buf.reader(1);
@@ -208,7 +208,7 @@ impl Encrypted {
 
     }
 
-    fn server_handle_channel_open<A, S:Server>(&mut self, config:&super::Config<A>, server:&mut S, buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<(), Error> {
+    fn server_handle_channel_open<A, S:Server>(&mut self, config:&super::Config, auth:&A, server:&mut S, buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<(), Error> {
 
         // https://tools.ietf.org/html/rfc4254#section-5.1
         let mut r = buf.reader(1);
@@ -383,7 +383,7 @@ impl Encrypted {
         Ok(())
     }
 
-    pub fn server_read_rekey<A>(&mut self, buf:&[u8], config:&super::Config<A>, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<bool, Error> {
+    pub fn server_read_rekey(&mut self, buf:&[u8], config:&super::Config, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<bool, Error> {
         debug!("server_read_rekey {:?}", buf);
         if buf[0] == msg::KEXINIT {
             match std::mem::replace(&mut self.rekey, None) {

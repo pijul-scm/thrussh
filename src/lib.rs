@@ -79,11 +79,9 @@ mod cipher;
 use cipher::CipherT;
 pub mod key;
 
-mod mac;
-use mac::*;
-
-
-mod compression;
+// mod mac;
+// use mac::*;
+// mod compression;
 
 mod encoding;
 use encoding::*;

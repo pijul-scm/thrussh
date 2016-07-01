@@ -7,13 +7,11 @@ use super::{ Error };
 use super::key;
 use super::kex;
 use super::cipher;
-use super::mac;
 use super::msg;
-use super::compression;
+//use super::mac;
+//use super::compression;
 use super::CryptoBuf;
 use super::encoding::Reader;
-
-// pub type Names = (super::kex::Name, super::key::Algorithm, super::cipher::Name, super::mac::Mac, bool);
 
 #[derive(Debug)]
 pub struct Names {

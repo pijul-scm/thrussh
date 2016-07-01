@@ -8,12 +8,11 @@ use super::msg;
 use super::cipher::CipherT;
 
 #[derive(Debug)]
-pub struct Config<Auth> {
+pub struct Config {
     pub server_id: String,
     pub methods: auth::Methods,
     pub auth_banner: Option<&'static str>,
     pub keys: Vec<key::Algorithm>,
-    pub auth: Auth,
     pub rekey_write_limit: usize,
     pub rekey_read_limit: usize,
     pub rekey_time_limit_s: f64,
@@ -22,15 +21,14 @@ pub struct Config<Auth> {
     pub preferred: Preferred
 }
 
-impl<A> Config<A> {
-    pub fn default(a:A, keys:Vec<key::Algorithm>) -> Config<A> {
+impl Default for Config {
+    fn default() -> Config {
         Config {
             // Must begin with "SSH-2.0-".
             server_id: "SSH-2.0-SSH.rs_0.1".to_string(),
             methods: auth::Methods::all(),
             auth_banner: Some("SSH Authentication\r\n"), // CRLF separated lines.
-            keys: keys.to_vec(),
-            auth: a,
+            keys: Vec::new(),
             window_size: 100,
             maximum_packet_size: 100,
             // Following the recommendations of https://tools.ietf.org/html/rfc4253#section-9
@@ -65,7 +63,8 @@ impl ServerSession {
     pub fn read<R: BufRead, A: auth::Authenticate,S:Server>(
         &mut self,
         server:&mut S,
-        config: &Config<A>,
+        auth: &mut A,
+        config: &Config,
         stream: &mut R,
         buffer: &mut CryptoBuf,
         buffer2: &mut CryptoBuf)
@@ -153,7 +152,7 @@ impl ServerSession {
                             (ReturnCode::Ok, true)
                         } else {
                             debug!("calling read_encrypted");
-                            try!(enc.server_read_encrypted(config, server, buf, buffer, &mut self.buffers.write));
+                            try!(enc.server_read_encrypted(config, server, auth, buf, buffer, &mut self.buffers.write));
                             (ReturnCode::Ok, false)
                         }
                     } else {

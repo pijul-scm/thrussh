@@ -37,11 +37,11 @@ impl ServerSession {
 }
 
 impl Encrypted {
-    pub fn server_confirm_channel_open<A>(&mut self,
-                                          buffer: &mut CryptoBuf,
-                                          channel: &ChannelParameters,
-                                          config: &super::Config<A>,
-                                          write_buffer: &mut super::super::SSHBuffer) {
+    pub fn server_confirm_channel_open(&mut self,
+                                       buffer: &mut CryptoBuf,
+                                       channel: &ChannelParameters,
+                                       config: &super::Config,
+                                       write_buffer: &mut super::super::SSHBuffer) {
         buffer.clear();
         buffer.push(msg::CHANNEL_OPEN_CONFIRMATION);
         buffer.push_u32_be(channel.recipient_channel); // remote channel number.
