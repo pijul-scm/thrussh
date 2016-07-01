@@ -1,6 +1,3 @@
-use byteorder::{ByteOrder,BigEndian, ReadBytesExt};
-use std;
-
 use super::sodium::randombytes;
 
 use super::{ Error };

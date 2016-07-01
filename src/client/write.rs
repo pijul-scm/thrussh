@@ -27,7 +27,7 @@ impl Encrypted {
         config.keys[0].public_host_key.extend_pubkey(buffer);
 
         // Extend with signature.
-        println!("========== signing");
+        debug!("========== signing");
         buffer2.clear();
         config.keys[0].add_signature(buffer2, buffer.as_slice());
         buffer.extend(buffer2.as_slice());
@@ -67,14 +67,14 @@ impl Encrypted {
             }
         };
         if method_ok {
-            println!("method ok");
+            debug!("method ok");
             self.cipher.write(buffer.as_slice(), write_buffer);
             self.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
         } else {
             // In this case, the caller should call set_method() to
             // supply an alternative authentication method (possibly
             // requiring user input).
-            println!("method not ok: {:?}", auth_method);
+            debug!("method not ok: {:?}", auth_method);
             self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
         }
     }
@@ -108,7 +108,7 @@ impl Encrypted {
     }
     pub fn client_write_rekey<W:Write>(&mut self, stream:&mut W, buffers:&mut SSHBuffers, rekey:Kex, config:&super::Config, buffer:&mut CryptoBuf) -> Result<(),Error> {
 
-        println!("rekeying, {:?}", rekey);
+        debug!("rekeying, {:?}", rekey);
         match rekey {
             Kex::KexInit(mut kexinit) => {
 
@@ -137,7 +137,7 @@ impl Encrypted {
                 try!(buffers.write_all(stream));
             },
             Kex::NewKeys(mut newkeys) => {
-                println!("newkeys {:?}", newkeys);
+                debug!("newkeys {:?}", newkeys);
                 if !newkeys.sent {
                     self.cipher.write(&[msg::NEWKEYS], &mut buffers.write);
                     try!(buffers.write_all(stream));
@@ -146,7 +146,7 @@ impl Encrypted {
                 if !newkeys.received {
                     self.rekey = Some(Kex::NewKeys(newkeys))
                 } else {
-                    println!("changing keys!");
+                    debug!("changing keys!");
                     self.exchange = Some(newkeys.exchange);
                     self.kex = newkeys.kex;
                     self.cipher = newkeys.cipher;

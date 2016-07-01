@@ -11,7 +11,7 @@ impl<'a> super::ClientSession<'a> {
     pub fn client_read_server_id<R:BufRead>(&mut self, stream:&mut R, mut exchange:Exchange, preferred:&Preferred) -> Result<ReturnCode, Error> {
         let read_server_id = {
             let server_id = try!(self.buffers.read.read_ssh_id(stream));
-            println!("server_id = {:?}", server_id);
+            debug!("server_id = {:?}", server_id);
             if let Some(server_id) = server_id {
                 exchange.server_id.extend(server_id);
                 true
@@ -48,7 +48,7 @@ impl<'a> super::ClientSession<'a> {
                     kexinit.algo = Some(try!(negociation::Client::read_kex(payload, keys, pref)));
                     kexinit.exchange.server_kex_init.extend(payload);
                 } else {
-                    println!("unknown packet, expecting KEXINIT, received {:?}", payload);
+                    debug!("unknown packet, expecting KEXINIT, received {:?}", payload);
                 }
             }
         }
@@ -191,7 +191,7 @@ impl Encrypted {
 
 
     pub fn client_service_request(&mut self, auth_method:&Option<auth::Method>, buffers:&mut SSHBuffers, buffer:&mut CryptoBuf) -> Result<(), Error> {
-        println!("request success");
+        debug!("request success");
         let auth_request = auth::AuthRequest {
             methods: auth::Methods::all(),
             partial_success: false,
@@ -208,7 +208,7 @@ impl Encrypted {
         // We're waiting for success.
         debug!("client_auth_request_success");
 
-        println!("line {}, buf = {:?}", line!(), buf);
+        debug!("line {}, buf = {:?}", line!(), buf);
 
         if buf[0] == msg::USERAUTH_SUCCESS {
 
@@ -228,7 +228,7 @@ impl Encrypted {
             try!(self.client_send_signature(write_buffer, auth_request, config, buffer, buffer2));
 
         } else {
-            println!("unknown message: {:?}", buf);
+            debug!("unknown message: {:?}", buf);
             self.state = Some(EncryptedState::AuthRequestSuccess(auth_request))
         }
         Ok(())
@@ -236,7 +236,7 @@ impl Encrypted {
 
     pub fn client_channel_open_confirmation(&mut self, buf: &[u8], mut channels: ChannelParameters) -> Result<(), Error> {
         // Check whether we're receiving a confirmation message.
-        println!("channel_confirmation? {:?}", buf);
+        debug!("channel_confirmation? {:?}", buf);
         if buf[0] == msg::CHANNEL_OPEN_CONFIRMATION {
             let mut reader = buf.reader(1);
             let id_send = try!(reader.read_u32());
@@ -250,7 +250,7 @@ impl Encrypted {
                 channels.recipient_window_size = window;
                 channels.recipient_maximum_packet_size = max_packet;
                 
-                println!("id_send = {:?}", id_send);
+                debug!("id_send = {:?}", id_send);
                 self.channels.insert(channels.sender_channel, channels);
                 
                 self.state = Some(EncryptedState::ChannelOpened(Some(id_send)));

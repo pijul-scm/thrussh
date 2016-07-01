@@ -2,17 +2,36 @@
 name = "thrussh"
 version = "0.1.0"
 authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
+include = [
+        "Cargo.toml",
+        "src/sodium.rs",
+        "src/server/mod.rs",
+        "src/server/write.rs",
+        "src/server/read.rs",
+        "src/negociation.rs",
+        "src/kex.rs",
+        "src/auth.rs",
+        "src/cryptobuf.rs",
+        "src/cipher",
+        "src/cipher/mod.rs",
+        "src/cipher/chacha20poly1305.rs",
+        "src/msg.rs",
+        "src/lib.rs",
+        "src/encoding.rs",
+        "src/client",
+        "src/client/mod.rs",
+        "src/client/write.rs",
+        "src/client/read.rs",
+        "src/client/config.rs",
+        "src/key.rs"
+        ]
 
 [dependencies]
 rand = "*"
 time = "*"
 log = "*"
+rustc-serialize = "*"
 byteorder = "*"
 
 libc = "*"
-bitflags = "*"
-
-regex = "*"
-rustc-serialize = "*"
-
 libsodium-sys = "*"

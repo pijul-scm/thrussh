@@ -3,14 +3,10 @@ extern crate libsodium_sys;
 extern crate rand;
 
 #[macro_use]
-extern crate bitflags;
-
-#[macro_use]
 extern crate log;
 extern crate byteorder;
 
 extern crate rustc_serialize; // config: read base 64.
-extern crate regex; // for config.
 extern crate time;
 
 pub mod sodium;
@@ -21,7 +17,6 @@ use std::io::{Read, Write, BufRead, BufReader};
 
 
 use byteorder::{ByteOrder, BigEndian};
-use regex::Regex;
 use rustc_serialize::base64::{FromBase64};
 use std::path::Path;
 use std::fs::File;
@@ -33,7 +28,6 @@ static SODIUM_INIT: Once = ONCE_INIT;
 #[derive(Debug)]
 pub enum Error {
     CouldNotReadKey,
-    Regex(regex::Error),
     Base64(rustc_serialize::base64::FromBase64Error),
     KexInit,
     Version,
@@ -57,11 +51,6 @@ impl From<std::io::Error> for Error {
 impl From<std::str::Utf8Error> for Error {
     fn from(e: std::str::Utf8Error) -> Error {
         Error::Utf8(e)
-    }
-}
-impl From<regex::Error> for Error {
-    fn from(e: regex::Error) -> Error {
-        Error::Regex(e)
     }
 }
 impl From<rustc_serialize::base64::FromBase64Error> for Error {
@@ -144,7 +133,7 @@ pub struct ChannelBuf<'a> {
 impl<'a> ChannelBuf<'a> {
 
     fn output(&mut self, extended:Option<u32>, buf:&[u8]) -> usize {
-        println!("output {:?} {:?}", self.channel, buf);
+        debug!("output {:?} {:?}", self.channel, buf);
         let mut buf =
             if buf.len() as u32 > self.channel.recipient_window_size {
                 &buf[0..self.channel.recipient_window_size as usize]
@@ -171,7 +160,7 @@ impl<'a> ChannelBuf<'a> {
                 self.buffer.push_u32_be(self.channel.recipient_channel);
             }
             self.buffer.extend_ssh_string(&buf [ .. off ]);
-            println!("buffer = {:?}", self.buffer.as_slice());
+            debug!("buffer = {:?}", self.buffer.as_slice());
             self.cipher.write(self.buffer.as_slice(), self.write_buffer);
 
             self.channel.recipient_window_size -= off as u32;
@@ -191,7 +180,7 @@ impl<'a> ChannelBuf<'a> {
         self.buffer.clear();
         self.buffer.push(msg);
         self.buffer.push_u32_be(self.channel.recipient_channel);
-        println!("reply {:?}", self.buffer.as_slice());
+        debug!("reply {:?}", self.buffer.as_slice());
         self.cipher.write(self.buffer.as_slice(), self.write_buffer);
     }
     pub fn success(&mut self) {
@@ -331,11 +320,11 @@ impl SSHBuffers {
     }
     // Returns true iff the write buffer has been completely written.
     pub fn write_all<W: std::io::Write>(&mut self, stream: &mut W) -> Result<bool, Error> {
-        println!("write_all, self = {:?}", self.write.buffer.as_slice());
+        debug!("write_all, self = {:?}", self.write.buffer.as_slice());
         while self.write.len < self.write.buffer.len() {
             match self.write.buffer.write_all_from(self.write.len, stream) {
                 Ok(s) => {
-                    println!("written {:?} bytes", s);
+                    debug!("written {:?} bytes", s);
                     self.write.len += s;
                     self.write.bytes += s;
                     try!(stream.flush());
@@ -361,7 +350,6 @@ impl SSHBuffers {
         mut kexinit: KexInit) -> ServerState {
 
         if !kexinit.sent {
-            // println!("kexinit");
             let pos = self.write.buffer.len();
             self.write.buffer.extend(b"\0\0\0\0\0");
             negociation::write_kex(&preferred, &mut self.write.buffer);
@@ -398,7 +386,6 @@ impl SSHBuffers {
             try!(self.read.buffer.read(4, stream));
 
             self.read.len = self.read.buffer.read_u32_be(0) as usize;
-            // println!("clear_len: {:?}", self.read_len);
         }
         Ok(())
     }
@@ -411,7 +398,6 @@ impl SSHBuffers {
         let payload = {
             &buf[5..(4 + packet_length - padding_length)]
         };
-        // println!("payload : {:?} {:?} {:?}", payload.len(), padding_length, packet_length);
         payload
     }
 
@@ -426,7 +412,6 @@ impl SSHBuffers {
         loop {
             let consumed_len = match stream.fill_buf() {
                 Ok(buf) => {
-                    // println!("read {:?}", buf);
                     if self.read.buffer.len() + buf.len() < self.read.len + 4 {
 
                         self.read.buffer.extend(buf);
@@ -439,9 +424,7 @@ impl SSHBuffers {
                     }
                 }
                 Err(e) => {
-                    // println!("error :{:?}", e);
                     if e.kind() == std::io::ErrorKind::WouldBlock {
-                        // println!("would block");
                         return Ok(false);
                     } else {
                         return Err(Error::IO(e));
@@ -738,7 +721,6 @@ fn read<R: BufRead>(stream: &mut R,
     loop {
         let consumed_len = match stream.fill_buf() {
             Ok(buf) => {
-                // println!("read {:?}", buf);
                 if read_buffer.len() + buf.len() < read_len + 4 {
 
                     read_buffer.extend(buf);
@@ -751,9 +733,7 @@ fn read<R: BufRead>(stream: &mut R,
                 }
             }
             Err(e) => {
-                // println!("error :{:?}", e);
                 if e.kind() == std::io::ErrorKind::WouldBlock {
-                    // println!("would block");
                     return Ok(false);
                 } else {
                     return Err(Error::IO(e));
@@ -773,14 +753,18 @@ const KEYTYPE_ED25519:&'static [u8] = b"ssh-ed25519";
 
 pub fn load_public_key<P:AsRef<Path>>(p:P) -> Result<key::PublicKey, Error> {
 
-    let pubkey_regex = try!(Regex::new(r"ssh-\S*\s*(?P<key>\S+)\s*"));
     let mut pubkey = String::new();
     let mut file = try!(File::open(p.as_ref()));
     try!(file.read_to_string(&mut pubkey));
-    if let Some(p) = pubkey_regex.captures(&pubkey).and_then(|cap| cap.name("key")).and_then(|base| base.from_base64().ok()) {
-        read_public_key(&p)
-    } else {
-        Err(Error::CouldNotReadKey)
+
+    let mut split = pubkey.split_whitespace();
+
+    match (split.next(), split.next()) {
+        (Some(ssh_), Some(key)) if ssh_.starts_with("ssh-") => {
+            let base = try!(key.from_base64());
+            read_public_key(&base)
+        },
+        _ => Err(Error::CouldNotReadKey)
     }
 }
 
@@ -831,7 +815,6 @@ pub fn load_secret_key<P:AsRef<Path>>(p:P) -> Result<key::SecretKey, Error> {
             let public_string = try!(position.read_string());
             let mut pos = public_string.reader(0);
             if try!(pos.read_string()) == KEYTYPE_ED25519 {
-                // println!("{:?} {:?}", secret, secret.len());
                 if let Ok(pubkey) = pos.read_string() {
                     let public = sodium::ed25519::PublicKey::copy_from_slice(pubkey);
                     info!("public: {:?}", public);

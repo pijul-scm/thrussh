@@ -107,17 +107,17 @@ impl Encrypted {
                 debug!("receiving signature, {:?}", buf);
                 if buf[0] == msg::USERAUTH_REQUEST {
                     // check signature.
-                    try!(self.server_verify_signature(buf, buffer, auth_request, write_buffer));
+                    try!(self.server_verify_signature(auth, buf, buffer, auth_request, write_buffer));
                 } else {
                     self.server_reject_auth_request(buffer, auth_request, write_buffer)
                 }
                 Ok(())
             }
             Some(EncryptedState::ChannelOpened(recipient_channel)) => {
-                println!("buf = {:?}", buf);
+                debug!("buf = {:?}", buf);
                 match buf[0] {
                     msg::CHANNEL_OPEN => {
-                        try!(self.server_handle_channel_open(config, auth, server, buf, buffer, write_buffer))
+                        try!(self.server_handle_channel_open(config, server, buf, buffer, write_buffer))
                     },
                     buf_0 => {
                         let mut r = buf.reader(1);
@@ -126,7 +126,7 @@ impl Encrypted {
 
                             Entry::Occupied(mut e) => {
                                 buffer.clear();
-                                println!("buf: {:?}", buf);
+                                debug!("buf: {:?}", buf);
                                 match buf_0 {
                                     msg::CHANNEL_DATA => {
                                         let channel = e.get_mut();
@@ -145,7 +145,7 @@ impl Encrypted {
                                             };
                                             try!(server.data(&data, server_buf))
                                         }
-                                        println!("{:?} / {:?}", channel.sender_window_size, config.window_size);
+                                        debug!("{:?} / {:?}", channel.sender_window_size, config.window_size);
                                         if channel.sender_window_size < config.window_size/2 {
                                             super::super::adjust_window_size(write_buffer, &mut self.cipher,
                                                                              config.window_size, buffer, channel)
@@ -171,7 +171,7 @@ impl Encrypted {
                                                 try!(server.exec(req, server_buf));
                                             },
                                             x => {
-                                                println!("{:?}, line {:?} req_type = {:?}", file!(), line!(), std::str::from_utf8(x))
+                                                debug!("{:?}, line {:?} req_type = {:?}", file!(), line!(), std::str::from_utf8(x))
                                             }
                                         }
                                     },
@@ -208,7 +208,7 @@ impl Encrypted {
 
     }
 
-    fn server_handle_channel_open<A, S:Server>(&mut self, config:&super::Config, auth:&A, server:&mut S, buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<(), Error> {
+    fn server_handle_channel_open<S:Server>(&mut self, config:&super::Config, server:&mut S, buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<(), Error> {
 
         // https://tools.ietf.org/html/rfc4254#section-5.1
         let mut r = buf.reader(1);
@@ -262,8 +262,6 @@ impl Encrypted {
 
             if method == b"password" {
 
-                // let x = buf[pos];
-                // println!("is false? {:?}", x);
                 try!(r.read_byte());
                 let password = try!(r.read_string());
                 let password = try!(std::str::from_utf8(password));
@@ -335,14 +333,13 @@ impl Encrypted {
     }
 
 
-    pub fn server_verify_signature(&mut self, buf:&[u8], buffer:&mut CryptoBuf, auth_request: AuthRequest, write_buffer:&mut SSHBuffer) -> Result<(), Error> {
+    pub fn server_verify_signature<A:Authenticate>(&mut self, auth:&A, buf:&[u8], buffer:&mut CryptoBuf, auth_request: AuthRequest, write_buffer:&mut SSHBuffer) -> Result<(), Error> {
         // https://tools.ietf.org/html/rfc4252#section-5
         let mut r = buf.reader(1);
         let user_name = try!(r.read_string());
         let service_name = try!(r.read_string());
         let method = try!(r.read_string());
         let is_probe = try!(r.read_byte()) == 0;
-        // TODO: check that the user is the same (maybe?)
         if service_name == b"ssh-connection" && method == b"publickey" && !is_probe {
 
             let algo = try!(r.read_string());
@@ -356,23 +353,37 @@ impl Encrypted {
                     try!(k.read_string()); // should be equal to algo.
                     sodium::ed25519::PublicKey::copy_from_slice(try!(k.read_string()))
                 };
+                // Check that the user is still authorized (the client may have changed user since we accepted).
+                let method = Method::Pubkey {
+                    user: try!(std::str::from_utf8(user_name)),
+                    pubkey: key::PublicKey::Ed25519(key.clone()),
+                    seckey: None
+                };
 
-                let signature = try!(r.read_string());
-                let mut s = signature.reader(0);
-                // let algo_ =
-                try!(s.read_string());
-                let sig = sodium::ed25519::Signature::copy_from_slice(try!(s.read_string()));
+                match auth.auth(auth_request.methods, &method) {
+                    Auth::Success => {
 
-                buffer.clear();
-                buffer.extend_ssh_string(self.session_id.as_bytes());
-                buffer.extend(&buf[0..pos0]);
-                // Verify signature.
-                if sodium::ed25519::verify_detached(&sig, buffer.as_slice(), &key) {
-                    
-                    // EncryptedState::AuthRequestSuccess(auth_request)
-                    self.server_auth_request_success(buffer, write_buffer)
-                } else {
-                    self.server_reject_auth_request(buffer, auth_request, write_buffer)
+                        let signature = try!(r.read_string());
+                        let mut s = signature.reader(0);
+                        // let algo_ =
+                        try!(s.read_string());
+                        let sig = sodium::ed25519::Signature::copy_from_slice(try!(s.read_string()));
+
+                        buffer.clear();
+                        buffer.extend_ssh_string(self.session_id.as_bytes());
+                        buffer.extend(&buf[0..pos0]);
+                        // Verify signature.
+                        if sodium::ed25519::verify_detached(&sig, buffer.as_slice(), &key) {
+                            
+                            // EncryptedState::AuthRequestSuccess(auth_request)
+                            self.server_auth_request_success(buffer, write_buffer)
+                        } else {
+                            self.server_reject_auth_request(buffer, auth_request, write_buffer)
+                        }
+                    },
+                    _ => {
+                        self.server_reject_auth_request(buffer, auth_request, write_buffer)
+                    }
                 }
             } else {
                 self.server_reject_auth_request(buffer, auth_request, write_buffer)

@@ -70,7 +70,7 @@ impl Algorithm {
 
                 let mut shared_secret = curve25519::GroupElement::new_blank();
                 curve25519::scalarmult(&mut shared_secret, &server_secret, &client_pubkey);
-                println!("server shared : {:?}", shared_secret);
+                debug!("server shared : {:?}", shared_secret);
 
                 // debug!("shared secret");
                 // super::hexdump(shared_secret.as_bytes());
@@ -136,7 +136,7 @@ impl Algorithm {
                 let mut shared_secret = curve25519::GroupElement::new_blank();
                 curve25519::scalarmult(&mut shared_secret, &kex.local_secret, &server_public);
 
-                println!("client shared : {:?}", shared_secret);
+                debug!("client shared : {:?}", shared_secret);
 
                 kex.shared_secret = Some(shared_secret);
                 Ok(())
@@ -150,7 +150,6 @@ impl Algorithm {
                                  exchange:&super::Exchange,
                                  buffer:&mut super::CryptoBuf) -> Result<Digest,Error> {
         // Computing the exchange hash, see page 7 of RFC 5656.
-        //println!("exchange: {:?}", exchange);
         match self {
             &Algorithm::Curve25519(ref kex) => {
 
@@ -167,27 +166,25 @@ impl Algorithm {
                 
                 key.extend_pubkey(buffer);
 
-                //println!("server_ephemeral: {:?}", server_ephemeral);
-
                 debug_assert!(exchange.client_ephemeral.len() == 32);
                 buffer.extend_ssh_string(&exchange.client_ephemeral);
 
                 debug_assert!(exchange.server_ephemeral.len() == 32);
                 buffer.extend_ssh_string(&exchange.server_ephemeral);
 
-                //println!("shared: {:?}", kex.shared_secret);
+                debug!("shared: {:?}", kex.shared_secret);
                 //unimplemented!(); // Should be in wire format.
                 if let Some(ref shared) = kex.shared_secret {
                     buffer.extend_ssh_mpint(shared.as_bytes());
                 } else {
                     return Err(Error::Kex)
                 }
-                // println!("buffer len = {:?}", buffer.len());
-                // println!("buffer: {:?}", buffer.as_slice());
+                debug!("buffer len = {:?}", buffer.len());
+                debug!("buffer: {:?}", buffer.as_slice());
                 // super::hexdump(buffer);
                 let mut hash = sha256::Digest::new_blank();
                 sha256::hash(&mut hash, buffer.as_slice());
-                // println!("hash: {:?}", hash);
+                debug!("hash: {:?}", hash);
                 Ok(Digest::Sha256(hash))
             },
             // _ => Err(Error::Kex)

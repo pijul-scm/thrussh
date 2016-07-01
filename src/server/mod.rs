@@ -72,7 +72,7 @@ impl ServerSession {
         -> Result<ReturnCode, Error> {
 
         let state = std::mem::replace(&mut self.state, None);
-        println!("state: {:?}", state);
+        debug!("state: {:?}", state);
         match state {
             None => {
                 let mut exchange;
@@ -216,7 +216,6 @@ impl ServerSession {
         }
     }
 
-    // Returns whether the connexion is still alive.
     pub fn write<W: Write>(
         &mut self,
         stream: &mut W)

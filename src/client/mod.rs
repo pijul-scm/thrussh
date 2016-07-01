@@ -75,7 +75,7 @@ impl<'a> ClientSession<'a> {
 
         debug!("read");
         let state = std::mem::replace(&mut self.state, None);
-        println!("state = {:?}", state);
+        debug!("state = {:?}", state);
         match state {
             None => {
                 // We have neither sent nor received the version id.
@@ -176,7 +176,7 @@ impl<'a> ClientSession<'a> {
                                 let mut r = buf.reader(1);
                                 client.auth_banner(try!(std::str::from_utf8(try!(r.read_string()))))
                             }
-                            println!("buf = {:?}", buf);
+                            debug!("buf = {:?}", buf);
                         } else {
                             read_complete = false;
                         }
@@ -210,7 +210,7 @@ impl<'a> ClientSession<'a> {
 
                             transport!(buf);
 
-                            println!("msg: {:?} {:?}", buf, enc.rekey);
+                            debug!("msg: {:?} {:?}", buf, enc.rekey);
                             match std::mem::replace(&mut enc.rekey, None) {
                                 Some(rekey) => {
                                     is_newkeys = try!(enc.client_rekey(client, buf, rekey, &config, buffer, buffer2))
@@ -317,7 +317,7 @@ impl<'a> ClientSession<'a> {
         }
 
         let state = std::mem::replace(&mut self.state, None);
-        println!("state = {:?}", state);
+        debug!("state = {:?}", state);
         match state {
             None => {
                 // Maybe the first time we get to talk with the server
@@ -398,7 +398,7 @@ impl<'a> ClientSession<'a> {
                 match enc.state {
                     Some(EncryptedState::WaitingAuthRequest(ref auth_request)) => {
 
-                        println!("needs_auth_method: {:?}", auth_request);
+                        debug!("needs_auth_method: {:?}", auth_request);
                         Some(auth_request.methods)
                         
                     },
