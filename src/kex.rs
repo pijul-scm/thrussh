@@ -1,21 +1,20 @@
-/*
-   Copyright 2016 Pierre-Étienne Meunier
+// Copyright 2016 Pierre-Étienne Meunier
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+use byteorder::{ByteOrder, BigEndian};
 
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-*/
-use byteorder::{ByteOrder,BigEndian};
-
-use super::{ Error };
+use super::Error;
 use super::msg;
 use std;
 
@@ -27,12 +26,12 @@ use super::CryptoBuf;
 
 #[derive(Debug,Clone)]
 pub enum Digest {
-    Sha256(sha256::Digest)
+    Sha256(sha256::Digest),
 }
 impl Digest {
     pub fn as_bytes(&self) -> &[u8] {
         match self {
-            &Digest::Sha256(ref d) => d.as_bytes()
+            &Digest::Sha256(ref d) => d.as_bytes(),
         }
     }
 }
@@ -47,15 +46,17 @@ pub struct Curve25519 {
 
 #[derive(Debug)]
 pub enum Algorithm {
-    Curve25519(Curve25519) // "curve25519-sha256@libssh.org"
+    Curve25519(Curve25519), // "curve25519-sha256@libssh.org"
 }
 
 
-pub const CURVE25519:&'static str = "curve25519-sha256@libssh.org";
+pub const CURVE25519: &'static str = "curve25519-sha256@libssh.org";
 
 impl Algorithm {
-
-    pub fn server_dh(name:&str, exchange:&mut super::Exchange, payload:&[u8]) -> Result<Algorithm,Error> {
+    pub fn server_dh(name: &str,
+                     exchange: &mut super::Exchange,
+                     payload: &[u8])
+                     -> Result<Algorithm, Error> {
 
         match name {
 
@@ -63,10 +64,10 @@ impl Algorithm {
 
                 let client_pubkey = {
                     let pubkey_len = BigEndian::read_u32(&payload[1..]) as usize;
-                    curve25519::GroupElement::copy_from_slice(&payload[5 .. (5+pubkey_len)])
+                    curve25519::GroupElement::copy_from_slice(&payload[5..(5 + pubkey_len)])
                 };
                 let server_secret = {
-                    let mut server_secret = [0;curve25519::SCALARBYTES];
+                    let mut server_secret = [0; curve25519::SCALARBYTES];
                     randombytes::into(&mut server_secret);
 
                     // https://cr.yp.to/ecdh.html
@@ -94,20 +95,23 @@ impl Algorithm {
                     local_pubkey: server_pubkey,
                     local_secret: server_secret,
                     remote_pubkey: Some(client_pubkey),
-                    shared_secret: Some(shared_secret)
+                    shared_secret: Some(shared_secret),
                 }))
-            },
-            _ => Err(Error::Kex)
+            }
+            _ => Err(Error::Kex),
         }
     }
-    pub fn client_dh(name:&str, exchange:&mut super::Exchange, buf:&mut CryptoBuf) -> Result<Algorithm,Error> {
+    pub fn client_dh(name: &str,
+                     exchange: &mut super::Exchange,
+                     buf: &mut CryptoBuf)
+                     -> Result<Algorithm, Error> {
 
         match name {
 
             CURVE25519 => {
 
                 let client_secret = {
-                    let mut secret = [0;curve25519::SCALARBYTES];
+                    let mut secret = [0; curve25519::SCALARBYTES];
                     randombytes::into(&mut secret);
 
                     // https://cr.yp.to/ecdh.html
@@ -119,7 +123,7 @@ impl Algorithm {
 
                 let mut client_pubkey = curve25519::GroupElement::new_blank();
                 curve25519::scalarmult_base(&mut client_pubkey, &client_secret);
-                
+
                 // fill exchange.
                 exchange.client_ephemeral.clear();
                 exchange.client_ephemeral.extend(client_pubkey.as_bytes());
@@ -128,21 +132,21 @@ impl Algorithm {
                 buf.push(msg::KEX_ECDH_INIT);
                 buf.extend_ssh_string(client_pubkey.as_bytes());
 
-                
+
                 Ok(Algorithm::Curve25519(Curve25519 {
                     local_pubkey: client_pubkey,
                     local_secret: client_secret,
                     remote_pubkey: None,
-                    shared_secret: None
+                    shared_secret: None,
                 }))
-            },
-            _ => Err(Error::Kex)
+            }
+            _ => Err(Error::Kex),
         }
     }
 
 
 
-    pub fn compute_shared_secret(&mut self, remote_pubkey:&[u8]) -> Result<(), Error> {
+    pub fn compute_shared_secret(&mut self, remote_pubkey: &[u8]) -> Result<(), Error> {
 
         match self {
             &mut Algorithm::Curve25519(ref mut kex) => {
@@ -161,9 +165,10 @@ impl Algorithm {
     }
 
     pub fn compute_exchange_hash(&self,
-                                 key:&super::key::PublicKey,
-                                 exchange:&super::Exchange,
-                                 buffer:&mut super::CryptoBuf) -> Result<Digest,Error> {
+                                 key: &super::key::PublicKey,
+                                 exchange: &super::Exchange,
+                                 buffer: &mut super::CryptoBuf)
+                                 -> Result<Digest, Error> {
         // Computing the exchange hash, see page 7 of RFC 5656.
         match self {
             &Algorithm::Curve25519(ref kex) => {
@@ -178,7 +183,7 @@ impl Algorithm {
                 buffer.extend_ssh_string(&exchange.client_kex_init);
                 buffer.extend_ssh_string(&exchange.server_kex_init);
 
-                
+
                 key.extend_pubkey(buffer);
 
                 debug_assert!(exchange.client_ephemeral.len() == 32);
@@ -188,11 +193,11 @@ impl Algorithm {
                 buffer.extend_ssh_string(&exchange.server_ephemeral);
 
                 debug!("shared: {:?}", kex.shared_secret);
-                //unimplemented!(); // Should be in wire format.
+                // unimplemented!(); // Should be in wire format.
                 if let Some(ref shared) = kex.shared_secret {
                     buffer.extend_ssh_mpint(shared.as_bytes());
                 } else {
-                    return Err(Error::Kex)
+                    return Err(Error::Kex);
                 }
                 debug!("buffer len = {:?}", buffer.len());
                 debug!("buffer: {:?}", buffer.as_slice());
@@ -201,24 +206,25 @@ impl Algorithm {
                 sha256::hash(&mut hash, buffer.as_slice());
                 debug!("hash: {:?}", hash);
                 Ok(Digest::Sha256(hash))
-            },
+            }
             // _ => Err(Error::Kex)
         }
     }
 
 
-    pub fn compute_keys(&self, session_id:&Digest,
-                        exchange_hash:&Digest,
-                        buffer:&mut CryptoBuf,
-                        key:&mut CryptoBuf,
-                        cipher:&'static str,
-                        is_server:bool
-    ) -> Result<super::cipher::CipherPair, Error> {
+    pub fn compute_keys(&self,
+                        session_id: &Digest,
+                        exchange_hash: &Digest,
+                        buffer: &mut CryptoBuf,
+                        key: &mut CryptoBuf,
+                        cipher: &'static str,
+                        is_server: bool)
+                        -> Result<super::cipher::CipherPair, Error> {
         match self {
             &Algorithm::Curve25519(ref kex) => {
 
                 // https://tools.ietf.org/html/rfc4253#section-7.2
-                let mut compute_key = |c, key:&mut CryptoBuf, len| {
+                let mut compute_key = |c, key: &mut CryptoBuf, len| {
 
                     buffer.clear();
                     key.clear();
@@ -241,15 +247,13 @@ impl Algorithm {
                             buffer.extend_ssh_mpint(shared.as_bytes());
                         }
                         buffer.extend(exchange_hash.as_bytes());
-                        buffer.extend(
-                            key.as_slice()
-                        );
+                        buffer.extend(key.as_slice());
                         let mut hash = sha256::Digest::new_blank();
                         sha256::hash(&mut hash, buffer.as_slice());
                         key.extend(hash.as_bytes())
                     }
                 };
-                
+
                 match cipher {
                     super::cipher::CHACHA20POLY1305 => {
 
@@ -265,7 +269,7 @@ impl Algorithm {
                                 super::cipher::chacha20poly1305::Cipher::init(key.as_slice())
                             )
                         };
-                        
+
                         Ok(if is_server {
                             super::cipher::CipherPair {
                                 local_to_remote: server_to_client,
@@ -277,10 +281,10 @@ impl Algorithm {
                                 remote_to_local: server_to_client,
                             }
                         })
-                    },
-                    _ => Err(Error::DH)
+                    }
+                    _ => Err(Error::DH),
                 }
-            },
+            }
             // _ => unimplemented!()
         }
     }

@@ -1,37 +1,43 @@
-/*
-   Copyright 2016 Pierre-Étienne Meunier
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-*/
+// Copyright 2016 Pierre-Étienne Meunier
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
 
 use std::ops::Sub;
 use super::key;
-use super::{CryptoBuf};
+use super::CryptoBuf;
 use super::encoding;
 
 #[derive(Clone,Debug,Copy,PartialEq,Eq)]
 pub struct M(u32);
-pub const NONE:M = M(1);
-pub const PASSWORD:M = M(2);
-pub const PUBKEY:M = M(4);
-pub const HOSTBASED:M = M(8);
+pub const NONE: M = M(1);
+pub const PASSWORD: M = M(2);
+pub const PUBKEY: M = M(4);
+pub const HOSTBASED: M = M(8);
 
 #[derive(Debug)]
 pub enum Method<'a> {
     None,
-    Password { user:&'a str, password:&'a str },
-    Pubkey { user:&'a str, pubkey: key::PublicKey, seckey: Option<key::SecretKey> },
-    Hostbased
+    Password {
+        user: &'a str,
+        password: &'a str,
+    },
+    Pubkey {
+        user: &'a str,
+        pubkey: key::PublicKey,
+        seckey: Option<key::SecretKey>,
+    },
+    Hostbased,
 }
 impl<'a> Method<'a> {
     fn num(&self) -> M {
@@ -39,7 +45,7 @@ impl<'a> Method<'a> {
             Method::None => NONE,
             Method::Password { .. } => PASSWORD,
             Method::Pubkey { .. } => PUBKEY,
-            Method::Hostbased => HOSTBASED
+            Method::Hostbased => HOSTBASED,
         }
     }
 }
@@ -50,7 +56,7 @@ impl encoding::Bytes for M {
             PASSWORD => b"password",
             PUBKEY => b"publickey",
             HOSTBASED => b"hostbased",
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 }
@@ -59,12 +65,12 @@ impl encoding::Bytes for M {
 #[derive(Debug,Clone,Copy)]
 pub struct Methods {
     list: u32,
-    set: u32
+    set: u32,
 }
 
 impl Methods {
-    fn new(s:&[M]) -> Methods {
-        let mut list:u32 = 0;
+    fn new(s: &[M]) -> Methods {
+        let mut list: u32 = 0;
         let mut set: u32 = 0;
         let mut shift = 0;
         for &M(i) in s {
@@ -75,16 +81,19 @@ impl Methods {
                 shift += 4
             }
         }
-        Methods { list: list, set: set }
+        Methods {
+            list: list,
+            set: set,
+        }
     }
-    pub fn keep_remaining<'a, I:Iterator<Item=&'a [u8]>>(&mut self, i:I) {
+    pub fn keep_remaining<'a, I: Iterator<Item = &'a [u8]>>(&mut self, i: I) {
         for name in i {
             let x = match name {
                 b"password" => Some(PASSWORD),
                 b"publickey" => Some(PUBKEY),
                 b"none" => Some(NONE),
                 b"hostbased" => Some(HOSTBASED),
-                _ => None
+                _ => None,
             };
             if let Some(M(i)) = x {
                 self.set &= i as u32;
@@ -92,7 +101,7 @@ impl Methods {
         }
     }
     pub fn all() -> Methods {
-        Self::new(&[ PUBKEY, PASSWORD, HOSTBASED ])
+        Self::new(&[PUBKEY, PASSWORD, HOSTBASED])
     }
 }
 
@@ -145,7 +154,7 @@ impl Methods {
 
 impl<'a> Sub<&'a Method<'a>> for Methods {
     type Output = Methods;
-    fn sub(mut self, m:&Method) -> Self::Output {
+    fn sub(mut self, m: &Method) -> Self::Output {
         let M(m) = m.num();
         self.set &= !m;
         self
@@ -155,12 +164,18 @@ impl<'a> Sub<&'a Method<'a>> for Methods {
 #[derive(Debug)]
 pub enum Auth {
     Success,
-    Reject { remaining_methods:Methods, partial_success:bool },
+    Reject {
+        remaining_methods: Methods,
+        partial_success: bool,
+    },
 }
 
 pub trait Authenticate {
-    fn auth(&self, methods:Methods, method:&Method) -> Auth {
-        Auth::Reject { remaining_methods: methods - method, partial_success: false }
+    fn auth(&self, methods: Methods, method: &Method) -> Auth {
+        Auth::Reject {
+            remaining_methods: methods - method,
+            partial_success: false,
+        }
     }
 }
 

@@ -1,22 +1,21 @@
-/*
-   Copyright 2016 Pierre-Étienne Meunier
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-*/
+// Copyright 2016 Pierre-Étienne Meunier
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
 use std::io::{Write, BufRead};
 use time;
 use std;
-use super::negociation::{Preferred,PREFERRED, Select};
+use super::negociation::{Preferred, PREFERRED, Select};
 use super::*;
 pub use super::auth::*;
 use super::msg;
@@ -33,7 +32,7 @@ pub struct Config {
     pub rekey_time_limit_s: f64,
     pub window_size: u32,
     pub maximum_packet_size: u32,
-    pub preferred: Preferred
+    pub preferred: Preferred,
 }
 
 impl Default for Config {
@@ -48,10 +47,10 @@ impl Default for Config {
             window_size: 100,
             maximum_packet_size: 100,
             // Following the recommendations of https://tools.ietf.org/html/rfc4253#section-9
-            rekey_write_limit: 1<<30, // 1 Gb
-            rekey_read_limit: 1<<30, // 1Gb
+            rekey_write_limit: 1 << 30, // 1 Gb
+            rekey_read_limit: 1 << 30, // 1Gb
             rekey_time_limit_s: 3600.0,
-            preferred: PREFERRED
+            preferred: PREFERRED,
         }
     }
 }
@@ -82,15 +81,14 @@ impl ServerSession {
     }
 
     // returns whether a complete packet has been read.
-    pub fn read<R: BufRead, A: auth::Authenticate,S:Server>(
-        &mut self,
-        server:&mut S,
-        auth: &mut A,
-        config: &Config,
-        stream: &mut R,
-        buffer: &mut CryptoBuf,
-        buffer2: &mut CryptoBuf)
-        -> Result<ReturnCode, Error> {
+    pub fn read<R: BufRead, A: auth::Authenticate, S: Server>(&mut self,
+                                                              server: &mut S,
+                                                              auth: &mut A,
+                                                              config: &Config,
+                                                              stream: &mut R,
+                                                              buffer: &mut CryptoBuf,
+                                                              buffer2: &mut CryptoBuf)
+                                                              -> Result<ReturnCode, Error> {
 
         let state = std::mem::replace(&mut self.state, None);
         debug!("state: {:?}", state);
@@ -104,7 +102,7 @@ impl ServerSession {
                         exchange.client_id.extend_from_slice(client_id);
                         debug!("client id, exchange = {:?}", exchange);
                     } else {
-                        return Ok(ReturnCode::WrongPacket)
+                        return Ok(ReturnCode::WrongPacket);
                     }
                 }
                 // Preparing the response
@@ -117,7 +115,7 @@ impl ServerSession {
                     session_id: None,
                 })));
                 Ok(ReturnCode::Ok)
-            },
+            }
 
             Some(ServerState::Kex(Kex::KexInit(mut kexinit))) => {
 
@@ -128,18 +126,22 @@ impl ServerSession {
                         transport!(payload);
                         if kexinit.algo.is_none() {
                             // read algo from packet.
-                            kexinit.algo = Some(try!(super::negociation::Server::read_kex(payload, &config.keys, &config.preferred)));
+                            kexinit.algo =
+                                Some(try!(super::negociation::Server::read_kex(payload,
+                                                                               &config.keys,
+                                                                               &config.preferred)));
                             kexinit.exchange.client_kex_init.extend_from_slice(payload);
                         }
                     }
-                    self.state = Some(self.buffers.cleartext_write_kex_init(&config.preferred, true, kexinit));
+                    self.state = Some(self.buffers
+                        .cleartext_write_kex_init(&config.preferred, true, kexinit));
                     Ok(ReturnCode::Ok)
 
                 } else {
                     self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
                     Ok(ReturnCode::NotEnoughBytes)
                 }
-            },
+            }
 
             Some(ServerState::Kex(Kex::KexDh(mut kexdh))) => {
                 try!(self.buffers.set_clear_len(stream));
@@ -157,7 +159,7 @@ impl ServerSession {
                     self.state = Some(ServerState::Kex(Kex::KexDh(kexdh)));
                     Ok(ReturnCode::NotEnoughBytes)
                 }
-            },
+            }
 
             Some(ServerState::Kex(Kex::NewKeys(newkeys))) => {
                 try!(self.buffers.set_clear_len(stream));
@@ -167,7 +169,7 @@ impl ServerSession {
                     self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
                     Ok(ReturnCode::NotEnoughBytes)
                 }
-            },
+            }
 
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("read: encrypted {:?} {:?}", enc.state, enc.rekey);
@@ -177,13 +179,22 @@ impl ServerSession {
 
                         transport!(buf); // return in case of a transport layer packet.
 
-                        let rek = try!(enc.server_read_rekey(buf, config, buffer, buffer2, &mut self.buffers.write));
+                        let rek = try!(enc.server_read_rekey(buf,
+                                                             config,
+                                                             buffer,
+                                                             buffer2,
+                                                             &mut self.buffers.write));
                         if rek && enc.rekey.is_none() && buf[0] == msg::NEWKEYS {
                             // rekeying is finished.
                             (ReturnCode::Ok, true)
                         } else {
                             debug!("calling read_encrypted");
-                            try!(enc.server_read_encrypted(config, server, auth, buf, buffer, &mut self.buffers.write));
+                            try!(enc.server_read_encrypted(config,
+                                                           server,
+                                                           auth,
+                                                           buf,
+                                                           buffer,
+                                                           &mut self.buffers.write));
                             (ReturnCode::Ok, false)
                         }
                     } else {
@@ -198,31 +209,35 @@ impl ServerSession {
                             self.buffers.last_rekey_s = time::precise_time_s();
                         }
                         if enc.rekey.is_none() &&
-                            (self.buffers.read.bytes >= config.rekey_read_limit
-                             || self.buffers.write.bytes >= config.rekey_write_limit
-                             || time::precise_time_s() >= self.buffers.last_rekey_s + config.rekey_time_limit_s) {
+                           (self.buffers.read.bytes >= config.rekey_read_limit ||
+                            self.buffers.write.bytes >= config.rekey_write_limit ||
+                            time::precise_time_s() >=
+                            self.buffers.last_rekey_s + config.rekey_time_limit_s) {
 
-                                if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
+                            if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
 
-                                    let mut kexinit = KexInit {
-                                        exchange: exchange,
-                                        algo: None,
-                                        sent: true,
-                                        session_id: Some(enc.session_id.clone()),
-                                    };
-                                    kexinit.exchange.client_kex_init.clear();
-                                    kexinit.exchange.server_kex_init.clear();
-                                    kexinit.exchange.client_ephemeral.clear();
-                                    kexinit.exchange.server_ephemeral.clear();
+                                let mut kexinit = KexInit {
+                                    exchange: exchange,
+                                    algo: None,
+                                    sent: true,
+                                    session_id: Some(enc.session_id.clone()),
+                                };
+                                kexinit.exchange.client_kex_init.clear();
+                                kexinit.exchange.server_kex_init.clear();
+                                kexinit.exchange.client_ephemeral.clear();
+                                kexinit.exchange.server_ephemeral.clear();
 
-                                    debug!("sending kexinit");
-                                    enc.write_kexinit(&config.preferred, &mut kexinit, buffer, &mut self.buffers.write);
-                                    enc.rekey = Some(Kex::KexInit(kexinit))
-                                }
+                                debug!("sending kexinit");
+                                enc.write_kexinit(&config.preferred,
+                                                  &mut kexinit,
+                                                  buffer,
+                                                  &mut self.buffers.write);
+                                enc.rekey = Some(Kex::KexInit(kexinit))
                             }
+                        }
                         self.buffers.read.buffer.clear();
                         self.buffers.read.len = 0;
-                    },
+                    }
                     _ => {
                         debug!("not read buf, {:?}", self.buffers.read);
                     }
@@ -237,10 +252,7 @@ impl ServerSession {
         }
     }
 
-    pub fn write<W: Write>(
-        &mut self,
-        stream: &mut W)
-        -> Result<(), Error> {
+    pub fn write<W: Write>(&mut self, stream: &mut W) -> Result<(), Error> {
 
         // Finish pending writes, if any.
         try!(self.buffers.write_all(stream));

@@ -1,18 +1,17 @@
-/*
-   Copyright 2016 Pierre-Étienne Meunier
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-*/
+// Copyright 2016 Pierre-Étienne Meunier
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
 use super::super::msg;
 use super::super::kex;
 use super::*;
@@ -22,10 +21,7 @@ use super::super::negociation;
 use super::super::cipher::CipherT;
 
 impl ServerSession {
-
-    pub fn server_cleartext_kex_ecdh_reply(&mut self,
-                                           kexdhdone: &KexDhDone,
-                                           hash: &kex::Digest) {
+    pub fn server_cleartext_kex_ecdh_reply(&mut self, kexdhdone: &KexDhDone, hash: &kex::Digest) {
         // ECDH Key exchange.
         // http://tools.ietf.org/html/rfc5656#section-4
         self.buffers.write.buffer.extend(b"\0\0\0\0\0");
@@ -93,11 +89,13 @@ impl Encrypted {
             public_key: CryptoBuf::new(),
             public_key_algorithm: CryptoBuf::new(),
             sent_pk_ok: false,
-            public_key_is_ok: false
+            public_key_is_ok: false,
         }
     }
 
-    pub fn server_auth_request_success(&mut self, buffer:&mut CryptoBuf, write_buffer:&mut super::super::SSHBuffer) {
+    pub fn server_auth_request_success(&mut self,
+                                       buffer: &mut CryptoBuf,
+                                       write_buffer: &mut super::super::SSHBuffer) {
         buffer.clear();
         buffer.push(msg::USERAUTH_SUCCESS);
         self.cipher.write(buffer.as_slice(), write_buffer);
@@ -107,7 +105,7 @@ impl Encrypted {
     pub fn server_reject_auth_request(&mut self,
                                       buffer: &mut CryptoBuf,
                                       auth_request: AuthRequest,
-                                      write_buffer:&mut super::super::SSHBuffer) {
+                                      write_buffer: &mut super::super::SSHBuffer) {
         buffer.clear();
         buffer.push(msg::USERAUTH_FAILURE);
 
@@ -119,7 +117,7 @@ impl Encrypted {
         });
 
         self.cipher.write(buffer.as_slice(), write_buffer);
-        
+
         self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
     }
     pub fn server_send_pk_ok(&mut self,
@@ -134,7 +132,11 @@ impl Encrypted {
         auth_request.sent_pk_ok = true;
     }
 
-    pub fn write_kexinit(&mut self, preferred:&negociation::Preferred, kexinit:&mut KexInit, buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) {
+    pub fn write_kexinit(&mut self,
+                         preferred: &negociation::Preferred,
+                         kexinit: &mut KexInit,
+                         buffer: &mut CryptoBuf,
+                         write_buffer: &mut SSHBuffer) {
         buffer.clear();
         negociation::write_kex(preferred, buffer);
         kexinit.exchange.server_kex_init.extend(buffer.as_slice());

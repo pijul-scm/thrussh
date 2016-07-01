@@ -1,18 +1,17 @@
-/*
-   Copyright 2016 Pierre-Étienne Meunier
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-*/
+// Copyright 2016 Pierre-Étienne Meunier
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
 use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, EncryptedState, ChannelBuf};
 use super::encoding::*;
 use super::key;
@@ -20,7 +19,7 @@ use super::msg;
 use super::auth;
 use super::cipher::CipherT;
 use super::negociation;
-use std::io::{Write,BufRead};
+use std::io::{Write, BufRead};
 use time;
 use ReturnCode;
 use std;
@@ -39,7 +38,7 @@ pub struct Config {
     pub rekey_time_limit_s: f64,
     pub window_size: u32,
     pub maxpacket: u32,
-    pub preferred: negociation::Preferred
+    pub preferred: negociation::Preferred,
 }
 
 impl std::default::Default for Config {
@@ -51,12 +50,12 @@ impl std::default::Default for Config {
             keys: Vec::new(),
             // Following the recommendations of
             // https://tools.ietf.org/html/rfc4253#section-9
-            rekey_write_limit: 1<<30, // 1 Gb
-            rekey_read_limit: 1<<30, // 1 Gb
+            rekey_write_limit: 1 << 30, // 1 Gb
+            rekey_read_limit: 1 << 30, // 1 Gb
             rekey_time_limit_s: 3600.0,
-            window_size:200000,
-            maxpacket:200000,
-            preferred: negociation::PREFERRED
+            window_size: 200000,
+            maxpacket: 200000,
+            preferred: negociation::PREFERRED,
         }
     }
 }
@@ -75,7 +74,7 @@ impl<'a> Default for ClientSession<'a> {
         ClientSession {
             buffers: super::SSHBuffers::new(),
             state: None,
-            auth_method: None
+            auth_method: None,
         }
     }
 }
@@ -85,14 +84,14 @@ impl<'a> ClientSession<'a> {
         ClientSession::default()
     }
     // returns whether a complete packet has been read.
-    pub fn read<R: BufRead, C:super::Client + super::ValidateKey>(
-        &mut self,
-        config: &Config,
-        client: &mut C,
-        stream: &mut R,
-        buffer: &mut CryptoBuf,
-        buffer2: &mut CryptoBuf)
-        -> Result<super::ReturnCode, Error> {
+    pub fn read<R: BufRead, C: super::Client + super::ValidateKey>
+        (&mut self,
+         config: &Config,
+         client: &mut C,
+         stream: &mut R,
+         buffer: &mut CryptoBuf,
+         buffer2: &mut CryptoBuf)
+         -> Result<super::ReturnCode, Error> {
 
         debug!("read");
         let state = std::mem::replace(&mut self.state, None);
@@ -107,11 +106,11 @@ impl<'a> ClientSession<'a> {
                 exchange.client_id.extend(config.client_id.as_bytes());
                 //
                 self.client_read_server_id(stream, exchange, &config.preferred)
-            },
+            }
             Some(ServerState::VersionOk(exchange)) => {
                 // We've sent our id, and are waiting for the server's id.
                 self.client_read_server_id(stream, exchange, &config.preferred)
-            },
+            }
             Some(ServerState::Kex(Kex::KexInit(kexinit))) => {
                 try!(self.buffers.set_clear_len(stream));
                 if try!(self.buffers.read(stream)) {
@@ -122,7 +121,7 @@ impl<'a> ClientSession<'a> {
                     self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
                     Ok(ReturnCode::NotEnoughBytes)
                 }
-            },
+            }
             Some(ServerState::Kex(Kex::KexDh(kexdh))) => {
                 // This is a writing state from the client.
                 debug!("reading kexdh");
@@ -144,7 +143,7 @@ impl<'a> ClientSession<'a> {
                     self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
                     Ok(ReturnCode::NotEnoughBytes)
                 }
-            },
+            }
             Some(ServerState::Kex(Kex::NewKeys(newkeys))) => {
                 try!(self.buffers.set_clear_len(stream));
                 if try!(self.buffers.read(stream)) {
@@ -153,7 +152,7 @@ impl<'a> ClientSession<'a> {
                     self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
                     Ok(ReturnCode::NotEnoughBytes)
                 }
-            },
+            }
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("encrypted state {:?}", enc);
                 self.try_rekey(&mut enc, config);
@@ -165,7 +164,8 @@ impl<'a> ClientSession<'a> {
                     Some(EncryptedState::ServiceRequest) => {
 
                         let is_service_accept = {
-                            if let Some(buf) = try!(enc.cipher.read(stream, &mut self.buffers.read)) {
+                            if let Some(buf) =
+                                   try!(enc.cipher.read(stream, &mut self.buffers.read)) {
                                 transport!(buf);
                                 read_complete = true;
                                 buf[0] == msg::SERVICE_ACCEPT
@@ -177,7 +177,7 @@ impl<'a> ClientSession<'a> {
                         if is_service_accept {
                             try!(enc.client_service_request(&self.auth_method, &mut self.buffers, buffer))
                         }
-                    },
+                    }
                     Some(EncryptedState::AuthRequestSuccess(auth_request)) => {
                         debug!("auth_request_success");
                         if let Some(buf) = try!(enc.cipher.read(stream,&mut self.buffers.read)) {
@@ -186,7 +186,7 @@ impl<'a> ClientSession<'a> {
                         } else {
                             read_complete = false;
                         }
-                    },
+                    }
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                         if let Some(buf) = try!(enc.cipher.read(stream, &mut self.buffers.read)) {
 
@@ -202,19 +202,18 @@ impl<'a> ClientSession<'a> {
                             read_complete = false;
                         }
                         enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
-                    },
+                    }
                     Some(EncryptedState::WaitingSignature(auth_request)) => {
                         // The server is waiting for our authentication signature (also USERAUTH_REQUEST).
                         enc.state = Some(EncryptedState::WaitingSignature(auth_request));
                         read_complete = false
-                    },
+                    }
                     Some(EncryptedState::WaitingChannelOpen) => {
                         // The server is waiting for our CHANNEL_OPEN.
                         enc.state = Some(EncryptedState::WaitingChannelOpen);
                         read_complete = false
-                    },
+                    }
                     Some(EncryptedState::ChannelOpenConfirmation(channels)) => {
-
                         if let Some(buf) = try!(enc.cipher.read(stream, &mut self.buffers.read)) {
                             transport!(buf);
                             read_complete = true;
@@ -247,7 +246,7 @@ impl<'a> ClientSession<'a> {
                                         kexinit.exchange.server_kex_init.extend_from_slice(buf);
                                         enc.rekey = Some(try!(kexinit.kexinit()));
                                     }
-                                },
+                                }
                                 None if buf[0] == msg::CHANNEL_DATA => {
 
                                     let mut r = buf.reader(1);
@@ -257,20 +256,23 @@ impl<'a> ClientSession<'a> {
                                         let data = try!(r.read_string());
                                         channel.sender_window_size -= data.len() as u32;
                                         if channel.sender_window_size < config.window_size / 2 {
-                                            super::adjust_window_size(&mut self.buffers.write, &mut enc.cipher,
-                                                                      config.window_size, buffer, channel)
+                                            super::adjust_window_size(&mut self.buffers.write,
+                                                                      &mut enc.cipher,
+                                                                      config.window_size,
+                                                                      buffer,
+                                                                      channel)
                                         }
                                         buffer.clear();
                                         let server_buf = ChannelBuf {
-                                            buffer:buffer,
+                                            buffer: buffer,
                                             channel: channel,
                                             write_buffer: &mut self.buffers.write,
                                             cipher: &mut enc.cipher,
-                                            wants_reply: false
+                                            wants_reply: false,
                                         };
                                         try!(client.data(None, &data, server_buf))
                                     }
-                                },
+                                }
                                 None if buf[0] == msg::CHANNEL_EXTENDED_DATA => {
                                     let mut r = buf.reader(1);
                                     let channel_num = try!(r.read_u32());
@@ -279,15 +281,15 @@ impl<'a> ClientSession<'a> {
                                         let data = try!(r.read_string());
                                         buffer.clear();
                                         let server_buf = ChannelBuf {
-                                            buffer:buffer,
+                                            buffer: buffer,
                                             channel: channel,
                                             write_buffer: &mut self.buffers.write,
                                             cipher: &mut enc.cipher,
-                                            wants_reply: false
+                                            wants_reply: false,
                                         };
                                         try!(client.data(Some(extended_code), &data, server_buf))
                                     }
-                                },
+                                }
                                 None if buf[0] == msg::CHANNEL_WINDOW_ADJUST => {
                                     let mut r = buf.reader(1);
                                     let channel_num = try!(r.read_u32());
@@ -295,7 +297,7 @@ impl<'a> ClientSession<'a> {
                                     if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
                                         channel.recipient_window_size += amount
                                     }
-                                },
+                                }
                                 None => {
                                     info!("Unhandled packet: {:?}", buf);
                                 }
@@ -330,7 +332,7 @@ impl<'a> ClientSession<'a> {
                            -> Result<bool, Error> {
         debug!("write, buffer: {:?}", self.buffers.write);
         // Finish pending writes, if any.
-        if ! try!(self.buffers.write_all(stream)) {
+        if !try!(self.buffers.write_all(stream)) {
             // If there are still bytes to write.
             return Ok(true);
         }
@@ -349,7 +351,7 @@ impl<'a> ClientSession<'a> {
                 debug!("sent!: {:?}", exchange);
                 self.state = Some(ServerState::VersionOk(exchange));
                 Ok(true)
-            },
+            }
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("encrypted");
                 self.try_rekey(&mut enc, config);
@@ -361,9 +363,12 @@ impl<'a> ClientSession<'a> {
                         // user input) between read and write: if we
                         // don't do it exactly there, the event loop
                         // won't call read/write again.
-                        enc.client_waiting_auth_request(&mut self.buffers.write, auth_request, &self.auth_method, buffer);
+                        enc.client_waiting_auth_request(&mut self.buffers.write,
+                                                        auth_request,
+                                                        &self.auth_method,
+                                                        buffer);
                         try!(self.buffers.write_all(stream));
-                    },
+                    }
                     state => {
                         if let Some(rekey) = std::mem::replace(&mut enc.rekey, None) {
                             try!(enc.client_write_rekey(stream, &mut self.buffers, rekey, config, buffer));
@@ -374,7 +379,7 @@ impl<'a> ClientSession<'a> {
 
                 self.state = Some(ServerState::Encrypted(enc));
                 Ok(true)
-            },
+            }
             state => {
                 self.state = state;
                 Ok(true)
@@ -383,28 +388,28 @@ impl<'a> ClientSession<'a> {
 
     }
 
-    fn try_rekey(&mut self, enc: &mut super::Encrypted, config:&Config) {
+    fn try_rekey(&mut self, enc: &mut super::Encrypted, config: &Config) {
         if enc.rekey.is_none() &&
-            (self.buffers.write.bytes >= config.rekey_write_limit
-             || self.buffers.read.bytes >= config.rekey_read_limit
-             || time::precise_time_s() >= self.buffers.last_rekey_s + config.rekey_time_limit_s) {
+           (self.buffers.write.bytes >= config.rekey_write_limit ||
+            self.buffers.read.bytes >= config.rekey_read_limit ||
+            time::precise_time_s() >= self.buffers.last_rekey_s + config.rekey_time_limit_s) {
 
-                if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
-                    let mut kexinit = KexInit {
-                        exchange: exchange,
-                        algo: None,
-                        sent: false,
-                        session_id: Some(enc.session_id.clone()),
-                    };
-                    kexinit.exchange.client_kex_init.clear();
-                    kexinit.exchange.server_kex_init.clear();
-                    kexinit.exchange.client_ephemeral.clear();
-                    kexinit.exchange.server_ephemeral.clear();
-                    enc.rekey = Some(Kex::KexInit(kexinit))
-                }
-            } else {
-                debug!("not yet rekeying, {:?}", self.buffers.write.bytes)
+            if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
+                let mut kexinit = KexInit {
+                    exchange: exchange,
+                    algo: None,
+                    sent: false,
+                    session_id: Some(enc.session_id.clone()),
+                };
+                kexinit.exchange.client_kex_init.clear();
+                kexinit.exchange.server_kex_init.clear();
+                kexinit.exchange.client_ephemeral.clear();
+                kexinit.exchange.server_ephemeral.clear();
+                enc.rekey = Some(Kex::KexInit(kexinit))
             }
+        } else {
+            debug!("not yet rekeying, {:?}", self.buffers.write.bytes)
+        }
     }
 
     pub fn needs_auth_method(&self) -> Option<auth::Methods> {
@@ -417,11 +422,11 @@ impl<'a> ClientSession<'a> {
                         debug!("needs_auth_method: {:?}", auth_request);
                         Some(auth_request.methods)
 
-                    },
-                    _ => None
+                    }
+                    _ => None,
                 }
-            },
-            _ => None
+            }
+            _ => None,
         }
     }
 
@@ -430,18 +435,13 @@ impl<'a> ClientSession<'a> {
         match self.state {
             Some(ServerState::Encrypted(ref enc)) => {
                 match enc.state {
-                    Some(EncryptedState::WaitingChannelOpen)
-                        | Some(EncryptedState::ChannelOpenConfirmation(_))
-                        | Some(EncryptedState::ChannelOpened(_))
-                        => {
-
-                        true
-
-                    },
-                    _ => false
+                    Some(EncryptedState::WaitingChannelOpen) |
+                    Some(EncryptedState::ChannelOpenConfirmation(_)) |
+                    Some(EncryptedState::ChannelOpened(_)) => true,
+                    _ => false,
                 }
-            },
-            _ => false
+            }
+            _ => false,
         }
     }
 
@@ -451,18 +451,23 @@ impl<'a> ClientSession<'a> {
             Some(ServerState::Encrypted(ref enc)) => {
                 match enc.state {
                     Some(EncryptedState::ChannelOpened(Some(x))) => Some(x),
-                    _ => None
+                    _ => None,
                 }
-            },
-            _ => None
+            }
+            _ => None,
         }
     }
 
-    pub fn set_method(&mut self, method:auth::Method<'a>) {
+    pub fn set_method(&mut self, method: auth::Method<'a>) {
         self.auth_method = Some(method)
     }
 
-    pub fn msg<W:Write>(&mut self, stream:&mut W, buffer:&mut CryptoBuf, msg:&[u8], channel:u32) -> Result<Option<usize>,Error> {
+    pub fn msg<W: Write>(&mut self,
+                         stream: &mut W,
+                         buffer: &mut CryptoBuf,
+                         msg: &[u8],
+                         channel: u32)
+                         -> Result<Option<usize>, Error> {
 
         match self.state {
             Some(ServerState::Encrypted(ref mut enc)) => {
@@ -485,28 +490,27 @@ impl<'a> ClientSession<'a> {
                             enc.cipher = newkeys.cipher;
                             enc.mac = newkeys.names.mac;
                         }
-                    },
+                    }
                     Some(Kex::KexDh(kexdh)) => {
                         try!(enc.client_write_kexdh(buffer, &mut self.buffers.write, kexdh));
                         try!(self.buffers.write_all(stream));
                     }
-                    x => enc.rekey = x
+                    x => enc.rekey = x,
                 }
 
                 if enc.rekey.is_none() {
 
                     match enc.state {
                         Some(EncryptedState::ChannelOpened(_)) => {
-
                             if let Some(c) = enc.channels.get_mut(&channel) {
 
                                 let written = {
                                     let mut channel_buf = ChannelBuf {
-                                        buffer:buffer,
+                                        buffer: buffer,
                                         channel: c,
                                         write_buffer: &mut self.buffers.write,
                                         cipher: &mut enc.cipher,
-                                        wants_reply: false
+                                        wants_reply: false,
                                     };
                                     channel_buf.output(None, msg)
                                 };
@@ -515,15 +519,15 @@ impl<'a> ClientSession<'a> {
                             } else {
                                 Ok(None)
                             }
-                        },
-                        _ => Ok(None)
+                        }
+                        _ => Ok(None),
                     }
 
                 } else {
                     Ok(None)
                 }
-            },
-            _ => Ok(None)
+            }
+            _ => Ok(None),
         }
     }
 }

@@ -1,22 +1,21 @@
-/*
-   Copyright 2016 Pierre-Étienne Meunier
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-*/
+// Copyright 2016 Pierre-Étienne Meunier
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
 use super::super::*;
-use std::io::{Write};
+use std::io::Write;
 use super::super::msg;
-use super::super::auth::{AuthRequest};
+use super::super::auth::AuthRequest;
 use rand;
 use rand::Rng;
 use super::super::negociation;
@@ -24,8 +23,13 @@ use super::super::cipher::CipherT;
 
 
 impl Encrypted {
-
-    pub fn client_send_signature(&mut self, write_buffer:&mut SSHBuffer, auth_request:AuthRequest, config:&super::Config, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<(),Error> {
+    pub fn client_send_signature(&mut self,
+                                 write_buffer: &mut SSHBuffer,
+                                 auth_request: AuthRequest,
+                                 config: &super::Config,
+                                 buffer: &mut CryptoBuf,
+                                 buffer2: &mut CryptoBuf)
+                                 -> Result<(), Error> {
 
         buffer.clear();
 
@@ -54,7 +58,11 @@ impl Encrypted {
         Ok(())
     }
 
-    pub fn client_waiting_auth_request(&mut self, write_buffer:&mut SSHBuffer, auth_request:AuthRequest, auth_method:&Option<auth::Method>, buffer:&mut CryptoBuf) {
+    pub fn client_waiting_auth_request(&mut self,
+                                       write_buffer: &mut SSHBuffer,
+                                       auth_request: AuthRequest,
+                                       auth_method: &Option<auth::Method>,
+                                       buffer: &mut CryptoBuf) {
         // The server is waiting for our USERAUTH_REQUEST.
         buffer.clear();
         buffer.push(msg::USERAUTH_REQUEST);
@@ -67,7 +75,7 @@ impl Encrypted {
                 buffer.push(1);
                 buffer.extend_ssh_string(password.as_bytes());
                 true
-            },
+            }
             Some(auth::Method::Pubkey { ref user, ref pubkey, .. }) => {
                 buffer.extend_ssh_string(user.as_bytes());
                 buffer.extend_ssh_string(b"ssh-connection");
@@ -76,10 +84,8 @@ impl Encrypted {
                 buffer.extend_ssh_string(pubkey.name().as_bytes());
                 pubkey.extend_pubkey(buffer);
                 true
-            },
-            _ => {
-                false
             }
+            _ => false,
         };
         if method_ok {
             debug!("method ok");
@@ -94,7 +100,11 @@ impl Encrypted {
         }
     }
 
-    pub fn client_waiting_channel_open(&mut self, write_buffer:&mut SSHBuffer, config:&super::Config, buffer:&mut CryptoBuf) -> Result<(),Error> {
+    pub fn client_waiting_channel_open(&mut self,
+                                       write_buffer: &mut SSHBuffer,
+                                       config: &super::Config,
+                                       buffer: &mut CryptoBuf)
+                                       -> Result<(), Error> {
         // The server is waiting for our CHANNEL_OPEN.
         let mut sender_channel = 0;
         while self.channels.contains_key(&sender_channel) || sender_channel == 0 {
@@ -109,19 +119,23 @@ impl Encrypted {
         // Send
         self.cipher.write(buffer.as_slice(), write_buffer);
 
-        self.state = Some(EncryptedState::ChannelOpenConfirmation(
-            ChannelParameters {
-                recipient_channel: 0,
-                sender_channel: sender_channel,
-                sender_window_size: config.window_size,
-                recipient_window_size: 0,
-                sender_maximum_packet_size: config.maxpacket,
-                recipient_maximum_packet_size: 0,
-            }
-        ));
+        self.state = Some(EncryptedState::ChannelOpenConfirmation(ChannelParameters {
+            recipient_channel: 0,
+            sender_channel: sender_channel,
+            sender_window_size: config.window_size,
+            recipient_window_size: 0,
+            sender_maximum_packet_size: config.maxpacket,
+            recipient_maximum_packet_size: 0,
+        }));
         Ok(())
     }
-    pub fn client_write_rekey<W:Write>(&mut self, stream:&mut W, buffers:&mut SSHBuffers, rekey:Kex, config:&super::Config, buffer:&mut CryptoBuf) -> Result<(),Error> {
+    pub fn client_write_rekey<W: Write>(&mut self,
+                                        stream: &mut W,
+                                        buffers: &mut SSHBuffers,
+                                        rekey: Kex,
+                                        config: &super::Config,
+                                        buffer: &mut CryptoBuf)
+                                        -> Result<(), Error> {
 
         debug!("rekeying, {:?}", rekey);
         match rekey {
@@ -133,7 +147,7 @@ impl Encrypted {
                     kexinit.exchange.client_kex_init.extend(buffer.as_slice());
 
                     self.cipher.write(buffer.as_slice(), &mut buffers.write);
-                    
+
                     try!(buffers.write_all(stream));
                     kexinit.sent = true;
                 }
@@ -146,11 +160,11 @@ impl Encrypted {
                 } else {
                     self.rekey = Some(Kex::KexInit(kexinit))
                 }
-            },
+            }
             Kex::KexDh(kexdh) => {
                 try!(self.client_write_kexdh(buffer, &mut buffers.write, kexdh));
                 try!(buffers.write_all(stream));
-            },
+            }
             Kex::NewKeys(mut newkeys) => {
                 debug!("newkeys {:?}", newkeys);
                 if !newkeys.sent {
@@ -168,18 +182,22 @@ impl Encrypted {
                     buffers.read.bytes = 0;
                     buffers.write.bytes = 0;
                 }
-            },
-            state => {
-                self.rekey = Some(state)
             }
+            state => self.rekey = Some(state),
         }
         Ok(())
     }
 
-    pub fn client_write_kexdh(&mut self, buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer, mut kexdh:KexDh) -> Result<(), Error> {
+    pub fn client_write_kexdh(&mut self,
+                              buffer: &mut CryptoBuf,
+                              write_buffer: &mut SSHBuffer,
+                              mut kexdh: KexDh)
+                              -> Result<(), Error> {
         buffer.clear();
-        let kex = try!(super::super::kex::Algorithm::client_dh(kexdh.names.kex, &mut kexdh.exchange, buffer));
-        
+        let kex = try!(super::super::kex::Algorithm::client_dh(kexdh.names.kex,
+                                                               &mut kexdh.exchange,
+                                                               buffer));
+
         self.cipher.write(buffer.as_slice(), write_buffer);
 
         self.rekey = Some(Kex::KexDhDone(KexDhDone {

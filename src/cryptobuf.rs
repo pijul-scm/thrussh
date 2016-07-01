@@ -1,39 +1,36 @@
-/*
-   Copyright 2016 Pierre-Étienne Meunier
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-*/
+// Copyright 2016 Pierre-Étienne Meunier
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
 use std;
 
 use super::sodium;
-use super::libc::{ malloc, free, c_void };
+use super::libc::{malloc, free, c_void};
 #[derive(Debug)]
 pub struct CryptoBuf {
-    p:*mut u8,
-    size:usize,
-    capacity:usize,
-    zero:u8,
+    p: *mut u8,
+    size: usize,
+    capacity: usize,
+    zero: u8,
 }
 
 unsafe impl Send for CryptoBuf {}
 
 impl std::ops::Index<usize> for CryptoBuf {
     type Output = u8;
-    fn index(&self, index:usize) -> &u8 {
+    fn index(&self, index: usize) -> &u8 {
         assert!(index < self.size);
-        unsafe {
-            &* self.p.offset(index as isize)
-        }
+        unsafe { &*self.p.offset(index as isize) }
     }
 }
 
@@ -42,7 +39,9 @@ impl std::io::Write for CryptoBuf {
         self.extend(buf);
         Ok(buf.len())
     }
-    fn flush(&mut self) -> Result<(), std::io::Error> { Ok(()) }
+    fn flush(&mut self) -> Result<(), std::io::Error> {
+        Ok(())
+    }
 }
 
 
@@ -52,7 +51,7 @@ impl Default for CryptoBuf {
             p: std::ptr::null_mut(),
             size: 0,
             capacity: 0,
-            zero: 0
+            zero: 0,
         };
         // This avoids potential problems in as_slice().
         buf.p = &mut buf.zero;
@@ -66,7 +65,7 @@ impl CryptoBuf {
     pub fn new() -> CryptoBuf {
         CryptoBuf::default()
     }
-    
+
     pub fn len(&self) -> usize {
         self.size
     }
@@ -76,7 +75,7 @@ impl CryptoBuf {
     }
 
 
-    pub fn resize(&mut self, size:usize) {
+    pub fn resize(&mut self, size: usize) {
         if size <= self.capacity {
             self.size = size
         } else {
@@ -115,31 +114,28 @@ impl CryptoBuf {
         self.size = 0;
     }
 
-    pub fn push(&mut self, s:u8) {
+    pub fn push(&mut self, s: u8) {
         let size = self.size;
         self.resize(size + 1);
-        unsafe {
-            *(self.p.offset(size as isize)) = s
-        }
+        unsafe { *(self.p.offset(size as isize)) = s }
     }
 
-    pub fn push_u32_be(&mut self, s:u32) {
+    pub fn push_u32_be(&mut self, s: u32) {
         let size = self.size;
         self.resize(size + 4);
-        unsafe {
-            *(self.p.offset(size as isize) as *mut u32) = s.to_be()
-        }
+        unsafe { *(self.p.offset(size as isize) as *mut u32) = s.to_be() }
     }
 
-    pub fn read_u32_be(&self, i:usize) -> u32 {
+    pub fn read_u32_be(&self, i: usize) -> u32 {
         assert!(i + 4 <= self.size);
-        unsafe {
-            u32::from_be(*(self.p.offset(i as isize) as *const u32))
-        }
+        unsafe { u32::from_be(*(self.p.offset(i as isize) as *const u32)) }
     }
 
     // append n_bytes bytes at the end of this cryptobuf.
-    pub fn read<R:std::io::Read>(&mut self, n_bytes:usize, r:&mut R) -> Result<usize, std::io::Error> {
+    pub fn read<R: std::io::Read>(&mut self,
+                                  n_bytes: usize,
+                                  r: &mut R)
+                                  -> Result<usize, std::io::Error> {
         let cur_size = self.size;
         self.resize(cur_size + n_bytes);
         unsafe {
@@ -148,7 +144,10 @@ impl CryptoBuf {
         }
     }
 
-    pub fn write_all_from<W:std::io::Write>(&self, offset:usize, w:&mut W) -> Result<usize, std::io::Error> {
+    pub fn write_all_from<W: std::io::Write>(&self,
+                                             offset: usize,
+                                             w: &mut W)
+                                             -> Result<usize, std::io::Error> {
         assert!(offset < self.size);
         // if we're past this point, self.p cannot be null.
         unsafe {
@@ -157,31 +156,23 @@ impl CryptoBuf {
         }
     }
 
-    
-    pub fn extend(&mut self, s:&[u8]) {
-        //println!("extend {:?}", s);
+
+    pub fn extend(&mut self, s: &[u8]) {
+        // println!("extend {:?}", s);
         let size = self.size;
         self.resize(size + s.len());
-        //println!("{:?}", self);
+        // println!("{:?}", self);
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                s.as_ptr(),
-                self.p.offset(size as isize),
-                s.len()
-            );
+            std::ptr::copy_nonoverlapping(s.as_ptr(), self.p.offset(size as isize), s.len());
         }
     }
 
     pub fn as_slice(&self) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(self.p, self.size)
-        }
+        unsafe { std::slice::from_raw_parts(self.p, self.size) }
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe {
-            std::slice::from_raw_parts_mut(self.p, self.size)
-        }
+        unsafe { std::slice::from_raw_parts_mut(self.p, self.size) }
     }
 
     pub fn hexdump(&self) {
@@ -209,8 +200,6 @@ impl CryptoBuf {
             i += 1
         }
     }
-
-
 }
 
 impl Drop for CryptoBuf {

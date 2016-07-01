@@ -1,18 +1,17 @@
-/*
-   Copyright 2016 Pierre-Étienne Meunier
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-*/
+// Copyright 2016 Pierre-Étienne Meunier
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
 use super::super::*;
 use super::super::msg;
 use super::super::negociation;
@@ -20,10 +19,14 @@ use super::super::cipher::CipherT;
 use std::io::BufRead;
 use auth::AuthRequest;
 use encoding::Reader;
-use negociation::{Select,Preferred};
+use negociation::{Select, Preferred};
 
 impl<'a> super::ClientSession<'a> {
-    pub fn client_read_server_id<R:BufRead>(&mut self, stream:&mut R, mut exchange:Exchange, preferred:&Preferred) -> Result<ReturnCode, Error> {
+    pub fn client_read_server_id<R: BufRead>(&mut self,
+                                             stream: &mut R,
+                                             mut exchange: Exchange,
+                                             preferred: &Preferred)
+                                             -> Result<ReturnCode, Error> {
         let read_server_id = {
             let server_id = try!(self.buffers.read.read_ssh_id(stream));
             debug!("server_id = {:?}", server_id);
@@ -42,10 +45,8 @@ impl<'a> super::ClientSession<'a> {
                 sent: false,
                 session_id: None,
             };
-            self.state = Some(self.buffers.cleartext_write_kex_init(
-                preferred,
-                false, // is_server
-                kexinit));
+            self.state = Some(self.buffers
+                .cleartext_write_kex_init(preferred, false /* is_server */, kexinit));
             Ok(ReturnCode::Ok)
         } else {
             self.state = Some(ServerState::VersionOk(exchange));
@@ -53,7 +54,11 @@ impl<'a> super::ClientSession<'a> {
         }
 
     }
-    pub fn client_kexinit(&mut self, mut kexinit:KexInit, keys:&[key::Algorithm], pref:&negociation::Preferred) -> Result<ReturnCode, Error> {
+    pub fn client_kexinit(&mut self,
+                          mut kexinit: KexInit,
+                          keys: &[key::Algorithm],
+                          pref: &negociation::Preferred)
+                          -> Result<ReturnCode, Error> {
         // Have we determined the algorithm yet?
         if kexinit.algo.is_none() {
             {
@@ -88,7 +93,12 @@ impl<'a> super::ClientSession<'a> {
         Ok(ReturnCode::Ok)
     }
 
-    pub fn client_kexdhdone<C:ValidateKey>(&mut self, client:&C, mut kexdhdone:KexDhDone, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<ReturnCode, Error> {
+    pub fn client_kexdhdone<C: ValidateKey>(&mut self,
+                                            client: &C,
+                                            mut kexdhdone: KexDhDone,
+                                            buffer: &mut CryptoBuf,
+                                            buffer2: &mut CryptoBuf)
+                                            -> Result<ReturnCode, Error> {
         debug!("kexdhdone");
         // We've sent ECDH_INIT, waiting for ECDH_REPLY
         let hash = {
@@ -96,7 +106,7 @@ impl<'a> super::ClientSession<'a> {
             transport!(payload);
             if payload[0] != msg::KEX_ECDH_REPLY {
                 self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
-                return Ok(ReturnCode::Ok)
+                return Ok(ReturnCode::Ok);
             }
             try!(kexdhdone.client_compute_exchange_hash(client, payload, buffer))
         };
@@ -114,7 +124,10 @@ impl<'a> super::ClientSession<'a> {
         Ok(ReturnCode::Ok)
     }
 
-    pub fn client_newkeys(&mut self, buffer:&mut CryptoBuf, mut newkeys:NewKeys) -> Result<ReturnCode, Error> {
+    pub fn client_newkeys(&mut self,
+                          buffer: &mut CryptoBuf,
+                          mut newkeys: NewKeys)
+                          -> Result<ReturnCode, Error> {
 
         let is_newkeys = {
             let payload = self.buffers.get_current_payload();
@@ -140,11 +153,16 @@ impl<'a> super::ClientSession<'a> {
 
 
 impl Encrypted {
-
-    pub fn client_rekey<C:ValidateKey>(&mut self, client:&C, buf:&[u8], rekey:Kex, config:&super::Config, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<bool, Error> {
+    pub fn client_rekey<C: ValidateKey>(&mut self,
+                                        client: &C,
+                                        buf: &[u8],
+                                        rekey: Kex,
+                                        config: &super::Config,
+                                        buffer: &mut CryptoBuf,
+                                        buffer2: &mut CryptoBuf)
+                                        -> Result<bool, Error> {
         match rekey {
             Kex::KexInit(mut kexinit) => {
-
                 if buf[0] == msg::KEXINIT {
                     debug!("received KEXINIT");
                     if kexinit.algo.is_none() {
@@ -155,7 +173,7 @@ impl Encrypted {
                         if let Some(names) = kexinit.algo {
                             self.rekey = Some(Kex::KexDh(KexDh {
                                 exchange: kexinit.exchange,
-                                names:names,
+                                names: names,
                                 session_id: kexinit.session_id,
                             }))
                         } else {
@@ -167,7 +185,7 @@ impl Encrypted {
                 } else {
                     self.rekey = Some(Kex::KexInit(kexinit))
                 }
-            },
+            }
             Kex::KexDhDone(mut kexdhdone) => {
                 if buf[0] == msg::KEX_ECDH_REPLY {
                     let hash = try!(kexdhdone.client_compute_exchange_hash(client, buf, buffer));
@@ -176,9 +194,8 @@ impl Encrypted {
                 } else {
                     self.rekey = Some(Kex::KexDhDone(kexdhdone))
                 }
-            },
+            }
             Kex::NewKeys(mut newkeys) => {
-
                 if buf[0] == msg::NEWKEYS {
 
                     newkeys.received = true;
@@ -191,12 +208,12 @@ impl Encrypted {
                         self.key = newkeys.names.key;
                         self.cipher = newkeys.cipher;
                         self.mac = newkeys.names.mac;
-                        return Ok(true)
+                        return Ok(true);
                     }
                 } else {
                     self.rekey = Some(Kex::NewKeys(newkeys));
                 }
-            },
+            }
             state => {
                 self.rekey = Some(state);
             }
@@ -205,7 +222,11 @@ impl Encrypted {
     }
 
 
-    pub fn client_service_request(&mut self, auth_method:&Option<auth::Method>, buffers:&mut SSHBuffers, buffer:&mut CryptoBuf) -> Result<(), Error> {
+    pub fn client_service_request(&mut self,
+                                  auth_method: &Option<auth::Method>,
+                                  buffers: &mut SSHBuffers,
+                                  buffer: &mut CryptoBuf)
+                                  -> Result<(), Error> {
         debug!("request success");
         let auth_request = auth::AuthRequest {
             methods: auth::Methods::all(),
@@ -219,7 +240,15 @@ impl Encrypted {
         Ok(())
     }
 
-    pub fn client_auth_request_success(&mut self, buf:&[u8], config:&super::Config, mut auth_request:AuthRequest, auth_method:&Option<auth::Method>, write_buffer:&mut SSHBuffer, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<(), Error> {
+    pub fn client_auth_request_success(&mut self,
+                                       buf: &[u8],
+                                       config: &super::Config,
+                                       mut auth_request: AuthRequest,
+                                       auth_method: &Option<auth::Method>,
+                                       write_buffer: &mut SSHBuffer,
+                                       buffer: &mut CryptoBuf,
+                                       buffer2: &mut CryptoBuf)
+                                       -> Result<(), Error> {
         // We're waiting for success.
         debug!("client_auth_request_success");
 
@@ -234,7 +263,7 @@ impl Encrypted {
             let mut r = buf.reader(1);
             let remaining_methods = try!(r.read_string());
 
-            auth_request.methods.keep_remaining(remaining_methods.split(|&c| c==b','));
+            auth_request.methods.keep_remaining(remaining_methods.split(|&c| c == b','));
             self.client_waiting_auth_request(write_buffer, auth_request, auth_method, buffer);
 
         } else if buf[0] == msg::USERAUTH_PK_OK {
@@ -249,7 +278,10 @@ impl Encrypted {
         Ok(())
     }
 
-    pub fn client_channel_open_confirmation(&mut self, buf: &[u8], mut channels: ChannelParameters) -> Result<(), Error> {
+    pub fn client_channel_open_confirmation(&mut self,
+                                            buf: &[u8],
+                                            mut channels: ChannelParameters)
+                                            -> Result<(), Error> {
         // Check whether we're receiving a confirmation message.
         debug!("channel_confirmation? {:?}", buf);
         if buf[0] == msg::CHANNEL_OPEN_CONFIRMATION {

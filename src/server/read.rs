@@ -1,18 +1,17 @@
-/*
-   Copyright 2016 Pierre-Étienne Meunier
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-*/
+// Copyright 2016 Pierre-Étienne Meunier
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
 use super::*;
 use super::super::*;
 
@@ -24,11 +23,14 @@ use negociation::Select;
 
 use rand::{thread_rng, Rng};
 use std;
-use std::collections::hash_map::{Entry};
+use std::collections::hash_map::Entry;
 
 impl ServerSession {
-
-    pub fn server_read_cleartext_kexdh(&mut self, mut kexdh:KexDh, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf) -> Result<ReturnCode, Error> {
+    pub fn server_read_cleartext_kexdh(&mut self,
+                                       mut kexdh: KexDh,
+                                       buffer: &mut CryptoBuf,
+                                       buffer2: &mut CryptoBuf)
+                                       -> Result<ReturnCode, Error> {
         let kex = {
             let payload = self.buffers.get_current_payload();
             transport!(payload);
@@ -74,13 +76,17 @@ impl ServerSession {
             Err(Error::NewKeys)
         }
     }
-
 }
 
 impl Encrypted {
-
-    pub fn server_read_encrypted<A:Authenticate, S:Server>(&mut self, config:&Config, server:&mut S, auth:&A,
-                                                           buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<(),Error> {
+    pub fn server_read_encrypted<A: Authenticate, S: Server>(&mut self,
+                                                             config: &Config,
+                                                             server: &mut S,
+                                                             auth: &A,
+                                                             buf: &[u8],
+                                                             buffer: &mut CryptoBuf,
+                                                             write_buffer: &mut SSHBuffer)
+                                                             -> Result<(), Error> {
         // If we've successfully read a packet.
         debug!("buf = {:?}", buf);
         let state = std::mem::replace(&mut self.state, None);
@@ -132,7 +138,7 @@ impl Encrypted {
                 match buf[0] {
                     msg::CHANNEL_OPEN => {
                         try!(self.server_handle_channel_open(config, server, buf, buffer, write_buffer))
-                    },
+                    }
                     buf_0 => {
                         let mut r = buf.reader(1);
                         let channel_num = try!(r.read_u32());
@@ -150,51 +156,52 @@ impl Encrypted {
                                     if data.len() as u32 <= channel.sender_window_size {
                                         channel.sender_window_size -= data.len() as u32;
                                         let server_buf = ChannelBuf {
-                                            buffer:buffer,
+                                            buffer: buffer,
                                             channel: channel,
                                             write_buffer: write_buffer,
                                             cipher: &mut self.cipher,
-                                            wants_reply: false
+                                            wants_reply: false,
                                         };
                                         try!(server.data(&data, server_buf))
                                     }
                                     debug!("{:?} / {:?}", channel.sender_window_size, config.window_size);
-                                    if channel.sender_window_size < config.window_size/2 {
-                                        super::super::adjust_window_size(write_buffer, &mut self.cipher,
-                                                                         config.window_size, buffer, channel)
+                                    if channel.sender_window_size < config.window_size / 2 {
+                                        super::super::adjust_window_size(write_buffer,
+                                                                         &mut self.cipher,
+                                                                         config.window_size,
+                                                                         buffer,
+                                                                         channel)
                                     }
-                                },
+                                }
                                 msg::CHANNEL_WINDOW_ADJUST => {
                                     let amount = try!(r.read_u32());
                                     e.get_mut().recipient_window_size += amount
-                                },
+                                }
                                 msg::CHANNEL_REQUEST => {
                                     let req_type = try!(r.read_string());
                                     let wants_reply = try!(r.read_byte());
                                     let server_buf = ChannelBuf {
-                                        buffer:buffer,
+                                        buffer: buffer,
                                         channel: e.get_mut(),
                                         write_buffer: write_buffer,
                                         cipher: &mut self.cipher,
-                                        wants_reply: wants_reply != 0
+                                        wants_reply: wants_reply != 0,
                                     };
                                     match req_type {
                                         b"exec" => {
                                             let req = try!(r.read_string());
                                             try!(server.exec(req, server_buf));
-                                        },
+                                        }
                                         x => {
                                             debug!("{:?}, line {:?} req_type = {:?}", file!(), line!(), std::str::from_utf8(x))
                                         }
                                     }
-                                },
+                                }
                                 msg::CHANNEL_EOF |
                                 msg::CHANNEL_CLOSE => {
                                     e.remove();
-                                },
-                                _ => {
-                                    unimplemented!()
                                 }
+                                _ => unimplemented!(),
                             }
                         }
                     }
@@ -207,15 +214,19 @@ impl Encrypted {
                 debug!("replacing state: {:?}", state);
                 self.state = Some(state);
                 Ok(())
-            },
-            None => {
-                Ok(())
             }
+            None => Ok(()),
         }
 
     }
 
-    fn server_handle_channel_open<S:Server>(&mut self, config:&super::Config, server:&mut S, buf:&[u8], buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<(), Error> {
+    fn server_handle_channel_open<S: Server>(&mut self,
+                                             config: &super::Config,
+                                             server: &mut S,
+                                             buf: &[u8],
+                                             buffer: &mut CryptoBuf,
+                                             write_buffer: &mut SSHBuffer)
+                                             -> Result<(), Error> {
 
         // https://tools.ietf.org/html/rfc4254#section-5.1
         let mut r = buf.reader(1);
@@ -236,11 +247,11 @@ impl Encrypted {
         }
         let channel = ChannelParameters {
             recipient_channel: sender,
-            sender_channel: sender_channel, // "sender" is the local end, i.e. we're the sender, the remote is the recipient.
+            sender_channel: sender_channel, /* "sender" is the local end, i.e. we're the sender, the remote is the recipient. */
             recipient_window_size: window,
             sender_window_size: config.window_size,
             recipient_maximum_packet_size: maxpacket,
-            sender_maximum_packet_size: config.maximum_packet_size
+            sender_maximum_packet_size: config.maximum_packet_size,
         };
 
         // Write the response immediately, so that we're ready when the stream becomes writable.
@@ -254,7 +265,13 @@ impl Encrypted {
 
     }
 
-    pub fn server_read_auth_request<A:Authenticate>(&mut self, auth:&A, buf:&[u8], mut auth_request:AuthRequest, buffer:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<(), Error> {
+    pub fn server_read_auth_request<A: Authenticate>(&mut self,
+                                                     auth: &A,
+                                                     buf: &[u8],
+                                                     mut auth_request: AuthRequest,
+                                                     buffer: &mut CryptoBuf,
+                                                     write_buffer: &mut SSHBuffer)
+                                                     -> Result<(), Error> {
         // https://tools.ietf.org/html/rfc4252#section-5
         let mut r = buf.reader(1);
         let name = try!(r.read_string());
@@ -274,17 +291,15 @@ impl Encrypted {
                 let password = try!(std::str::from_utf8(password));
                 let method = Method::Password {
                     user: name,
-                    password: password
+                    password: password,
                 };
                 match auth.auth(auth_request.methods, &method) {
-                    Auth::Success => {
-                        self.server_auth_request_success(buffer, write_buffer)
-                    },
+                    Auth::Success => self.server_auth_request_success(buffer, write_buffer),
                     Auth::Reject { remaining_methods, partial_success } => {
                         auth_request.methods = remaining_methods;
                         auth_request.partial_success = partial_success;
                         self.server_reject_auth_request(buffer, auth_request, write_buffer)
-                    },
+                    }
                 }
 
             } else if method == b"publickey" {
@@ -301,13 +316,13 @@ impl Encrypted {
                         key::PublicKey::Ed25519(
                             sodium::ed25519::PublicKey::copy_from_slice(try!(p.read_string()))
                         )
-                    },
-                    _ => unimplemented!()
+                    }
+                    _ => unimplemented!(),
                 };
                 let method = Method::Pubkey {
                     user: name,
                     pubkey: pubkey_,
-                    seckey: None
+                    seckey: None,
                 };
 
                 match auth.auth(auth_request.methods, &method) {
@@ -319,14 +334,14 @@ impl Encrypted {
                         self.server_send_pk_ok(buffer, &mut auth_request, write_buffer);
                         self.state = Some(EncryptedState::WaitingSignature(auth_request))
 
-                    },
+                    }
                     Auth::Reject { remaining_methods, partial_success } => {
 
                         auth_request.methods = remaining_methods;
                         auth_request.partial_success = partial_success;
                         self.server_reject_auth_request(buffer, auth_request, write_buffer)
 
-                    },
+                    }
                 }
             } else {
                 // Other methods of the base specification are insecure or optional.
@@ -340,7 +355,13 @@ impl Encrypted {
     }
 
 
-    pub fn server_verify_signature<A:Authenticate>(&mut self, auth:&A, buf:&[u8], buffer:&mut CryptoBuf, auth_request: AuthRequest, write_buffer:&mut SSHBuffer) -> Result<(), Error> {
+    pub fn server_verify_signature<A: Authenticate>(&mut self,
+                                                    auth: &A,
+                                                    buf: &[u8],
+                                                    buffer: &mut CryptoBuf,
+                                                    auth_request: AuthRequest,
+                                                    write_buffer: &mut SSHBuffer)
+                                                    -> Result<(), Error> {
         // https://tools.ietf.org/html/rfc4252#section-5
         let mut r = buf.reader(1);
         let user_name = try!(r.read_string());
@@ -364,7 +385,7 @@ impl Encrypted {
                 let method = Method::Pubkey {
                     user: try!(std::str::from_utf8(user_name)),
                     pubkey: key::PublicKey::Ed25519(key.clone()),
-                    seckey: None
+                    seckey: None,
                 };
 
                 match auth.auth(auth_request.methods, &method) {
@@ -374,7 +395,8 @@ impl Encrypted {
                         let mut s = signature.reader(0);
                         // let algo_ =
                         try!(s.read_string());
-                        let sig = sodium::ed25519::Signature::copy_from_slice(try!(s.read_string()));
+                        let sig =
+                            sodium::ed25519::Signature::copy_from_slice(try!(s.read_string()));
 
                         buffer.clear();
                         buffer.extend_ssh_string(self.session_id.as_bytes());
@@ -387,10 +409,8 @@ impl Encrypted {
                         } else {
                             self.server_reject_auth_request(buffer, auth_request, write_buffer)
                         }
-                    },
-                    _ => {
-                        self.server_reject_auth_request(buffer, auth_request, write_buffer)
                     }
+                    _ => self.server_reject_auth_request(buffer, auth_request, write_buffer),
                 }
             } else {
                 self.server_reject_auth_request(buffer, auth_request, write_buffer)
@@ -401,7 +421,13 @@ impl Encrypted {
         Ok(())
     }
 
-    pub fn server_read_rekey(&mut self, buf:&[u8], config:&super::Config, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf, write_buffer:&mut SSHBuffer) -> Result<bool, Error> {
+    pub fn server_read_rekey(&mut self,
+                             buf: &[u8],
+                             config: &super::Config,
+                             buffer: &mut CryptoBuf,
+                             buffer2: &mut CryptoBuf,
+                             write_buffer: &mut SSHBuffer)
+                             -> Result<bool, Error> {
         debug!("server_read_rekey {:?}", buf);
         if buf[0] == msg::KEXINIT {
             match std::mem::replace(&mut self.rekey, None) {
@@ -429,7 +455,7 @@ impl Encrypted {
                         self.rekey = Some(Kex::KexInit(kexinit))
                     }
                     Ok(true)
-                },
+                }
                 None => {
                     // start a rekeying
                     if let Some(exchange) = std::mem::replace(&mut self.exchange, None) {
@@ -458,7 +484,7 @@ impl Encrypted {
                         }
                     }
                     Ok(true)
-                },
+                }
                 _ => {
                     // Error, maybe?
                     // unimplemented!()
@@ -470,7 +496,7 @@ impl Encrypted {
             let packet_matches = match self.rekey {
                 Some(Kex::KexDh(_)) if buf[0] == msg::KEX_ECDH_INIT => true,
                 Some(Kex::NewKeys(_)) if buf[0] == msg::NEWKEYS => true,
-                _ => false
+                _ => false,
             };
             debug!("packet_matches: {:?}", packet_matches);
             if packet_matches {
@@ -513,7 +539,7 @@ impl Encrypted {
                         self.rekey = Some(Kex::NewKeys(new_keys));
                         Ok(true)
 
-                    },
+                    }
                     Some(Kex::NewKeys(kexinit)) => {
                         debug!("NewKeys");
                         if buf[0] == msg::NEWKEYS {
@@ -526,15 +552,12 @@ impl Encrypted {
                             self.rekey = Some(Kex::NewKeys(kexinit))
                         }
                         Ok(true)
-                    },
-                    _ => {
-                        Ok(true)
                     }
+                    _ => Ok(true),
                 }
             } else {
                 Ok(false)
             }
         }
     }
-
 }
