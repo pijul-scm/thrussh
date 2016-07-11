@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-use super::{Error};
+use super::Error;
 pub use super::sodium::ed25519;
 use cryptobuf::CryptoBuf;
 

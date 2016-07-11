@@ -13,8 +13,9 @@
 // limitations under the License.
 //
 use byteorder::{ByteOrder, BigEndian};
-use super::super::{Error, SSHBuffer};
+use super::super::{Error};
 use std::io::BufRead;
+use sshbuffer::SSHBuffer;
 
 use super::super::sodium;
 use sodium::chacha20;

@@ -18,6 +18,7 @@ use super::super::negociation;
 use super::super::cipher::CipherT;
 use super::super::cryptobuf::CryptoBuf;
 use state::*;
+use sshbuffer::{SSHBuffer,SSHBuffers};
 
 use std::io::BufRead;
 use auth::AuthRequest;
@@ -48,8 +49,7 @@ impl<'a> super::ClientSession<'a> {
                 sent: false,
                 session_id: None,
             };
-            self.state = Some(self.buffers
-                .cleartext_write_kex_init(preferred, false /* is_server */, kexinit));
+            self.state = Some(kexinit.cleartext_write_kex_init(&preferred, &mut self.buffers.write, false));
             Ok(ReturnCode::Ok)
         } else {
             self.state = Some(ServerState::VersionOk(exchange));

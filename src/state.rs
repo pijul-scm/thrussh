@@ -9,6 +9,7 @@ use super::{read_public_key,Error,ChannelParameters,ValidateKey};
 use cryptobuf::CryptoBuf;
 use std::collections::HashMap;
 use encoding::Reader;
+use sshbuffer::SSHBuffer;
 
 #[derive(Debug)]
 pub enum ServerState {
@@ -72,6 +73,14 @@ pub struct KexInit {
     pub sent: bool,
 }
 
+
+
+
+
+
+
+
+
 impl KexInit {
     pub fn kexinit(self) -> Result<Kex, Error> {
         if !self.sent {
@@ -89,6 +98,43 @@ impl KexInit {
             }
         }
     }
+
+    pub fn cleartext_write_kex_init(mut self,
+                                    preferred:&negociation::Preferred,
+                                    write:&mut SSHBuffer,
+                                    is_server: bool)
+                                    -> ServerState {
+
+        if !self.sent {
+            let pos = write.buffer.len();
+            write.buffer.extend(b"\0\0\0\0\0");
+            negociation::write_kex(preferred, &mut write.buffer);
+
+            {
+                let buf = write.buffer.as_slice();
+                if is_server {
+                    self.exchange.server_kex_init.extend_from_slice(&buf[5..]);
+                } else {
+                    self.exchange.client_kex_init.extend_from_slice(&buf[5..]);
+                }
+            }
+
+            super::complete_packet(&mut write.buffer, pos);
+            write.seqn += 1;
+            self.sent = true;
+        }
+        if let Some(names) = self.algo {
+            ServerState::Kex(Kex::KexDh(KexDh {
+                exchange: self.exchange,
+                names: names,
+                session_id: self.session_id,
+            }))
+        } else {
+            ServerState::Kex(Kex::KexInit(self))
+        }
+
+    }
+
 
     pub fn rekey(ex: Exchange, algo: negociation::Names, session_id: &kex::Digest) -> Self {
         let mut kexinit = KexInit {
@@ -226,4 +272,3 @@ pub struct Encrypted {
     pub rekey: Option<Kex>,
     pub channels: HashMap<u32, ChannelParameters>,
 }
-

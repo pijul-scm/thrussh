@@ -175,8 +175,7 @@ impl Algorithm {
 
                 debug!("{:?} {:?}",
                        std::str::from_utf8(&exchange.client_id),
-                       std::str::from_utf8(&exchange.server_id)
-                );
+                       std::str::from_utf8(&exchange.server_id));
                 buffer.clear();
                 buffer.extend_ssh_string(&exchange.client_id);
                 buffer.extend_ssh_string(&exchange.server_id);

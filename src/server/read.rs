@@ -15,7 +15,7 @@
 use super::*;
 use super::super::*;
 use state::*;
-
+use sshbuffer::{SSHBuffer};
 use super::super::msg;
 use super::super::negociation;
 use super::super::encoding::Reader;

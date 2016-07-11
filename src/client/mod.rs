@@ -27,6 +27,7 @@ mod write;
 use cryptobuf::CryptoBuf;
 use negociation::Select;
 use state::*;
+use sshbuffer::*;
 
 mod read;
 
@@ -62,7 +63,7 @@ impl std::default::Default for Config {
 }
 
 pub struct ClientSession<'a> {
-    buffers: super::SSHBuffers,
+    buffers: SSHBuffers,
     state: Option<ServerState>,
     auth_method: Option<auth::Method<'a>>,
 }
@@ -73,7 +74,7 @@ impl<'a> Default for ClientSession<'a> {
             super::sodium::init();
         });
         ClientSession {
-            buffers: super::SSHBuffers::new(),
+            buffers: SSHBuffers::new(),
             state: None,
             auth_method: None,
         }

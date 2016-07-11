@@ -14,7 +14,7 @@
 //
 
 use byteorder::{ByteOrder, BigEndian};
-use super::{Error};
+use super::Error;
 use super::cryptobuf::CryptoBuf;
 use super::key;
 

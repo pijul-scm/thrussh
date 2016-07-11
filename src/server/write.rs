@@ -21,6 +21,7 @@ use super::super::negociation;
 use super::super::cipher::CipherT;
 use cryptobuf::CryptoBuf;
 use state::*;
+use sshbuffer::{SSHBuffer};
 
 impl ServerSession {
     pub fn server_cleartext_kex_ecdh_reply(&mut self, kexdhdone: &KexDhDone, hash: &kex::Digest) {
@@ -54,7 +55,7 @@ impl Encrypted {
                                        buffer: &mut CryptoBuf,
                                        channel: &ChannelParameters,
                                        config: &super::Config,
-                                       write_buffer: &mut super::super::SSHBuffer) {
+                                       write_buffer: &mut SSHBuffer) {
         buffer.clear();
         buffer.push(msg::CHANNEL_OPEN_CONFIRMATION);
         buffer.push_u32_be(channel.recipient_channel); // remote channel number.
@@ -68,7 +69,7 @@ impl Encrypted {
                                  banner: Option<&str>,
                                  methods: auth::Methods,
                                  buffer: &mut CryptoBuf,
-                                 write_buffer: &mut super::super::SSHBuffer)
+                                 write_buffer: &mut SSHBuffer)
                                  -> AuthRequest {
         buffer.clear();
         buffer.push(msg::SERVICE_ACCEPT);
@@ -97,7 +98,7 @@ impl Encrypted {
 
     pub fn server_auth_request_success(&mut self,
                                        buffer: &mut CryptoBuf,
-                                       write_buffer: &mut super::super::SSHBuffer) {
+                                       write_buffer: &mut SSHBuffer) {
         buffer.clear();
         buffer.push(msg::USERAUTH_SUCCESS);
         self.cipher.write(buffer.as_slice(), write_buffer);
@@ -107,7 +108,7 @@ impl Encrypted {
     pub fn server_reject_auth_request(&mut self,
                                       buffer: &mut CryptoBuf,
                                       auth_request: AuthRequest,
-                                      write_buffer: &mut super::super::SSHBuffer) {
+                                      write_buffer: &mut SSHBuffer) {
         buffer.clear();
         buffer.push(msg::USERAUTH_FAILURE);
 
@@ -125,7 +126,7 @@ impl Encrypted {
     pub fn server_send_pk_ok(&mut self,
                              buffer: &mut CryptoBuf,
                              auth_request: &mut AuthRequest,
-                             write_buffer: &mut super::super::SSHBuffer) {
+                             write_buffer: &mut SSHBuffer) {
         buffer.clear();
         buffer.push(msg::USERAUTH_PK_OK);
         buffer.extend_ssh_string(auth_request.public_key_algorithm.as_slice());

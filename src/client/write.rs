@@ -22,6 +22,7 @@ use super::super::negociation;
 use super::super::cipher::CipherT;
 use super::super::cryptobuf::CryptoBuf;
 use state::*;
+use sshbuffer::{SSHBuffer,SSHBuffers};
 
 
 impl Encrypted {

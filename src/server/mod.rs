@@ -22,6 +22,7 @@ use super::msg;
 use super::cipher::CipherT;
 use cryptobuf::CryptoBuf;
 use state::*;
+use sshbuffer::*;
 
 #[derive(Debug)]
 pub struct Config {
@@ -58,7 +59,7 @@ impl Default for Config {
 }
 
 pub struct ServerSession {
-    buffers: super::SSHBuffers,
+    buffers: SSHBuffers,
     state: Option<ServerState>,
 }
 
@@ -71,7 +72,7 @@ impl Default for ServerSession {
             super::sodium::init();
         });
         ServerSession {
-            buffers: super::SSHBuffers::new(),
+            buffers: SSHBuffers::new(),
             state: None,
         }
     }
@@ -135,8 +136,7 @@ impl ServerSession {
                             kexinit.exchange.client_kex_init.extend_from_slice(payload);
                         }
                     }
-                    self.state = Some(self.buffers
-                        .cleartext_write_kex_init(&config.preferred, true, kexinit));
+                    self.state = Some(kexinit.cleartext_write_kex_init(&config.preferred, &mut self.buffers.write, true));
                     Ok(ReturnCode::Ok)
 
                 } else {
