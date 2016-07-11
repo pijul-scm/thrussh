@@ -20,6 +20,8 @@ use rand;
 use rand::Rng;
 use super::super::negociation;
 use super::super::cipher::CipherT;
+use super::super::cryptobuf::CryptoBuf;
+use state::*;
 
 
 impl Encrypted {

@@ -21,8 +21,8 @@ use std;
 use super::sodium::randombytes;
 use super::sodium::sha256;
 use super::sodium::curve25519;
-use super::CryptoBuf;
-
+use super::cryptobuf::CryptoBuf;
+use state::*;
 
 #[derive(Debug,Clone)]
 pub enum Digest {
@@ -54,7 +54,7 @@ pub const CURVE25519: &'static str = "curve25519-sha256@libssh.org";
 
 impl Algorithm {
     pub fn server_dh(name: &str,
-                     exchange: &mut super::Exchange,
+                     exchange: &mut Exchange,
                      payload: &[u8])
                      -> Result<Algorithm, Error> {
 
@@ -102,7 +102,7 @@ impl Algorithm {
         }
     }
     pub fn client_dh(name: &str,
-                     exchange: &mut super::Exchange,
+                     exchange: &mut Exchange,
                      buf: &mut CryptoBuf)
                      -> Result<Algorithm, Error> {
 
@@ -166,8 +166,8 @@ impl Algorithm {
 
     pub fn compute_exchange_hash(&self,
                                  key: &super::key::PublicKey,
-                                 exchange: &super::Exchange,
-                                 buffer: &mut super::CryptoBuf)
+                                 exchange: &Exchange,
+                                 buffer: &mut CryptoBuf)
                                  -> Result<Digest, Error> {
         // Computing the exchange hash, see page 7 of RFC 5656.
         match self {

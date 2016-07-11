@@ -21,7 +21,7 @@ use super::cipher;
 use super::msg;
 // use super::mac;
 // use super::compression;
-use super::CryptoBuf;
+use cryptobuf::CryptoBuf;
 use super::encoding::Reader;
 
 #[derive(Debug)]

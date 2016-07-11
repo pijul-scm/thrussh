@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-use super::{CryptoBuf, Error};
+use super::{Error};
 pub use super::sodium::ed25519;
+use cryptobuf::CryptoBuf;
 
 pub const ED25519: &'static str = "ssh-ed25519";
 

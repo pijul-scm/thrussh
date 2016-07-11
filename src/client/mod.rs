@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-use super::{CryptoBuf, Exchange, Error, ServerState, Kex, KexInit, EncryptedState, ChannelBuf};
+use super::{Error, ChannelBuf};
 use super::encoding::*;
 use super::key;
 use super::msg;
@@ -24,10 +24,11 @@ use time;
 use ReturnCode;
 use std;
 mod write;
-// use self::write::*;
-mod read;
-// use self::read::*;
+use cryptobuf::CryptoBuf;
 use negociation::Select;
+use state::*;
+
+mod read;
 
 #[derive(Debug)]
 pub struct Config {
@@ -388,7 +389,7 @@ impl<'a> ClientSession<'a> {
 
     }
 
-    fn try_rekey(&mut self, enc: &mut super::Encrypted, config: &Config) {
+    fn try_rekey(&mut self, enc: &mut Encrypted, config: &Config) {
         if enc.rekey.is_none() &&
            (self.buffers.write.bytes >= config.rekey_write_limit ||
             self.buffers.read.bytes >= config.rekey_read_limit ||

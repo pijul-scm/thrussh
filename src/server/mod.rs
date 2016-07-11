@@ -20,6 +20,8 @@ use super::*;
 pub use super::auth::*;
 use super::msg;
 use super::cipher::CipherT;
+use cryptobuf::CryptoBuf;
+use state::*;
 
 #[derive(Debug)]
 pub struct Config {

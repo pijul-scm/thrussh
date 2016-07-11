@@ -14,7 +14,8 @@
 //
 
 use byteorder::{ByteOrder, BigEndian};
-use super::{CryptoBuf, Error};
+use super::{Error};
+use super::cryptobuf::CryptoBuf;
 use super::key;
 
 pub trait Bytes {

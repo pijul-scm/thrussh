@@ -15,8 +15,8 @@
 
 use std::ops::Sub;
 use super::key;
-use super::CryptoBuf;
 use super::encoding;
+use cryptobuf::CryptoBuf;
 
 #[derive(Clone,Debug,Copy,PartialEq,Eq)]
 pub struct M(u32);

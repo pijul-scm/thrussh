@@ -16,6 +16,9 @@ use super::super::*;
 use super::super::msg;
 use super::super::negociation;
 use super::super::cipher::CipherT;
+use super::super::cryptobuf::CryptoBuf;
+use state::*;
+
 use std::io::BufRead;
 use auth::AuthRequest;
 use encoding::Reader;

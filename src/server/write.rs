@@ -19,6 +19,8 @@ use super::super::*;
 use super::super::complete_packet;
 use super::super::negociation;
 use super::super::cipher::CipherT;
+use cryptobuf::CryptoBuf;
+use state::*;
 
 impl ServerSession {
     pub fn server_cleartext_kex_ecdh_reply(&mut self, kexdhdone: &KexDhDone, hash: &kex::Digest) {
