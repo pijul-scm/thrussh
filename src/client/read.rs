@@ -19,7 +19,7 @@ use super::super::cipher::CipherT;
 use super::super::cryptobuf::CryptoBuf;
 use state::*;
 use sshbuffer::{SSHBuffer,SSHBuffers};
-
+use auth;
 use std::io::BufRead;
 use auth::AuthRequest;
 use encoding::Reader;
@@ -96,12 +96,12 @@ impl<'a> super::ClientSession<'a> {
         Ok(ReturnCode::Ok)
     }
 
-    pub fn client_kexdhdone<C: ValidateKey>(&mut self,
-                                            client: &C,
-                                            mut kexdhdone: KexDhDone,
-                                            buffer: &mut CryptoBuf,
-                                            buffer2: &mut CryptoBuf)
-                                            -> Result<ReturnCode, Error> {
+    pub fn client_kexdhdone<C: Client>(&mut self,
+                                       client: &C,
+                                       mut kexdhdone: KexDhDone,
+                                       buffer: &mut CryptoBuf,
+                                       buffer2: &mut CryptoBuf)
+                                       -> Result<ReturnCode, Error> {
         debug!("kexdhdone");
         // We've sent ECDH_INIT, waiting for ECDH_REPLY
         let hash = {
@@ -156,14 +156,14 @@ impl<'a> super::ClientSession<'a> {
 
 
 impl Encrypted {
-    pub fn client_rekey<C: ValidateKey>(&mut self,
-                                        client: &C,
-                                        buf: &[u8],
-                                        rekey: Kex,
-                                        config: &super::Config,
-                                        buffer: &mut CryptoBuf,
-                                        buffer2: &mut CryptoBuf)
-                                        -> Result<bool, Error> {
+    pub fn client_rekey<C: Client>(&mut self,
+                                   client: &C,
+                                   buf: &[u8],
+                                   rekey: Kex,
+                                   config: &super::Config,
+                                   buffer: &mut CryptoBuf,
+                                   buffer2: &mut CryptoBuf)
+                                   -> Result<bool, Error> {
         match rekey {
             Kex::KexInit(mut kexinit) => {
                 if buf[0] == msg::KEXINIT {

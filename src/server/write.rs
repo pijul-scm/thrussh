@@ -22,6 +22,7 @@ use super::super::cipher::CipherT;
 use cryptobuf::CryptoBuf;
 use state::*;
 use sshbuffer::{SSHBuffer};
+use auth;
 
 impl ServerSession {
     pub fn server_cleartext_kex_ecdh_reply(&mut self, kexdhdone: &KexDhDone, hash: &kex::Digest) {

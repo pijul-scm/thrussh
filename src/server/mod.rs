@@ -23,6 +23,7 @@ use super::cipher::CipherT;
 use cryptobuf::CryptoBuf;
 use state::*;
 use sshbuffer::*;
+use auth;
 
 #[derive(Debug)]
 pub struct Config {

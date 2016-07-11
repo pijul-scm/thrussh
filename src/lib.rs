@@ -24,7 +24,7 @@ extern crate byteorder;
 extern crate rustc_serialize; // config: read base 64.
 extern crate time;
 
-pub mod sodium;
+mod sodium;
 mod cryptobuf;
 use cryptobuf::CryptoBuf;
 
@@ -96,7 +96,7 @@ pub mod key;
 mod encoding;
 use encoding::*;
 
-pub mod auth;
+mod auth;
 macro_rules! transport {
     ( $x:expr ) => {
         {
@@ -274,9 +274,6 @@ pub trait Client {
     fn data(&mut self, _: Option<u32>, _: &[u8], _: ChannelBuf) -> Result<(), Error> {
         Ok(())
     }
-}
-
-pub trait ValidateKey {
     fn check_server_key(&self, _: &key::PublicKey) -> bool {
         false
     }

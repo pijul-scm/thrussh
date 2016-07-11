@@ -86,7 +86,7 @@ impl<'a> ClientSession<'a> {
         ClientSession::default()
     }
     // returns whether a complete packet has been read.
-    pub fn read<R: BufRead, C: super::Client + super::ValidateKey>
+    pub fn read<R: BufRead, C: super::Client>
         (&mut self,
          config: &Config,
          client: &mut C,

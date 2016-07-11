@@ -5,7 +5,7 @@ use cipher;
 use msg;
 use key;
 use sodium;
-use super::{read_public_key,Error,ChannelParameters,ValidateKey};
+use super::{read_public_key,Error,ChannelParameters,Client};
 use cryptobuf::CryptoBuf;
 use std::collections::HashMap;
 use encoding::Reader;
@@ -191,11 +191,11 @@ impl KexDhDone {
         })
     }
 
-    pub fn client_compute_exchange_hash<C: ValidateKey>(&mut self,
-                                                    client: &C,
-                                                    payload: &[u8],
-                                                    buffer: &mut CryptoBuf)
-                                                    -> Result<kex::Digest, Error> {
+    pub fn client_compute_exchange_hash<C: Client>(&mut self,
+                                                   client: &C,
+                                                   payload: &[u8],
+                                                   buffer: &mut CryptoBuf)
+                                                   -> Result<kex::Digest, Error> {
         assert!(payload[0] == msg::KEX_ECDH_REPLY);
         let mut reader = payload.reader(1);
 
