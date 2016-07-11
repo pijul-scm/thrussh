@@ -22,7 +22,6 @@ use super::super::encoding::Reader;
 use super::super::cipher::CipherT;
 use negociation::Select;
 use cryptobuf::CryptoBuf;
-use auth;
 use sodium;
 
 use rand::{thread_rng, Rng};

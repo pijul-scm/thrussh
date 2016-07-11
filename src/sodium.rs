@@ -42,6 +42,7 @@ macro_rules! newtype (($newtype:ident, $len:expr) => {
         }
     }
 });
+
 macro_rules! new_blank (($newtype:ident, $len:expr) => {
     impl $newtype {
         pub fn new_blank() -> Self {
@@ -134,11 +135,9 @@ pub mod poly1305 {
 
     newtype!(Key,KEYBYTES);
     from_slice!(Key,KEYBYTES);
-    new_blank!(Key,KEYBYTES);
 
     pub struct Tag([u8; TAGBYTES]);
     new_blank!(Tag,TAGBYTES);
-    from_slice!(Tag,TAGBYTES);
     as_bytes!(Tag);
 
     pub fn authenticate(tag: &mut Tag, m: &[u8], k: &Key) {

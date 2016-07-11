@@ -39,12 +39,10 @@ use byteorder::{ByteOrder, BigEndian};
 use rustc_serialize::base64::FromBase64;
 use std::path::Path;
 use std::fs::File;
-use std::collections::HashMap;
 
 
 static SODIUM_INIT: Once = ONCE_INIT;
 mod state;
-use state::*;
 
 #[derive(Debug)]
 pub enum Error {
