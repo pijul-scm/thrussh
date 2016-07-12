@@ -31,10 +31,11 @@ use sshbuffer::*;
 use std::collections::HashMap;
 mod read;
 
+const UNIT:&'static () = &();
+
 #[derive(Debug)]
 pub struct Config {
     pub client_id: String,
-    pub keys: Vec<key::Algorithm>,
     pub rekey_write_limit: usize,
     pub rekey_read_limit: usize,
     pub rekey_time_limit_s: f64,
@@ -49,7 +50,6 @@ impl std::default::Default for Config {
             client_id: format!("SSH-2.0-{}_{}",
                                "Thrussh", // env!("CARGO_PKG_NAME")
                                env!("CARGO_PKG_VERSION")),
-            keys: Vec::new(),
             // Following the recommendations of
             // https://tools.ietf.org/html/rfc4253#section-9
             rekey_write_limit: 1 << 30, // 1 Gb
@@ -64,7 +64,7 @@ impl std::default::Default for Config {
 
 pub struct Session<'a> {
     buffers: SSHBuffers,
-    state: Option<ServerState>,
+    state: Option<ServerState<&'static ()>>,
     auth_method: Option<auth::Method<'a, key::Algorithm>>,
 }
 
@@ -117,7 +117,7 @@ impl<'a> Session<'a> {
                 try!(self.buffers.set_clear_len(stream));
                 if try!(self.buffers.read(stream)) {
 
-                    self.client_kexinit(kexinit, &config.keys, &config.preferred)
+                    self.client_kexinit(kexinit, &config.preferred)
 
                 } else {
                     self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
@@ -232,11 +232,11 @@ impl<'a> Session<'a> {
                                         // The server is initiating a rekeying.
                                         let mut kexinit = KexInit::rekey(
                                             exchange,
-                                            try!(super::negociation::Client::read_kex(buf, &config.keys, &config.preferred)),
+                                            try!(super::negociation::Client::read_kex(buf, &config.preferred)),
                                             &enc.session_id
                                         );
                                         kexinit.exchange.server_kex_init.extend_from_slice(buf);
-                                        enc.rekey = Some(try!(kexinit.kexinit()));
+                                        enc.rekey = Some(try!(kexinit.kexinit(&[])));
                                     }
                                 }
                                 None if buf[0] == msg::CHANNEL_OPEN_CONFIRMATION => {
@@ -385,7 +385,7 @@ impl<'a> Session<'a> {
 
     }
 
-    fn try_rekey(&mut self, enc: &mut Encrypted, config: &Config) {
+    fn try_rekey(&mut self, enc: &mut Encrypted<&'static ()>, config: &Config) {
         if enc.rekey.is_none() &&
            (self.buffers.write.bytes >= config.rekey_write_limit ||
             self.buffers.read.bytes >= config.rekey_read_limit ||
@@ -492,7 +492,7 @@ impl<'a> Session<'a> {
                         } else {
                             enc.exchange = Some(newkeys.exchange);
                             enc.kex = newkeys.kex;
-                            enc.key = newkeys.names.key;
+                            enc.key = newkeys.key;
                             enc.cipher = newkeys.cipher;
                             enc.mac = newkeys.names.mac;
                         }

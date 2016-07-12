@@ -25,12 +25,13 @@ use cryptobuf::CryptoBuf;
 use std::collections::HashMap;
 use encoding::Reader;
 use sshbuffer::SSHBuffer;
+use negociation::Named;
 
 #[derive(Debug)]
-pub enum ServerState {
+pub enum ServerState<Key> {
     VersionOk(Exchange),
-    Kex(Kex),
-    Encrypted(Encrypted), // Session is now encrypted.
+    Kex(Kex<Key>),
+    Encrypted(Encrypted<Key>), // Session is now encrypted.
 }
 
 #[derive(Debug)]
@@ -68,14 +69,14 @@ impl Exchange {
 }
 
 #[derive(Debug)]
-pub enum Kex {
+pub enum Kex<Key> {
     KexInit(KexInit), /* Version number sent. `algo` and `sent` tell wether kexinit has been received, and sent, respectively. */
-    KexDh(KexDh), // Algorithms have been determined, the DH algorithm should run.
-    KexDhDone(KexDhDone), // The kex has run.
-    NewKeys(NewKeys), /* The DH is over, we've sent the NEWKEYS packet, and are waiting the NEWKEYS from the other side. */
+    KexDh(KexDh<Key>), // Algorithms have been determined, the DH algorithm should run.
+    KexDhDone(KexDhDone<Key>), // The kex has run.
+    NewKeys(NewKeys<Key>), /* The DH is over, we've sent the NEWKEYS packet, and are waiting the NEWKEYS from the other side. */
 }
 
-
+use std::marker::PhantomData;
 
 #[derive(Debug)]
 pub struct KexInit {
@@ -94,28 +95,33 @@ pub struct KexInit {
 
 
 impl KexInit {
-    pub fn kexinit(self) -> Result<Kex, Error> {
+    pub fn kexinit <'k, K:Named> (self, keys:&'k [K]) -> Result<Kex<&'k K>, Error> {
         if !self.sent {
             Ok(Kex::KexInit(self))
         } else {
             if let Some(names) = self.algo {
-
-                Ok(Kex::KexDh(KexDh {
-                    exchange: self.exchange,
-                    names: names,
-                    session_id: self.session_id,
-                }))
+                if let Some(key) = keys.iter().find(|x| x.name() == names.key) {
+                    Ok(Kex::KexDh(KexDh {
+                        exchange: self.exchange,
+                        key: key,
+                        names: names,
+                        session_id: self.session_id,
+                    }))
+                } else {
+                    Err(Error::Kex)
+                }
             } else {
                 Err(Error::Kex)
             }
         }
     }
 
-    pub fn cleartext_write_kex_init(mut self,
-                                    preferred:&negociation::Preferred,
-                                    write:&mut SSHBuffer,
-                                    is_server: bool)
-                                    -> ServerState {
+    pub fn cleartext_write_kex_init <'k, K:Named> (mut self,
+                                                   keys:&'k [K],
+                                                   preferred:&negociation::Preferred,
+                                                   write:&mut SSHBuffer,
+                                                   is_server: bool)
+                                                   -> ServerState<&'k K> {
 
         if !self.sent {
             let pos = write.buffer.len();
@@ -136,11 +142,16 @@ impl KexInit {
             self.sent = true;
         }
         if let Some(names) = self.algo {
-            ServerState::Kex(Kex::KexDh(KexDh {
-                exchange: self.exchange,
-                names: names,
-                session_id: self.session_id,
-            }))
+            if let Some(key) = keys.iter().find(|x| x.name() == names.key) {
+                ServerState::Kex(Kex::KexDh(KexDh {
+                    exchange: self.exchange,
+                    names: names,
+                    key: key,
+                    session_id: self.session_id,
+                }))
+            } else {
+                panic!("")
+            }
         } else {
             ServerState::Kex(Kex::KexInit(self))
         }
@@ -164,27 +175,29 @@ impl KexInit {
 }
 
 #[derive(Debug)]
-pub struct KexDh {
+pub struct KexDh<Key> {
     pub exchange: Exchange,
     pub names: negociation::Names,
+    pub key: Key,
     pub session_id: Option<kex::Digest>,
 }
 
 #[derive(Debug)]
-pub struct KexDhDone {
+pub struct KexDhDone<Key> {
     pub exchange: Exchange,
     pub kex: kex::Algorithm,
+    pub key: Key,
     pub session_id: Option<kex::Digest>,
     pub names: negociation::Names,
 }
 
-impl KexDhDone {
+impl<Key> KexDhDone<Key> {
     pub fn compute_keys(self,
                     hash: kex::Digest,
                     buffer: &mut CryptoBuf,
                     buffer2: &mut CryptoBuf,
                     is_server: bool)
-                    -> Result<NewKeys, Error> {
+                    -> Result<NewKeys<Key>, Error> {
         let session_id = if let Some(session_id) = self.session_id {
             session_id
         } else {
@@ -196,6 +209,7 @@ impl KexDhDone {
             exchange: self.exchange,
             names: self.names,
             kex: self.kex,
+            key: self.key,
             cipher: c,
             session_id: session_id,
             received: false,
@@ -246,22 +260,23 @@ impl KexDhDone {
 }
 
 #[derive(Debug)]
-pub struct NewKeys {
+pub struct NewKeys<Key> {
     pub exchange: Exchange,
     pub names: negociation::Names,
     pub kex: kex::Algorithm,
+    pub key: Key,
     pub cipher: cipher::CipherPair,
     pub session_id: kex::Digest,
     pub received: bool,
     pub sent: bool,
 }
 
-impl NewKeys {
-    pub fn encrypted(self, state: EncryptedState) -> Encrypted {
+impl<Key> NewKeys<Key> {
+    pub fn encrypted(self, state: EncryptedState) -> Encrypted<Key> {
         Encrypted {
             exchange: Some(self.exchange),
             kex: self.kex,
-            key: self.names.key,
+            key: self.key,
             cipher: self.cipher,
             mac: self.names.mac,
             session_id: self.session_id,
@@ -273,14 +288,14 @@ impl NewKeys {
 }
 
 #[derive(Debug)]
-pub struct Encrypted {
+pub struct Encrypted<K> {
     pub exchange: Option<Exchange>, // It's always Some, except when we std::mem::replace it temporarily.
     pub kex: kex::Algorithm,
-    pub key: key::Algorithm,
+    pub key: K,
     pub cipher: cipher::CipherPair,
     pub mac: &'static str,
     pub session_id: kex::Digest,
     pub state: Option<EncryptedState>,
-    pub rekey: Option<Kex>,
+    pub rekey: Option<Kex<K>>,
     pub channels: HashMap<u32, ChannelParameters>,
 }

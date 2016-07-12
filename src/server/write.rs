@@ -24,19 +24,19 @@ use auth::*;
 use sshbuffer::{SSHBuffer};
 use key::PubKey;
 
-impl Session {
+impl <'k> Session<'k> {
     #[doc(hidden)]
-    pub fn server_cleartext_kex_ecdh_reply(&mut self, kexdhdone: &KexDhDone, hash: &kex::Digest) {
+    pub fn server_cleartext_kex_ecdh_reply(&mut self, kexdhdone: &KexDhDone<&'k key::Algorithm>, hash: &kex::Digest) {
         // ECDH Key exchange.
         // http://tools.ietf.org/html/rfc5656#section-4
         self.buffers.write.buffer.extend(b"\0\0\0\0\0");
         self.buffers.write.buffer.push(msg::KEX_ECDH_REPLY);
 
-        kexdhdone.names.key.push_to(&mut self.buffers.write.buffer);
+        kexdhdone.key.push_to(&mut self.buffers.write.buffer);
         // Server ephemeral
         self.buffers.write.buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
         // Hash signature
-        kexdhdone.names.key.add_signature(&mut self.buffers.write.buffer, hash.as_bytes());
+        kexdhdone.key.add_signature(&mut self.buffers.write.buffer, hash.as_bytes());
         //
         complete_packet(&mut self.buffers.write.buffer, 0);
         self.buffers.write.seqn += 1;
@@ -54,7 +54,7 @@ impl Session {
     }
 }
 
-impl Encrypted {
+impl<'k> Encrypted<&'k key::Algorithm> {
     pub fn server_confirm_channel_open(&mut self,
                                        buffer: &mut CryptoBuf,
                                        channel: &ChannelParameters,

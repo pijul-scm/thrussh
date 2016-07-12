@@ -552,14 +552,8 @@ mod test {
             );
             config
         };
-        let client_config = {
-            let mut config: client::Config = Default::default();
-            config.keys = vec!(key::Algorithm::Ed25519 {
-                public: client_pk.clone(),
-                secret: client_sk.clone()
-            });
-            config
-        };
+        let client_config = Default::default();
+
         let mut server_read:Vec<u8> = Vec::new();
         let mut server_write:Vec<u8> = Vec::new();
         

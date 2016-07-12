@@ -26,11 +26,12 @@ use rand::{thread_rng, Rng};
 use std;
 use std::collections::hash_map::Entry;
 use key::PubKey;
+use negociation::Named;
 
-impl Session {
+impl<'k> Session<'k> {
     #[doc(hidden)]
     pub fn server_read_cleartext_kexdh(&mut self,
-                                       mut kexdh: KexDh,
+                                       mut kexdh: KexDh<&'k key::Algorithm>,
                                        buffer: &mut CryptoBuf,
                                        buffer2: &mut CryptoBuf)
                                        -> Result<ReturnCode, Error> {
@@ -49,11 +50,12 @@ impl Session {
         let kexdhdone = KexDhDone {
             exchange: kexdh.exchange,
             kex: kex,
+            key: kexdh.key,
             names: kexdh.names,
             session_id: kexdh.session_id,
         };
 
-        let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.names.key, &kexdhdone.exchange, buffer));
+        let hash = try!(kexdhdone.kex.compute_exchange_hash(kexdhdone.key, &kexdhdone.exchange, buffer));
         self.server_cleartext_kex_ecdh_reply(&kexdhdone, &hash);
         self.server_cleartext_send_newkeys();
 
@@ -63,7 +65,7 @@ impl Session {
     }
 
     #[doc(hidden)]
-    pub fn server_read_cleartext_newkeys(&mut self, newkeys: NewKeys) -> Result<ReturnCode, Error> {
+    pub fn server_read_cleartext_newkeys(&mut self, newkeys: NewKeys<&'k key::Algorithm>) -> Result<ReturnCode, Error> {
         // We have sent a NEWKEYS packet, and are waiting to receive one. Is it this one?
         let payload_is_newkeys = {
             let payload = self.buffers.get_current_payload();
@@ -80,9 +82,9 @@ impl Session {
     }
 }
 
-impl Encrypted {
+impl <'k> Encrypted<&'k key::Algorithm> {
     pub fn server_read_encrypted<S: Server>(&mut self,
-                                            config: &Config,
+                                            config: &'k Config,
                                             server: &mut S,
                                             buf: &[u8],
                                             buffer: &mut CryptoBuf,
@@ -427,7 +429,7 @@ impl Encrypted {
 
     pub fn server_read_rekey(&mut self,
                              buf: &[u8],
-                             config: &super::Config,
+                             config: &'k super::Config,
                              buffer: &mut CryptoBuf,
                              buffer2: &mut CryptoBuf,
                              write_buffer: &mut SSHBuffer)
@@ -438,7 +440,7 @@ impl Encrypted {
                 Some(Kex::KexInit(mut kexinit)) => {
                     debug!("received KEXINIT");
                     if kexinit.algo.is_none() {
-                        kexinit.algo = Some(try!(negociation::Server::read_kex(buf, &config.keys, &config.preferred)));
+                        kexinit.algo = Some(try!(negociation::Server::read_kex(buf, &config.preferred)));
                     }
                     kexinit.exchange.client_kex_init.extend_from_slice(buf);
 
@@ -449,11 +451,17 @@ impl Encrypted {
                     }
                     if let Some(names) = kexinit.algo {
                         debug!("rekey ok");
-                        self.rekey = Some(Kex::KexDh(KexDh {
-                            exchange: kexinit.exchange,
-                            names: names,
-                            session_id: kexinit.session_id,
-                        }))
+                        if let Some(key) = config.keys.iter().find(|x| x.name() == names.key) {
+                            self.rekey = Some(Kex::KexDh(KexDh {
+                                exchange: kexinit.exchange,
+                                names: names,
+                                key: key,
+                                session_id: kexinit.session_id,
+                            }))
+                        } else {
+                            debug!("still kexinit");
+                            panic!("")
+                        }
                     } else {
                         debug!("still kexinit");
                         self.rekey = Some(Kex::KexInit(kexinit))
@@ -465,7 +473,7 @@ impl Encrypted {
                     if let Some(exchange) = std::mem::replace(&mut self.exchange, None) {
                         let mut kexinit = KexInit::rekey(
                             exchange,
-                            try!(negociation::Server::read_kex(buf, &config.keys, &config.preferred)),
+                            try!(negociation::Server::read_kex(buf, &config.preferred)),
                             &self.session_id
                         );
                         debug!("sending kexinit");
@@ -478,11 +486,16 @@ impl Encrypted {
 
                         if let Some(names) = kexinit.algo {
                             debug!("rekey ok");
-                            self.rekey = Some(Kex::KexDh(KexDh {
-                                exchange: kexinit.exchange,
-                                names: names,
-                                session_id: kexinit.session_id,
-                            }))
+                            if let Some(key) = config.keys.iter().find(|x| x.name() == names.key) {
+                                self.rekey = Some(Kex::KexDh(KexDh {
+                                    exchange: kexinit.exchange,
+                                    names: names,
+                                    key: key,
+                                    session_id: kexinit.session_id,
+                                }))
+                            } else {
+                                unreachable!() // could not have changed.
+                            }
                         } else {
                             unreachable!()
                         }
@@ -516,21 +529,22 @@ impl Encrypted {
                             exchange: kexdh.exchange,
                             names: kexdh.names,
                             kex: kex,
+                            key: kexdh.key,
                             session_id: kexdh.session_id,
                         };
                         let hash = try!(kexdhdone.kex.compute_exchange_hash(
-                            &kexdhdone.names.key,
+                            kexdhdone.key,
                             &kexdhdone.exchange,
                             buffer));
 
                         // http://tools.ietf.org/html/rfc5656#section-4
                         buffer.clear();
                         buffer.push(msg::KEX_ECDH_REPLY);
-                        kexdhdone.names.key.push_to(buffer);
+                        kexdhdone.key.push_to(buffer);
                         // Server ephemeral
                         buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
                         // Hash signature
-                        kexdhdone.names.key.add_signature(buffer, hash.as_bytes());
+                        kexdhdone.key.add_signature(buffer, hash.as_bytes());
                         //
                         self.cipher.write(buffer.as_slice(), write_buffer);
 
@@ -549,7 +563,7 @@ impl Encrypted {
                         if buf[0] == msg::NEWKEYS {
                             self.exchange = Some(kexinit.exchange);
                             self.kex = kexinit.kex;
-                            self.key = kexinit.names.key;
+                            self.key = kexinit.key;
                             self.cipher = kexinit.cipher;
                             self.mac = kexinit.names.mac;
                         } else {

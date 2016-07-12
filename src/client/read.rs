@@ -47,7 +47,7 @@ impl<'a> super::Session<'a> {
                 sent: false,
                 session_id: None,
             };
-            self.state = Some(kexinit.cleartext_write_kex_init(&preferred, &mut self.buffers.write, false));
+            self.state = Some(kexinit.cleartext_write_kex_init(&[], &preferred, &mut self.buffers.write, false));
             Ok(ReturnCode::Ok)
         } else {
             self.state = Some(ServerState::VersionOk(exchange));
@@ -57,7 +57,6 @@ impl<'a> super::Session<'a> {
     }
     pub fn client_kexinit(&mut self,
                           mut kexinit: KexInit,
-                          keys: &[key::Algorithm],
                           pref: &negociation::Preferred)
                           -> Result<ReturnCode, Error> {
         // Have we determined the algorithm yet?
@@ -66,7 +65,7 @@ impl<'a> super::Session<'a> {
                 let payload = self.buffers.get_current_payload();
                 transport!(payload);
                 if payload[0] == msg::KEXINIT {
-                    kexinit.algo = Some(try!(negociation::Client::read_kex(payload, keys, pref)));
+                    kexinit.algo = Some(try!(negociation::Client::read_kex(payload, pref)));
                     kexinit.exchange.server_kex_init.extend_from_slice(payload);
                 } else {
                     debug!("unknown packet, expecting KEXINIT, received {:?}", payload);
@@ -86,6 +85,7 @@ impl<'a> super::Session<'a> {
                 exchange: kexinit.exchange,
                 names: names,
                 kex: kex,
+                key: super::UNIT,
                 session_id: kexinit.session_id,
             })));
         } else {
@@ -96,7 +96,7 @@ impl<'a> super::Session<'a> {
 
     pub fn client_kexdhdone<C: Client>(&mut self,
                                        client: &C,
-                                       mut kexdhdone: KexDhDone,
+                                       mut kexdhdone: KexDhDone<&'static ()>,
                                        buffer: &mut CryptoBuf,
                                        buffer2: &mut CryptoBuf)
                                        -> Result<ReturnCode, Error> {
@@ -127,7 +127,7 @@ impl<'a> super::Session<'a> {
 
     pub fn client_newkeys(&mut self,
                           buffer: &mut CryptoBuf,
-                          mut newkeys: NewKeys)
+                          mut newkeys: NewKeys<&'static ()>)
                           -> Result<ReturnCode, Error> {
 
         let is_newkeys = {
@@ -153,11 +153,11 @@ impl<'a> super::Session<'a> {
 }
 
 
-impl Encrypted {
+impl Encrypted<&'static ()> {
     pub fn client_rekey<C: Client>(&mut self,
                                    client: &C,
                                    buf: &[u8],
-                                   rekey: Kex,
+                                   rekey: Kex<&'static ()>,
                                    config: &super::Config,
                                    buffer: &mut CryptoBuf,
                                    buffer2: &mut CryptoBuf)
@@ -167,7 +167,7 @@ impl Encrypted {
                 if buf[0] == msg::KEXINIT {
                     debug!("received KEXINIT");
                     if kexinit.algo.is_none() {
-                        kexinit.algo = Some(try!(negociation::Client::read_kex(buf, &config.keys, &config.preferred)));
+                        kexinit.algo = Some(try!(negociation::Client::read_kex(buf, &config.preferred)));
                         kexinit.exchange.server_kex_init.extend_from_slice(buf);
                     }
                     if kexinit.sent {
@@ -175,6 +175,7 @@ impl Encrypted {
                             self.rekey = Some(Kex::KexDh(KexDh {
                                 exchange: kexinit.exchange,
                                 names: names,
+                                key: super::UNIT,
                                 session_id: kexinit.session_id,
                             }))
                         } else {
@@ -206,7 +207,7 @@ impl Encrypted {
 
                         self.exchange = Some(newkeys.exchange);
                         self.kex = newkeys.kex;
-                        self.key = newkeys.names.key;
+                        self.key = newkeys.key;
                         self.cipher = newkeys.cipher;
                         self.mac = newkeys.names.mac;
                         return Ok(true);

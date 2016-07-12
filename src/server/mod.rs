@@ -57,15 +57,15 @@ impl Default for Config {
     }
 }
 
-pub struct Session {
+pub struct Session<'k> {
     buffers: SSHBuffers,
-    state: Option<ServerState>,
+    state: Option<ServerState<&'k key::Algorithm>>,
 }
 
 mod read;
 mod write;
 
-impl Default for Session {
+impl <'k>Default for Session<'k> {
     fn default() -> Self {
         super::SODIUM_INIT.call_once(|| {
             super::sodium::init();
@@ -76,8 +76,9 @@ impl Default for Session {
         }
     }
 }
+use std::marker::PhantomData;
 
-impl Session {
+impl <'k>Session<'k> {
     pub fn new() -> Self {
         Session::default()
     }
@@ -85,7 +86,7 @@ impl Session {
     // returns whether a complete packet has been read.
     pub fn read<R: BufRead, S: Server>(&mut self,
                                        server: &mut S,
-                                       config: &Config,
+                                       config: &'k Config,
                                        stream: &mut R,
                                        buffer: &mut CryptoBuf,
                                        buffer2: &mut CryptoBuf)
@@ -129,12 +130,11 @@ impl Session {
                             // read algo from packet.
                             kexinit.algo =
                                 Some(try!(super::negociation::Server::read_kex(payload,
-                                                                               &config.keys,
                                                                                &config.preferred)));
                             kexinit.exchange.client_kex_init.extend_from_slice(payload);
                         }
                     }
-                    self.state = Some(kexinit.cleartext_write_kex_init(&config.preferred, &mut self.buffers.write, true));
+                    self.state = Some(kexinit.cleartext_write_kex_init(&config.keys, &config.preferred, &mut self.buffers.write, true));
                     Ok(ReturnCode::Ok)
 
                 } else {

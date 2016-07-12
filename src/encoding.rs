@@ -17,6 +17,7 @@ use byteorder::{ByteOrder, BigEndian};
 use super::Error;
 use super::cryptobuf::CryptoBuf;
 use super::key;
+use negociation::Named;
 
 pub trait Bytes {
     fn bytes(&self) -> &[u8];

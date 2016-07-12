@@ -15,6 +15,7 @@
 use super::Error;
 pub use super::sodium::ed25519;
 use cryptobuf::CryptoBuf;
+use negociation::Named;
 
 pub const ED25519: &'static str = "ssh-ed25519";
 
@@ -67,15 +68,16 @@ impl PublicKey {
     }
 }
 
-
-use std::path::Path;
-impl Algorithm {
-
-    pub fn name(&self) -> &'static str {
+impl Named for Algorithm {
+    fn name(&self) -> &'static str {
         match self {
             &Algorithm::Ed25519 {..} => "ssh-ed25519",
         }
     }
+}
+
+use std::path::Path;
+impl Algorithm {
 
     pub fn add_signature(&self, buffer: &mut CryptoBuf, hash: &[u8]) {
         match self {

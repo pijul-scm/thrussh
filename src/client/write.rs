@@ -23,10 +23,11 @@ use super::super::cipher::CipherT;
 use state::*;
 use sshbuffer::{SSHBuffer,SSHBuffers};
 use key::PubKey;
+use negociation::Named;
 
 const SSH_CONNECTION:&'static [u8] = b"ssh-connection";
 
-impl Encrypted {
+impl Encrypted<&'static ()> {
     pub fn client_send_signature(&mut self,
                                  write_buffer: &mut SSHBuffer,
                                  auth_request: AuthRequest,
@@ -143,7 +144,7 @@ impl Encrypted {
     pub fn client_write_rekey<W: Write>(&mut self,
                                         stream: &mut W,
                                         buffers: &mut SSHBuffers,
-                                        rekey: Kex,
+                                        rekey: Kex<&'static ()>,
                                         config: &super::Config,
                                         buffer: &mut CryptoBuf)
                                         -> Result<(), Error> {
@@ -166,6 +167,7 @@ impl Encrypted {
                     self.rekey = Some(Kex::KexDh(KexDh {
                         exchange: kexinit.exchange,
                         names: names,
+                        key: super::UNIT,
                         session_id: kexinit.session_id,
                     }))
                 } else {
@@ -202,7 +204,7 @@ impl Encrypted {
     pub fn client_write_kexdh(&mut self,
                               buffer: &mut CryptoBuf,
                               write_buffer: &mut SSHBuffer,
-                              mut kexdh: KexDh)
+                              mut kexdh: KexDh<&()>)
                               -> Result<(), Error> {
         buffer.clear();
         let kex = try!(super::super::kex::Algorithm::client_dh(kexdh.names.kex,
@@ -210,10 +212,11 @@ impl Encrypted {
                                                                buffer));
 
         self.cipher.write(buffer.as_slice(), write_buffer);
-
+        
         self.rekey = Some(Kex::KexDhDone(KexDhDone {
             exchange: kexdh.exchange,
             kex: kex,
+            key: super::UNIT,
             names: kexdh.names,
             session_id: kexdh.session_id,
         }));

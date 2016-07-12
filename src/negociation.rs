@@ -27,7 +27,7 @@ use super::encoding::Reader;
 #[derive(Debug)]
 pub struct Names {
     pub kex: &'static str,
-    pub key: key::Algorithm,
+    pub key: &'static str,
     pub cipher: &'static str,
     pub mac: &'static str,
     pub ignore_guessed: bool,
@@ -50,11 +50,18 @@ pub const PREFERRED: Preferred = Preferred {
     compression: &["none"],
 };
 
+pub trait Named {
+    fn name(&self) -> &'static str;
+}
+
+impl Named for () {
+    fn name(&self) -> &'static str { "" }
+}
 
 pub trait Select {
     fn select(a: &'static [&'static str], b: &[u8]) -> Option<(bool, &'static str)>;
 
-    fn read_kex(buffer: &[u8], keys: &[key::Algorithm], pref: &Preferred) -> Result<Names, Error> {
+    fn read_kex(buffer: &[u8], pref: &Preferred) -> Result<Names, Error> {
         if buffer[0] != msg::KEXINIT {
             Err(Error::KexInit)
         } else {
@@ -68,8 +75,8 @@ pub trait Select {
                 };
 
             let (key_both_first, key_algorithm) =
-                if let Some((a, b)) = Self::select(pref.key, try!(r.read_string())) {
-                    (a, keys.iter().find(|a| a.name() == b))
+                if let Some(x) = Self::select(pref.key, try!(r.read_string())) {
+                    x
                 } else {
                     return Err(Error::KexInit);
                 };
@@ -85,11 +92,11 @@ pub trait Select {
             try!(r.read_string()); //
 
             let follows = try!(r.read_byte()) != 0;
-            match (key_algorithm, cipher, mac, follows) {
-                (Some(key), Some((_, cip)), Some((_, mac)), fol) => {
+            match (cipher, mac, follows) {
+                (Some((_, cip)), Some((_, mac)), fol) => {
                     Ok(Names {
                         kex: kex_algorithm,
-                        key: key.clone(),
+                        key: key_algorithm,
                         cipher: cip,
                         mac: mac,
                         // Ignore the next packet if (1) it follows and (2) it's not the correct guess.
