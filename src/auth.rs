@@ -26,25 +26,25 @@ pub const PUBKEY: M = M(4);
 pub const HOSTBASED: M = M(8);
 
 #[derive(Debug)]
-pub enum Method<'a> {
+pub enum Method<'a, K> {
     None,
     Password {
         user: &'a str,
         password: &'a str,
     },
-    Pubkey {
+    PublicKey {
         user: &'a str,
-        pubkey: key::PublicKey,
-        seckey: Option<key::SecretKey>,
+        pubkey: K
     },
     Hostbased,
 }
-impl<'a> Method<'a> {
+
+impl<'a,K> Method<'a,K> {
     fn num(&self) -> M {
         match *self {
             Method::None => NONE,
             Method::Password { .. } => PASSWORD,
-            Method::Pubkey { .. } => PUBKEY,
+            Method::PublicKey { .. } => PUBKEY,
             Method::Hostbased => HOSTBASED,
         }
     }
@@ -152,9 +152,9 @@ impl Methods {
     }
 }
 
-impl<'a> Sub<&'a Method<'a>> for Methods {
+impl<'a,K> Sub<&'a Method<'a,K>> for Methods {
     type Output = Methods;
-    fn sub(mut self, m: &Method) -> Self::Output {
+    fn sub(mut self, m: &Method<K>) -> Self::Output {
         let M(m) = m.num();
         self.set &= !m;
         self

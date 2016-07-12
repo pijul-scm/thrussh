@@ -102,11 +102,11 @@ impl From<rustc_serialize::base64::FromBase64Error> for Error {
 mod negociation;
 
 mod msg;
+pub mod key;
 mod kex;
 
 mod cipher;
 use cipher::CipherT;
-pub mod key;
 
 // mod mac;
 // use mac::*;
@@ -291,7 +291,7 @@ pub trait Server {
         Ok(())
     }
 
-    fn auth(&self, methods: auth::Methods, method: &auth::Method) -> auth::Auth {
+    fn auth(&self, methods: auth::Methods, method: &auth::Method<key::PublicKey>) -> auth::Auth {
         auth::Auth::Reject {
             remaining_methods: methods - method,
             partial_success: false,
@@ -436,7 +436,7 @@ pub fn read_public_key(p: &[u8]) -> Result<key::PublicKey, Error> {
     Err(Error::CouldNotReadKey)
 }
 
-pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::SecretKey, Error> {
+pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
 
     let file = try!(File::open(p.as_ref()));
     let file = BufReader::new(file);
@@ -498,8 +498,9 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::SecretKey, Error> {
                     let seckey = try!(position.read_string());
                     let comment = try!(position.read_string());
                     debug!("comment = {:?}", comment);
+                    let public = sodium::ed25519::PublicKey::copy_from_slice(pubkey);
                     let secret = sodium::ed25519::SecretKey::copy_from_slice(seckey);
-                    return Ok(key::SecretKey::Ed25519(secret));
+                    return Ok(key::Algorithm::Ed25519 { public: public, secret:secret });
                 } else {
                     info!("unsupported key type {:?}", std::str::from_utf8(key_type));
                 }

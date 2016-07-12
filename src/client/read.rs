@@ -222,9 +222,9 @@ impl Encrypted {
         Ok(false)
     }
 
-
+    /// Process a "service_accept" message from the server.
     pub fn client_service_request(&mut self,
-                                  auth_method: &Option<auth::Method>,
+                                  auth_method: &Option<auth::Method<key::Algorithm>>,
                                   buffers: &mut SSHBuffers,
                                   buffer: &mut CryptoBuf)
                                   -> Result<(), Error> {
@@ -241,11 +241,12 @@ impl Encrypted {
         Ok(())
     }
 
+    /// Handle messages during the authentication phase.
     pub fn client_auth_request_success(&mut self,
                                        buf: &[u8],
                                        config: &super::Config,
                                        mut auth_request: AuthRequest,
-                                       auth_method: &Option<auth::Method>,
+                                       auth_method: &Option<auth::Method<key::Algorithm>>,
                                        write_buffer: &mut SSHBuffer,
                                        buffer: &mut CryptoBuf,
                                        buffer2: &mut CryptoBuf)
@@ -270,7 +271,7 @@ impl Encrypted {
         } else if buf[0] == msg::USERAUTH_PK_OK {
 
             auth_request.public_key_is_ok = true;
-            try!(self.client_send_signature(write_buffer, auth_request, config, buffer, buffer2));
+            self.client_send_signature(write_buffer, auth_request, auth_method, buffer, buffer2);
 
         } else {
             debug!("unknown message: {:?}", buf);
@@ -279,8 +280,8 @@ impl Encrypted {
         Ok(())
     }
 
+    // Process a channel open confirmation message.
     pub fn client_channel_open_confirmation<C:Client>(&mut self, client:&C, buf: &[u8]) -> Result<(), Error> {
-        // Check whether we're receiving a confirmation message.
         debug!("channel_confirmation? {:?}", buf);
         let mut reader = buf.reader(1);
         let id_send = try!(reader.read_u32());

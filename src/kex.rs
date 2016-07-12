@@ -23,6 +23,7 @@ use super::sodium::sha256;
 use super::sodium::curve25519;
 use super::cryptobuf::CryptoBuf;
 use state::*;
+use key;
 
 #[derive(Debug,Clone)]
 pub enum Digest {
@@ -164,11 +165,11 @@ impl Algorithm {
 
     }
 
-    pub fn compute_exchange_hash(&self,
-                                 key: &super::key::PublicKey,
-                                 exchange: &Exchange,
-                                 buffer: &mut CryptoBuf)
-                                 -> Result<Digest, Error> {
+    pub fn compute_exchange_hash<K:key::PubKey>(&self,
+                                                key: &K,
+                                                exchange: &Exchange,
+                                                buffer: &mut CryptoBuf)
+                                                -> Result<Digest, Error> {
         // Computing the exchange hash, see page 7 of RFC 5656.
         match self {
             &Algorithm::Curve25519(ref kex) => {
@@ -183,7 +184,7 @@ impl Algorithm {
                 buffer.extend_ssh_string(&exchange.server_kex_init);
 
 
-                key.extend_pubkey(buffer);
+                key.push_to(buffer);
 
                 debug_assert!(exchange.client_ephemeral.len() == 32);
                 buffer.extend_ssh_string(&exchange.client_ephemeral);

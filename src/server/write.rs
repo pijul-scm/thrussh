@@ -22,6 +22,7 @@ use super::super::cipher::CipherT;
 use state::*;
 use auth::*;
 use sshbuffer::{SSHBuffer};
+use key::PubKey;
 
 impl Session {
     #[doc(hidden)]
@@ -30,7 +31,8 @@ impl Session {
         // http://tools.ietf.org/html/rfc5656#section-4
         self.buffers.write.buffer.extend(b"\0\0\0\0\0");
         self.buffers.write.buffer.push(msg::KEX_ECDH_REPLY);
-        kexdhdone.names.key.public_host_key.extend_pubkey(&mut self.buffers.write.buffer);
+
+        kexdhdone.names.key.push_to(&mut self.buffers.write.buffer);
         // Server ephemeral
         self.buffers.write.buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
         // Hash signature

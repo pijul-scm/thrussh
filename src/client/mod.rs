@@ -65,7 +65,7 @@ impl std::default::Default for Config {
 pub struct Session<'a> {
     buffers: SSHBuffers,
     state: Option<ServerState>,
-    auth_method: Option<auth::Method<'a>>,
+    auth_method: Option<auth::Method<'a, key::Algorithm>>,
 }
 
 impl<'a> Default for Session<'a> {
@@ -319,7 +319,6 @@ impl<'a> Session<'a> {
                 }
             }
         }
-
     }
 
     // Returns whether the connexion is still alive.
@@ -447,7 +446,7 @@ impl<'a> Session<'a> {
                 match enc.state {
                     Some(EncryptedState::WaitingConnection) => {
                         debug!("sending open request");
-                        Some(enc.client_waiting_channel_open(&mut self.buffers.write, config, buffer))
+                        Some(enc.client_open_channel(&mut self.buffers.write, config, buffer))
                     },
                     _ => None
                 }
@@ -465,7 +464,7 @@ impl<'a> Session<'a> {
         }
     }
 
-    pub fn set_method(&mut self, method: auth::Method<'a>) {
+    pub fn set_method(&mut self, method: auth::Method<'a, key::Algorithm>) {
         self.auth_method = Some(method)
     }
 

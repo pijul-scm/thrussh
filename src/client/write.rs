@@ -22,47 +22,55 @@ use super::super::negociation;
 use super::super::cipher::CipherT;
 use state::*;
 use sshbuffer::{SSHBuffer,SSHBuffers};
+use key::PubKey;
+
+const SSH_CONNECTION:&'static [u8] = b"ssh-connection";
 
 impl Encrypted {
     pub fn client_send_signature(&mut self,
                                  write_buffer: &mut SSHBuffer,
                                  auth_request: AuthRequest,
-                                 config: &super::Config,
+                                 method: &Option<auth::Method<key::Algorithm>>,
                                  buffer: &mut CryptoBuf,
-                                 buffer2: &mut CryptoBuf)
-                                 -> Result<(), Error> {
+                                 buffer2: &mut CryptoBuf) {
 
-        buffer.clear();
+        match method {
+            &Some(auth::Method::PublicKey { ref user, ref pubkey }) => {
 
-        buffer.extend_ssh_string(self.session_id.as_bytes());
-        let i0 = buffer.len();
+                buffer.clear();
+                
+                buffer.extend_ssh_string(self.session_id.as_bytes());
+                let i0 = buffer.len();
 
-        buffer.push(msg::USERAUTH_REQUEST);
-        buffer.extend_ssh_string(b"pe");
-        buffer.extend_ssh_string(b"ssh-connection");
+                buffer.push(msg::USERAUTH_REQUEST);
+                buffer.extend_ssh_string(user.as_bytes());
+                buffer.extend_ssh_string(SSH_CONNECTION);
 
-        buffer.extend_ssh_string(b"publickey");
-        buffer.push(1); // This is a probe
-        buffer.extend_ssh_string(config.keys[0].name().as_bytes());
-        config.keys[0].public_host_key.extend_pubkey(buffer);
+                buffer.extend_ssh_string(b"publickey");
+                buffer.push(1); // This is a probe
+                buffer.extend_ssh_string(pubkey.name().as_bytes());
+                
+                pubkey.push_to(buffer);
 
-        // Extend with signature.
-        debug!("========== signing");
-        buffer2.clear();
-        config.keys[0].add_signature(buffer2, buffer.as_slice());
-        buffer.extend(buffer2.as_slice());
+                // Extend with signature.
+                debug!("========== signing");
+                buffer2.clear();
+                pubkey.add_signature(buffer2, buffer.as_slice());
+                buffer.extend(buffer2.as_slice());
 
-        // Send
-        self.cipher.write(&(buffer.as_slice())[i0..], write_buffer); // Skip the session id.
+                // Send
+                self.cipher.write(&(buffer.as_slice())[i0..], write_buffer); // Skip the session id.
 
-        self.state = Some(EncryptedState::AuthRequestAnswer(auth_request));
-        Ok(())
+                self.state = Some(EncryptedState::AuthRequestAnswer(auth_request));
+            },
+            _ => { }
+        }
     }
 
     pub fn client_waiting_auth_request(&mut self,
                                        write_buffer: &mut SSHBuffer,
                                        auth_request: AuthRequest,
-                                       auth_method: &Option<auth::Method>,
+                                       auth_method: &Option<auth::Method<key::Algorithm>>,
                                        buffer: &mut CryptoBuf) {
         // The server is waiting for our USERAUTH_REQUEST.
         buffer.clear();
@@ -77,13 +85,13 @@ impl Encrypted {
                 buffer.extend_ssh_string(password.as_bytes());
                 true
             }
-            Some(auth::Method::Pubkey { ref user, ref pubkey, .. }) => {
+            Some(auth::Method::PublicKey { ref user, ref pubkey }) => {
                 buffer.extend_ssh_string(user.as_bytes());
                 buffer.extend_ssh_string(b"ssh-connection");
                 buffer.extend_ssh_string(b"publickey");
                 buffer.push(0); // This is a probe
                 buffer.extend_ssh_string(pubkey.name().as_bytes());
-                pubkey.extend_pubkey(buffer);
+                pubkey.push_to(buffer);
                 true
             }
             _ => false,
@@ -101,12 +109,11 @@ impl Encrypted {
         }
     }
 
-    pub fn client_waiting_channel_open(&mut self,
-                                       write_buffer: &mut SSHBuffer,
-                                       config: &super::Config,
-                                       buffer: &mut CryptoBuf)
-                                       -> u32 {
-        // The server is waiting for our CHANNEL_OPEN.
+    pub fn client_open_channel(&mut self,
+                               write_buffer: &mut SSHBuffer,
+                               config: &super::Config,
+                               buffer: &mut CryptoBuf)
+                               -> u32 {
         let mut sender_channel = 0;
         while self.channels.contains_key(&sender_channel) || sender_channel == 0 {
             sender_channel = rand::thread_rng().gen()

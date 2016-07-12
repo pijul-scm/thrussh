@@ -25,6 +25,7 @@ use auth::*;
 use rand::{thread_rng, Rng};
 use std;
 use std::collections::hash_map::Entry;
+use key::PubKey;
 
 impl Session {
     #[doc(hidden)]
@@ -52,9 +53,7 @@ impl Session {
             session_id: kexdh.session_id,
         };
 
-        let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.names.key.public_host_key,
-                                                            &kexdhdone.exchange,
-                                                            buffer));
+        let hash = try!(kexdhdone.kex.compute_exchange_hash(&kexdhdone.names.key, &kexdhdone.exchange, buffer));
         self.server_cleartext_kex_ecdh_reply(&kexdhdone, &hash);
         self.server_cleartext_send_newkeys();
 
@@ -326,10 +325,9 @@ impl Encrypted {
                     }
                     _ => unimplemented!(),
                 };
-                let method = Method::Pubkey {
+                let method = Method::PublicKey {
                     user: name,
                     pubkey: pubkey_,
-                    seckey: None,
                 };
 
                 match server.auth(auth_request.methods, &method) {
@@ -389,10 +387,9 @@ impl Encrypted {
                     sodium::ed25519::PublicKey::copy_from_slice(try!(k.read_string()))
                 };
                 // Check that the user is still authorized (the client may have changed user since we accepted).
-                let method = Method::Pubkey {
+                let method = Method::PublicKey {
                     user: try!(std::str::from_utf8(user_name)),
                     pubkey: key::PublicKey::Ed25519(key.clone()),
-                    seckey: None,
                 };
 
                 match server.auth(auth_request.methods, &method) {
@@ -522,14 +519,14 @@ impl Encrypted {
                             session_id: kexdh.session_id,
                         };
                         let hash = try!(kexdhdone.kex.compute_exchange_hash(
-                            &kexdhdone.names.key.public_host_key,
+                            &kexdhdone.names.key,
                             &kexdhdone.exchange,
                             buffer));
 
                         // http://tools.ietf.org/html/rfc5656#section-4
                         buffer.clear();
                         buffer.push(msg::KEX_ECDH_REPLY);
-                        kexdhdone.names.key.public_host_key.extend_pubkey(buffer);
+                        kexdhdone.names.key.push_to(buffer);
                         // Server ephemeral
                         buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
                         // Hash signature
