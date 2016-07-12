@@ -240,7 +240,7 @@ impl<'a> Session<'a> {
                                     }
                                 }
                                 None if buf[0] == msg::CHANNEL_OPEN_CONFIRMATION => {
-                                    try!(enc.client_channel_open_confirmation(buf))
+                                    try!(enc.client_channel_open_confirmation(client, buf))
                                 }
                                 None if buf[0] == msg::CHANNEL_DATA => {
 
@@ -446,9 +446,9 @@ impl<'a> Session<'a> {
             Some(ServerState::Encrypted(ref mut enc)) => {
                 match enc.state {
                     Some(EncryptedState::WaitingConnection) => {
-                            debug!("sending open request");
-                            Some(enc.client_waiting_channel_open(&mut self.buffers.write, config, buffer))
-                        },
+                        debug!("sending open request");
+                        Some(enc.client_waiting_channel_open(&mut self.buffers.write, config, buffer))
+                    },
                     _ => None
                 }
             },

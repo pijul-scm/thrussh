@@ -258,7 +258,6 @@ impl Encrypted {
         if buf[0] == msg::USERAUTH_SUCCESS {
 
             self.state = Some(EncryptedState::WaitingConnection);
-            // self.client_waiting_channel_open(write_buffer, config, buffer)
 
         } else if buf[0] == msg::USERAUTH_FAILURE {
 
@@ -280,7 +279,7 @@ impl Encrypted {
         Ok(())
     }
 
-    pub fn client_channel_open_confirmation(&mut self, buf: &[u8]) -> Result<(), Error> {
+    pub fn client_channel_open_confirmation<C:Client>(&mut self, client:&C, buf: &[u8]) -> Result<(), Error> {
         // Check whether we're receiving a confirmation message.
         debug!("channel_confirmation? {:?}", buf);
         let mut reader = buf.reader(1);
@@ -295,8 +294,8 @@ impl Encrypted {
             parameters.recipient_window_size = window;
             parameters.recipient_maximum_packet_size = max_packet;
             parameters.confirmed = true;
-            debug!("id_send = {:?}", id_send);
-            
+            client.channel_confirmed(id_send);
+
         } else {
             // We've not requested this channel, close connection.
             unimplemented!()

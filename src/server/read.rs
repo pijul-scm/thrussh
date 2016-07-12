@@ -21,7 +21,6 @@ use super::super::negociation;
 use super::super::encoding::Reader;
 use super::super::cipher::CipherT;
 use negociation::Select;
-use sodium;
 use auth::*;
 use rand::{thread_rng, Rng};
 use std;

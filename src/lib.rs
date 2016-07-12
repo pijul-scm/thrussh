@@ -45,7 +45,7 @@ extern crate byteorder;
 extern crate rustc_serialize; // config: read base 64.
 extern crate time;
 
-mod sodium;
+pub mod sodium;
 mod cryptobuf;
 pub use cryptobuf::CryptoBuf;
 
@@ -301,6 +301,7 @@ pub trait Server {
 
 pub trait Client {
     fn auth_banner(&mut self, _: &str) {}
+    fn channel_confirmed(&self, channel:u32) {}
     fn data(&mut self, _: Option<u32>, _: &[u8], _: ChannelBuf) -> Result<(), Error> {
         Ok(())
     }
