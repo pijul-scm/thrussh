@@ -19,12 +19,12 @@ use super::super::*;
 use super::super::complete_packet;
 use super::super::negociation;
 use super::super::cipher::CipherT;
-use cryptobuf::CryptoBuf;
 use state::*;
+use auth::*;
 use sshbuffer::{SSHBuffer};
-use auth;
 
-impl ServerSession {
+impl Session {
+    #[doc(hidden)]
     pub fn server_cleartext_kex_ecdh_reply(&mut self, kexdhdone: &KexDhDone, hash: &kex::Digest) {
         // ECDH Key exchange.
         // http://tools.ietf.org/html/rfc5656#section-4
@@ -39,6 +39,7 @@ impl ServerSession {
         complete_packet(&mut self.buffers.write.buffer, 0);
         self.buffers.write.seqn += 1;
     }
+    #[doc(hidden)]
     pub fn server_cleartext_send_newkeys(&mut self) {
         // Sending the NEWKEYS packet.
         // https://tools.ietf.org/html/rfc4253#section-7.3
@@ -103,7 +104,7 @@ impl Encrypted {
         buffer.clear();
         buffer.push(msg::USERAUTH_SUCCESS);
         self.cipher.write(buffer.as_slice(), write_buffer);
-        self.state = Some(EncryptedState::ChannelOpened(None));
+        self.state = Some(EncryptedState::WaitingConnection);
     }
 
     pub fn server_reject_auth_request(&mut self,

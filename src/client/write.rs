@@ -20,11 +20,8 @@ use rand;
 use rand::Rng;
 use super::super::negociation;
 use super::super::cipher::CipherT;
-use super::super::cryptobuf::CryptoBuf;
 use state::*;
 use sshbuffer::{SSHBuffer,SSHBuffers};
-use auth;
-
 
 impl Encrypted {
     pub fn client_send_signature(&mut self,
@@ -58,7 +55,7 @@ impl Encrypted {
         // Send
         self.cipher.write(&(buffer.as_slice())[i0..], write_buffer); // Skip the session id.
 
-        self.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
+        self.state = Some(EncryptedState::AuthRequestAnswer(auth_request));
         Ok(())
     }
 
@@ -94,7 +91,7 @@ impl Encrypted {
         if method_ok {
             debug!("method ok");
             self.cipher.write(buffer.as_slice(), write_buffer);
-            self.state = Some(EncryptedState::AuthRequestSuccess(auth_request));
+            self.state = Some(EncryptedState::AuthRequestAnswer(auth_request));
         } else {
             // In this case, the caller should call set_method() to
             // supply an alternative authentication method (possibly
@@ -108,7 +105,7 @@ impl Encrypted {
                                        write_buffer: &mut SSHBuffer,
                                        config: &super::Config,
                                        buffer: &mut CryptoBuf)
-                                       -> Result<(), Error> {
+                                       -> u32 {
         // The server is waiting for our CHANNEL_OPEN.
         let mut sender_channel = 0;
         while self.channels.contains_key(&sender_channel) || sender_channel == 0 {
@@ -123,15 +120,18 @@ impl Encrypted {
         // Send
         self.cipher.write(buffer.as_slice(), write_buffer);
 
-        self.state = Some(EncryptedState::ChannelOpenConfirmation(ChannelParameters {
+
+        let parameters = ChannelParameters {
             recipient_channel: 0,
             sender_channel: sender_channel,
             sender_window_size: config.window_size,
             recipient_window_size: 0,
             sender_maximum_packet_size: config.maxpacket,
             recipient_maximum_packet_size: 0,
-        }));
-        Ok(())
+            confirmed: false
+        };
+        self.channels.insert(sender_channel, parameters);
+        sender_channel
     }
     pub fn client_write_rekey<W: Write>(&mut self,
                                         stream: &mut W,

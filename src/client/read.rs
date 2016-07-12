@@ -16,16 +16,14 @@ use super::super::*;
 use super::super::msg;
 use super::super::negociation;
 use super::super::cipher::CipherT;
-use super::super::cryptobuf::CryptoBuf;
 use state::*;
 use sshbuffer::{SSHBuffer,SSHBuffers};
-use auth;
 use std::io::BufRead;
 use auth::AuthRequest;
 use encoding::Reader;
 use negociation::{Select, Preferred};
 
-impl<'a> super::ClientSession<'a> {
+impl<'a> super::Session<'a> {
     pub fn client_read_server_id<R: BufRead>(&mut self,
                                              stream: &mut R,
                                              mut exchange: Exchange,
@@ -259,7 +257,8 @@ impl Encrypted {
 
         if buf[0] == msg::USERAUTH_SUCCESS {
 
-            try!(self.client_waiting_channel_open(write_buffer, config, buffer))
+            self.state = Some(EncryptedState::WaitingConnection);
+            // self.client_waiting_channel_open(write_buffer, config, buffer)
 
         } else if buf[0] == msg::USERAUTH_FAILURE {
 
@@ -276,42 +275,33 @@ impl Encrypted {
 
         } else {
             debug!("unknown message: {:?}", buf);
-            self.state = Some(EncryptedState::AuthRequestSuccess(auth_request))
+            self.state = Some(EncryptedState::AuthRequestAnswer(auth_request))
         }
         Ok(())
     }
 
-    pub fn client_channel_open_confirmation(&mut self,
-                                            buf: &[u8],
-                                            mut channels: ChannelParameters)
-                                            -> Result<(), Error> {
+    pub fn client_channel_open_confirmation(&mut self, buf: &[u8]) -> Result<(), Error> {
         // Check whether we're receiving a confirmation message.
         debug!("channel_confirmation? {:?}", buf);
-        if buf[0] == msg::CHANNEL_OPEN_CONFIRMATION {
-            let mut reader = buf.reader(1);
-            let id_send = try!(reader.read_u32());
-            let id_recv = try!(reader.read_u32());
-            let window = try!(reader.read_u32());
-            let max_packet = try!(reader.read_u32());
-
-            if channels.sender_channel == id_send {
-
-                channels.recipient_channel = id_recv;
-                channels.recipient_window_size = window;
-                channels.recipient_maximum_packet_size = max_packet;
-
-                debug!("id_send = {:?}", id_send);
-                self.channels.insert(channels.sender_channel, channels);
-
-                self.state = Some(EncryptedState::ChannelOpened(Some(id_send)));
-
-            } else {
-
-                unimplemented!()
-            }
+        let mut reader = buf.reader(1);
+        let id_send = try!(reader.read_u32());
+        let id_recv = try!(reader.read_u32());
+        let window = try!(reader.read_u32());
+        let max_packet = try!(reader.read_u32());
+        
+        if let Some(parameters) = self.channels.get_mut(&id_send) {
+            
+            parameters.recipient_channel = id_recv;
+            parameters.recipient_window_size = window;
+            parameters.recipient_maximum_packet_size = max_packet;
+            parameters.confirmed = true;
+            debug!("id_send = {:?}", id_send);
+            
         } else {
-            self.state = Some(EncryptedState::ChannelOpenConfirmation(channels));
+            // We've not requested this channel, close connection.
+            unimplemented!()
         }
+        self.state = Some(EncryptedState::WaitingConnection);
         Ok(())
     }
 }

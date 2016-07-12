@@ -38,12 +38,9 @@ pub enum EncryptedState {
     WaitingServiceRequest,
     ServiceRequest,
     WaitingAuthRequest(auth::AuthRequest),
-    RejectAuthRequest(auth::AuthRequest),
     WaitingSignature(auth::AuthRequest),
-    AuthRequestSuccess(auth::AuthRequest),
-    WaitingChannelOpen,
-    ChannelOpenConfirmation(ChannelParameters),
-    ChannelOpened(Option<u32>), // (HashSet<u32>)
+    AuthRequestAnswer(auth::AuthRequest),
+    WaitingConnection
 }
 
 

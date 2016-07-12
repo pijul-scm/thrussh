@@ -170,15 +170,6 @@ pub enum Auth {
     },
 }
 
-pub trait Authenticate {
-    fn auth(&self, methods: Methods, method: &Method) -> Auth {
-        Auth::Reject {
-            remaining_methods: methods - method,
-            partial_success: false,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct AuthRequest {
     pub methods: Methods,

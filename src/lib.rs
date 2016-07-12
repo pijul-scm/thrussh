@@ -13,6 +13,27 @@
 // limitations under the License.
 //
 
+//! Server and client SSH library. See the two example crates
+//! [thrussh_client](https://crates.io/crates/thrussh_server) and
+//! [thrussh_client](https://crates.io/crates/thrussh_client) on
+//! crates.io.
+//!
+//! This library will never do much more than handling the SSH
+//! protocol.  In particular, it does not run a main loop, does not
+//! call external processes, and does not do its own crypto.
+//!
+//! If you want to implement an SSH server, create a type that
+//! implements the `Server` trait, create a `server::Config`, and then for each
+//! new connection, create a server session using `let s =
+//! ServerSession::new()`. Then, every time new packets are available,
+//! read as many packets as possible using `ServerSession::read(..)`,
+//! and then write the answer using `ServerSession::write(..)`.
+//!
+//! Clients work almost in the same way, except if you want to provide
+//! a command line interface, which needs its own event loop. See the
+//! [thrussh_client](https://pijul.org) crate for an example.
+
+
 extern crate libc;
 extern crate libsodium_sys;
 extern crate rand;
@@ -26,7 +47,7 @@ extern crate time;
 
 mod sodium;
 mod cryptobuf;
-use cryptobuf::CryptoBuf;
+pub use cryptobuf::CryptoBuf;
 
 mod sshbuffer;
 use sshbuffer::{SSHBuffer};
@@ -94,7 +115,7 @@ pub mod key;
 mod encoding;
 use encoding::*;
 
-mod auth;
+pub mod auth;
 macro_rules! transport {
     ( $x:expr ) => {
         {
@@ -150,6 +171,7 @@ pub struct ChannelBuf<'a> {
     wants_reply: bool,
 }
 impl<'a> ChannelBuf<'a> {
+
     fn output(&mut self, extended: Option<u32>, buf: &[u8]) -> usize {
         debug!("output {:?} {:?}", self.channel, buf);
         let mut buf = if buf.len() as u32 > self.channel.recipient_window_size {
@@ -258,17 +280,27 @@ impl<'a> ChannelBuf<'a> {
 }
 
 pub trait Server {
-    fn new_channel(&mut self, channel: &ChannelParameters);
-    fn data(&mut self, _: &[u8], _: ChannelBuf) -> Result<(), Error> {
+    /// Called when a new channel is created.
+    fn new_channel(&mut self, channel: u32) {}
+    /// Called when a data packet is received. A response can be
+    /// written to the `response` argument.
+    fn data(&mut self, channel:u32, data: &[u8], response: ChannelBuf) -> Result<(), Error> {
         Ok(())
     }
-    fn exec(&mut self, _: &[u8], _: ChannelBuf) -> Result<(), Error> {
+    fn exec(&mut self, channel:u32, data: &[u8], response: ChannelBuf) -> Result<(), Error> {
         Ok(())
+    }
+
+    fn auth(&self, methods: auth::Methods, method: &auth::Method) -> auth::Auth {
+        auth::Auth::Reject {
+            remaining_methods: methods - method,
+            partial_success: false,
+        }
     }
 }
+
 pub trait Client {
     fn auth_banner(&mut self, _: &str) {}
-    fn new_channel(&mut self, _: &ChannelParameters) {}
     fn data(&mut self, _: Option<u32>, _: &[u8], _: ChannelBuf) -> Result<(), Error> {
         Ok(())
     }
@@ -307,6 +339,7 @@ fn complete_packet(buf: &mut CryptoBuf, off: usize) {
 }
 
 #[derive(Debug)]
+#[doc(hidden)]
 pub struct ChannelParameters {
     pub recipient_channel: u32,
     pub sender_channel: u32,
@@ -314,6 +347,7 @@ pub struct ChannelParameters {
     pub sender_window_size: u32,
     pub recipient_maximum_packet_size: u32,
     pub sender_maximum_packet_size: u32,
+    pub confirmed: bool
 }
 fn adjust_window_size(write_buffer: &mut SSHBuffer,
                       cipher: &mut cipher::CipherPair,
@@ -476,5 +510,110 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::SecretKey, Error> {
         }
     } else {
         Err(Error::CouldNotReadKey)
+    }
+}
+
+#[cfg(tests)]
+mod test {
+    use super::*;
+    use std::io::BufReader;
+    extern crate env_logger;
+
+    #[test]
+    fn test_session() {
+        env_logger::init().unwrap_or(());
+
+        let (client_pk,client_sk) = super::sodium::ed25519::generate_keypair().unwrap();
+        
+        struct S {}
+        impl Server for S {
+            fn auth(&self, _:auth::Methods, _:&auth::Method) -> auth::Auth {
+                auth::Auth::Success
+            }
+        }
+
+        struct C {}
+        impl Client for C {
+            fn check_server_key(&self, _:&key::PublicKey) -> bool {
+                true
+            }
+        }
+        // Initialize the server
+        let server_config = {
+            let mut config:server::Config = Default::default();
+            // Generate keys
+            let (pk,sk) = super::sodium::ed25519::generate_keypair().unwrap();
+            config.keys.push(
+                key::Algorithm {
+                    public_host_key: key::PublicKey::Ed25519(pk),
+                    secret_host_key: key::SecretKey::Ed25519(sk) 
+                }
+            );
+            config
+        };
+        let client_config = {
+            let mut config: client::Config = Default::default();
+            config.keys = vec!(key::Algorithm {
+                public_host_key: key::PublicKey::Ed25519(client_pk.clone()),
+                secret_host_key: key::SecretKey::Ed25519(client_sk.clone())
+            });
+            config
+        };
+        let mut server_read:Vec<u8> = Vec::new();
+        let mut server_write:Vec<u8> = Vec::new();
+        
+        let mut server = S{};
+        let mut server_session = server::Session::new();
+
+        let mut client = C{};
+        let mut client_session = client::Session::new();
+
+        let mut s_buffer0 = CryptoBuf::new();
+        let mut s_buffer1 = CryptoBuf::new();
+        let mut c_buffer0 = CryptoBuf::new();
+        let mut c_buffer1 = CryptoBuf::new();
+
+
+        client_session.set_method(auth::Method::Pubkey { user:"pe",
+                                                         pubkey: key::PublicKey::Ed25519(client_pk.clone()),
+                                                         seckey: Some(key::SecretKey::Ed25519(client_sk.clone())) });
+
+        let mut run_loop = |client_session:&mut client::Session| {
+            {
+                let mut swrite = &server_write[..];
+                while swrite.len() > 0 {
+                    client_session.read(&client_config, &mut client, &mut swrite, &mut c_buffer0, &mut c_buffer1).unwrap();
+                }
+            }
+            server_write.clear();
+            client_session.write(&client_config, &mut server_read, &mut c_buffer0).unwrap();
+
+            {
+                let mut sread = &server_read[..];
+                while sread.len() > 0 {
+                    server_session.read(&mut server, &server_config, &mut sread, &mut s_buffer0, &mut s_buffer1).unwrap();
+                }
+            }
+            server_read.clear();
+            server_session.write(&mut server_write).unwrap();
+        };
+        
+        while !client_session.is_authenticated() {
+            run_loop(&mut client_session)
+        }
+
+        let mut c_buffer0 = CryptoBuf::new();
+        let channel = client_session.open_channel(&client_config, &mut c_buffer0).unwrap();
+
+        loop {
+            if let Some(chan) = client_session.channels().and_then(|x| x.get(&channel)) {
+                if chan.confirmed {
+                    break
+                }
+            }
+            run_loop(&mut client_session);
+        }
+    
+        
     }
 }

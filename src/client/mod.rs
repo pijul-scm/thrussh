@@ -28,7 +28,7 @@ use cryptobuf::CryptoBuf;
 use negociation::Select;
 use state::*;
 use sshbuffer::*;
-
+use std::collections::HashMap;
 mod read;
 
 #[derive(Debug)]
@@ -62,18 +62,18 @@ impl std::default::Default for Config {
     }
 }
 
-pub struct ClientSession<'a> {
+pub struct Session<'a> {
     buffers: SSHBuffers,
     state: Option<ServerState>,
     auth_method: Option<auth::Method<'a>>,
 }
 
-impl<'a> Default for ClientSession<'a> {
+impl<'a> Default for Session<'a> {
     fn default() -> Self {
         super::SODIUM_INIT.call_once(|| {
             super::sodium::init();
         });
-        ClientSession {
+        Session {
             buffers: SSHBuffers::new(),
             state: None,
             auth_method: None,
@@ -81,9 +81,9 @@ impl<'a> Default for ClientSession<'a> {
     }
 }
 
-impl<'a> ClientSession<'a> {
+impl<'a> Session<'a> {
     pub fn new() -> Self {
-        ClientSession::default()
+        Session::default()
     }
     // returns whether a complete packet has been read.
     pub fn read<R: BufRead, C: super::Client>
@@ -180,7 +180,7 @@ impl<'a> ClientSession<'a> {
                             try!(enc.client_service_request(&self.auth_method, &mut self.buffers, buffer))
                         }
                     }
-                    Some(EncryptedState::AuthRequestSuccess(auth_request)) => {
+                    Some(EncryptedState::AuthRequestAnswer(auth_request)) => {
                         debug!("auth_request_success");
                         if let Some(buf) = try!(enc.cipher.read(stream,&mut self.buffers.read)) {
                             read_complete = true;
@@ -210,22 +210,12 @@ impl<'a> ClientSession<'a> {
                         enc.state = Some(EncryptedState::WaitingSignature(auth_request));
                         read_complete = false
                     }
-                    Some(EncryptedState::WaitingChannelOpen) => {
-                        // The server is waiting for our CHANNEL_OPEN.
-                        enc.state = Some(EncryptedState::WaitingChannelOpen);
+                    Some(EncryptedState::WaitingServiceRequest) => {
+                        // This is a writing state for the client, we should send a service request.
+                        enc.state = Some(EncryptedState::WaitingServiceRequest);
                         read_complete = false
                     }
-                    Some(EncryptedState::ChannelOpenConfirmation(channels)) => {
-                        if let Some(buf) = try!(enc.cipher.read(stream, &mut self.buffers.read)) {
-                            transport!(buf);
-                            read_complete = true;
-                            try!(enc.client_channel_open_confirmation(buf, channels))
-                        } else {
-                            read_complete = false;
-                            enc.state = Some(EncryptedState::ChannelOpenConfirmation(channels));
-                        }
-                    }
-                    state => {
+                    Some(EncryptedState::WaitingConnection) => {
                         debug!("read state {:?}", state);
                         let mut is_newkeys = false;
                         if let Some(buf) = try!(enc.cipher.read(stream,&mut self.buffers.read)) {
@@ -248,6 +238,9 @@ impl<'a> ClientSession<'a> {
                                         kexinit.exchange.server_kex_init.extend_from_slice(buf);
                                         enc.rekey = Some(try!(kexinit.kexinit()));
                                     }
+                                }
+                                None if buf[0] == msg::CHANNEL_OPEN_CONFIRMATION => {
+                                    try!(enc.client_channel_open_confirmation(buf))
                                 }
                                 None if buf[0] == msg::CHANNEL_DATA => {
 
@@ -313,6 +306,9 @@ impl<'a> ClientSession<'a> {
                             self.buffers.write.bytes = 0;
                         }
                         enc.state = state;
+                    },
+                    None => {
+                        read_complete = false
                     }
                 }
                 self.state = Some(ServerState::Encrypted(enc));
@@ -437,9 +433,7 @@ impl<'a> ClientSession<'a> {
         match self.state {
             Some(ServerState::Encrypted(ref enc)) => {
                 match enc.state {
-                    Some(EncryptedState::WaitingChannelOpen) |
-                    Some(EncryptedState::ChannelOpenConfirmation(_)) |
-                    Some(EncryptedState::ChannelOpened(_)) => true,
+                    Some(EncryptedState::WaitingConnection) => true,
                     _ => false,
                 }
             }
@@ -447,16 +441,27 @@ impl<'a> ClientSession<'a> {
         }
     }
 
-    pub fn opened_channel(&self) -> Option<u32> {
+    pub fn open_channel(&mut self, config:&Config, buffer:&mut CryptoBuf) -> Option<u32> {
+        match self.state {
+            Some(ServerState::Encrypted(ref mut enc)) => {
+                match enc.state {
+                    Some(EncryptedState::WaitingConnection) => {
+                            debug!("sending open request");
+                            Some(enc.client_waiting_channel_open(&mut self.buffers.write, config, buffer))
+                        },
+                    _ => None
+                }
+            },
+            _ => None
+        }
+    }
 
+    pub fn channels(&self) -> Option<&HashMap<u32, super::ChannelParameters>> {
         match self.state {
             Some(ServerState::Encrypted(ref enc)) => {
-                match enc.state {
-                    Some(EncryptedState::ChannelOpened(Some(x))) => Some(x),
-                    _ => None,
-                }
-            }
-            _ => None,
+                Some(&enc.channels)
+            },
+            _ => None
         }
     }
 
@@ -503,7 +508,7 @@ impl<'a> ClientSession<'a> {
                 if enc.rekey.is_none() {
 
                     match enc.state {
-                        Some(EncryptedState::ChannelOpened(_)) => {
+                        Some(EncryptedState::WaitingConnection) => {
                             if let Some(c) = enc.channels.get_mut(&channel) {
 
                                 let written = {

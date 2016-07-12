@@ -17,13 +17,11 @@ use time;
 use std;
 use super::negociation::{Preferred, PREFERRED, Select};
 use super::*;
-pub use super::auth::*;
+use super::auth::*;
 use super::msg;
 use super::cipher::CipherT;
-use cryptobuf::CryptoBuf;
 use state::*;
 use sshbuffer::*;
-use auth;
 
 #[derive(Debug)]
 pub struct Config {
@@ -59,7 +57,7 @@ impl Default for Config {
     }
 }
 
-pub struct ServerSession {
+pub struct Session {
     buffers: SSHBuffers,
     state: Option<ServerState>,
 }
@@ -67,33 +65,32 @@ pub struct ServerSession {
 mod read;
 mod write;
 
-impl Default for ServerSession {
+impl Default for Session {
     fn default() -> Self {
         super::SODIUM_INIT.call_once(|| {
             super::sodium::init();
         });
-        ServerSession {
+        Session {
             buffers: SSHBuffers::new(),
             state: None,
         }
     }
 }
 
-impl ServerSession {
+impl Session {
     pub fn new() -> Self {
-        ServerSession::default()
+        Session::default()
     }
 
     // returns whether a complete packet has been read.
-    pub fn read<R: BufRead, A: auth::Authenticate, S: Server>(&mut self,
-                                                              server: &mut S,
-                                                              auth: &mut A,
-                                                              config: &Config,
-                                                              stream: &mut R,
-                                                              buffer: &mut CryptoBuf,
-                                                              buffer2: &mut CryptoBuf)
-                                                              -> Result<ReturnCode, Error> {
-
+    pub fn read<R: BufRead, S: Server>(&mut self,
+                                       server: &mut S,
+                                       config: &Config,
+                                       stream: &mut R,
+                                       buffer: &mut CryptoBuf,
+                                       buffer2: &mut CryptoBuf)
+                                       -> Result<ReturnCode, Error> {
+        
         let state = std::mem::replace(&mut self.state, None);
         debug!("state: {:?}", state);
         match state {
@@ -194,7 +191,6 @@ impl ServerSession {
                             debug!("calling read_encrypted");
                             try!(enc.server_read_encrypted(config,
                                                            server,
-                                                           auth,
                                                            buf,
                                                            buffer,
                                                            &mut self.buffers.write));

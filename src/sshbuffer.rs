@@ -16,7 +16,6 @@
 use std;
 use super::*;
 use std::io::{BufRead};
-use cryptobuf::CryptoBuf;
 use time;
 
 #[derive(Debug)]
@@ -48,14 +47,19 @@ impl SSHBuffer {
         let i = {
             let buf = try!(stream.fill_buf());
             let mut i = 0;
-            while i < buf.len() - 1 {
-                if &buf[i..i + 2] == b"\r\n" {
-                    break;
+            while i < buf.len() {
+                match (buf.get(i), buf.get(i+1)) {
+                    (Some(&u), Some(&v)) if u==b'\r' && v==b'\n' => {
+                        break
+                    },
+                    _ => {}
                 }
                 i += 1
             }
-            if buf.len() <= 8 || i >= buf.len() - 1 {
+            if buf.len() <= 8 {
                 // Not enough bytes. Don't consume, wait until we have more bytes. The buffer is larger than 255 anyway.
+                return Ok(None);
+            } else if i >= buf.len() -1 {
                 return Ok(None);
             }
             if &buf[0..8] == b"SSH-2.0-" {
@@ -122,12 +126,11 @@ impl SSHBuffers {
     }
 
     pub fn get_current_payload(&mut self) -> &[u8] {
-        let packet_length = self.read.buffer.read_u32_be(0) as usize;
+        let read_len = self.read.buffer.read_u32_be(0) as usize;
         let padding_length = self.read.buffer[4] as usize;
-
         let buf = self.read.buffer.as_slice();
-
-        &buf[5..(4 + packet_length - padding_length)]
+        debug!("buf = {:?}, read_len = {:?}, padding_length = {:?}", buf, read_len, padding_length);
+        &buf[5..(4 + read_len - padding_length)]
     }
 
     /// Fills the read buffer, and returns whether a complete message has been read.
