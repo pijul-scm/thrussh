@@ -515,7 +515,7 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
     }
 }
 
-#[cfg(tests)]
+#[cfg(test)]
 mod test {
     use super::*;
     use std::io::BufReader;
@@ -529,7 +529,7 @@ mod test {
         
         struct S {}
         impl Server for S {
-            fn auth(&self, _:auth::Methods, _:&auth::Method) -> auth::Auth {
+            fn auth(&self, _:auth::Methods, _:&auth::Method<key::PublicKey>) -> auth::Auth {
                 auth::Auth::Success
             }
         }
@@ -546,18 +546,17 @@ mod test {
             // Generate keys
             let (pk,sk) = super::sodium::ed25519::generate_keypair().unwrap();
             config.keys.push(
-                key::Algorithm {
-                    public_host_key: key::PublicKey::Ed25519(pk),
-                    secret_host_key: key::SecretKey::Ed25519(sk) 
+                key::Algorithm::Ed25519 {
+                    public: pk, secret: sk
                 }
             );
             config
         };
         let client_config = {
             let mut config: client::Config = Default::default();
-            config.keys = vec!(key::Algorithm {
-                public_host_key: key::PublicKey::Ed25519(client_pk.clone()),
-                secret_host_key: key::SecretKey::Ed25519(client_sk.clone())
+            config.keys = vec!(key::Algorithm::Ed25519 {
+                public: client_pk.clone(),
+                secret: client_sk.clone()
             });
             config
         };
@@ -576,9 +575,12 @@ mod test {
         let mut c_buffer1 = CryptoBuf::new();
 
 
-        client_session.set_method(auth::Method::Pubkey { user:"pe",
-                                                         pubkey: key::PublicKey::Ed25519(client_pk.clone()),
-                                                         seckey: Some(key::SecretKey::Ed25519(client_sk.clone())) });
+        client_session.set_method(auth::Method::PublicKey { user:"pe",
+                                                            pubkey: key::Algorithm::Ed25519 {
+                                                                public: client_pk.clone(),
+                                                                secret: client_sk.clone()
+                                                            }
+        });
 
         let mut run_loop = |client_session:&mut client::Session| {
             {
