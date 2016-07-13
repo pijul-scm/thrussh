@@ -30,7 +30,7 @@ use state::*;
 use sshbuffer::*;
 use std::collections::HashMap;
 mod read;
-
+use channel_request;
 use rand;
 use rand::Rng;
 
@@ -160,7 +160,7 @@ impl<'a> Session<'a> {
             }
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("encrypted state {:?}", enc);
-                self.try_rekey(&mut enc, config);
+                // self.try_rekey(&mut enc, config);
                 let state = std::mem::replace(&mut enc.state, None);
 
                 let read_complete;
@@ -218,7 +218,7 @@ impl<'a> Session<'a> {
                         enc.state = Some(EncryptedState::WaitingServiceRequest);
                         read_complete = false
                     }
-                    Some(EncryptedState::WaitingConnection) => {
+                    Some(EncryptedState::Authenticated) => {
                         debug!("read state {:?}", state);
                         let mut is_newkeys = false;
                         if let Some(buf) = try!(enc.cipher.read(stream,&mut self.buffers.read)) {
@@ -354,7 +354,7 @@ impl<'a> Session<'a> {
             }
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("encrypted");
-                self.try_rekey(&mut enc, config);
+                // self.try_rekey(&mut enc, config);
                 let state = std::mem::replace(&mut enc.state, None);
                 match state {
                     Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
@@ -387,13 +387,40 @@ impl<'a> Session<'a> {
         }
 
     }
-
+    /*
     fn try_rekey(&mut self, enc: &mut Encrypted<&'static ()>, config: &Config) {
-        if enc.rekey.is_none() &&
-           (self.buffers.write.bytes >= config.rekey_write_limit ||
-            self.buffers.read.bytes >= config.rekey_read_limit ||
-            time::precise_time_s() >= self.buffers.last_rekey_s + config.rekey_time_limit_s) {
 
+        if let Some(rekey) = std::mem::replace(enc.rekey, None) {
+            // If there's an ongoing rekeying.
+            match rekey {
+                Kex::NewKeys(mut newkeys) => {
+                    debug!("newkeys {:?}", newkeys);
+                    if !newkeys.sent {
+                        enc.cipher.write(&[msg::NEWKEYS], &mut self.buffers.write);
+                        try!(self.buffers.write_all(stream));
+                        newkeys.sent = true;
+                    }
+                    if !newkeys.received {
+                        enc.rekey = Some(Kex::NewKeys(newkeys))
+                    } else {
+                        enc.exchange = Some(newkeys.exchange);
+                        enc.kex = newkeys.kex;
+                        enc.key = newkeys.key;
+                        enc.cipher = newkeys.cipher;
+                        enc.mac = newkeys.names.mac;
+                    }
+                }
+                Kex::KexDh(kexdh) => {
+                    try!(enc.client_write_kexdh(buffer, &mut self.buffers.write, kexdh));
+                    try!(self.buffers.write_all(stream));
+                }
+                x => enc.rekey = Some(x),
+            }
+        } else if (self.buffers.write.bytes >= config.rekey_write_limit ||
+                   self.buffers.read.bytes >= config.rekey_read_limit ||
+                   time::precise_time_s() >= self.buffers.last_rekey_s + config.rekey_time_limit_s) {
+
+            // Else, if it's time to start a rekeying.
             if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
                 let mut kexinit = KexInit {
                     exchange: exchange,
@@ -408,10 +435,11 @@ impl<'a> Session<'a> {
                 enc.rekey = Some(Kex::KexInit(kexinit))
             }
         } else {
+            // Else, if there's no need for a rekeying.
             debug!("not yet rekeying, {:?}", self.buffers.write.bytes)
         }
     }
-
+    */
     pub fn needs_auth_method(&self) -> Option<auth::Methods> {
 
         match self.state {
@@ -435,7 +463,7 @@ impl<'a> Session<'a> {
         match self.state {
             Some(ServerState::Encrypted(ref enc)) => {
                 match enc.state {
-                    Some(EncryptedState::WaitingConnection) => true,
+                    Some(EncryptedState::Authenticated) => true,
                     _ => false,
                 }
             }
@@ -447,7 +475,7 @@ impl<'a> Session<'a> {
         match self.state {
             Some(ServerState::Encrypted(ref mut enc)) => {
                 match enc.state {
-                    Some(EncryptedState::WaitingConnection) => {
+                    Some(EncryptedState::Authenticated) => {
                         debug!("sending open request");
 
 
@@ -532,6 +560,33 @@ impl<'a> Session<'a> {
         self.auth_method = Some(method)
     }
 
+    pub fn channel_request<W: Write, R:channel_request::Req>(&mut self,
+                                                             stream: &mut W,
+                                                             buffer: &mut CryptoBuf,
+                                                             channel: u32,
+                                                             req: R)
+                                                             -> Result<(), Error> {
+        
+        match self.state {
+            Some(ServerState::Encrypted(ref mut enc)) => {
+                match enc.state {
+                    Some(EncryptedState::Authenticated) => {
+                        // No rekeying here, since we need answers
+                        // from the server before we can send this
+                        // request.
+                        if let Some(c) = enc.channels.get_mut(&channel) {
+                            req.req(c, buffer);
+                            enc.cipher.write(buffer.as_slice(), &mut self.buffers.write);
+                        }
+                        Ok(())
+                    },
+                    _ => Err(Error::WrongState)
+                }
+            },
+            _ => Err(Error::WrongState)
+        }
+    }
+
     pub fn msg<W: Write>(&mut self,
                          stream: &mut W,
                          buffer: &mut CryptoBuf,
@@ -543,35 +598,11 @@ impl<'a> Session<'a> {
             Some(ServerState::Encrypted(ref mut enc)) => {
                 debug!("msg, encrypted, {:?} {:?}", enc.state, enc.rekey);
 
-                match std::mem::replace(&mut enc.rekey, None) {
-                    Some(Kex::NewKeys(mut newkeys)) => {
-                        debug!("newkeys {:?}", newkeys);
-                        if !newkeys.sent {
-                            enc.cipher.write(&[msg::NEWKEYS], &mut self.buffers.write);
-                            try!(self.buffers.write_all(stream));
-                            newkeys.sent = true;
-                        }
-                        if !newkeys.received {
-                            enc.rekey = Some(Kex::NewKeys(newkeys))
-                        } else {
-                            enc.exchange = Some(newkeys.exchange);
-                            enc.kex = newkeys.kex;
-                            enc.key = newkeys.key;
-                            enc.cipher = newkeys.cipher;
-                            enc.mac = newkeys.names.mac;
-                        }
-                    }
-                    Some(Kex::KexDh(kexdh)) => {
-                        try!(enc.client_write_kexdh(buffer, &mut self.buffers.write, kexdh));
-                        try!(self.buffers.write_all(stream));
-                    }
-                    x => enc.rekey = x,
-                }
 
                 if enc.rekey.is_none() {
 
                     match enc.state {
-                        Some(EncryptedState::WaitingConnection) => {
+                        Some(EncryptedState::Authenticated) => {
                             if let Some(c) = enc.channels.get_mut(&channel) {
 
                                 let written = {

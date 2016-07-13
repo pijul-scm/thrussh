@@ -106,7 +106,7 @@ impl<'k> Encrypted<&'k key::Algorithm> {
         buffer.clear();
         buffer.push(msg::USERAUTH_SUCCESS);
         self.cipher.write(buffer.as_slice(), write_buffer);
-        self.state = Some(EncryptedState::WaitingConnection);
+        self.state = Some(EncryptedState::Authenticated);
     }
 
     pub fn server_reject_auth_request(&mut self,

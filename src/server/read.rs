@@ -61,7 +61,6 @@ impl<'k> Session<'k> {
         self.server_cleartext_send_newkeys();
 
         self.state = Some(ServerState::Kex(Kex::NewKeys(try!(kexdhdone.compute_keys(hash, buffer, buffer2, true)))));
-        // self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
         Ok(ReturnCode::Ok)
     }
 
@@ -137,7 +136,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 }
                 Ok(())
             }
-            Some(EncryptedState::WaitingConnection) => {
+            Some(EncryptedState::Authenticated) => {
                 debug!("buf = {:?}", buf);
                 match buf[0] {
                     msg::CHANNEL_OPEN => {
@@ -214,7 +213,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                         }
                     }
                 }
-                self.state = Some(EncryptedState::WaitingConnection);
+                self.state = Some(EncryptedState::Authenticated);
                 Ok(())
             }
             Some(state) => {
@@ -269,9 +268,8 @@ impl <'k> Encrypted<&'k key::Algorithm> {
         //
         let sender_channel = channel.sender_channel;
         self.channels.insert(sender_channel, channel);
-        self.state = Some(EncryptedState::WaitingConnection);
+        self.state = Some(EncryptedState::Authenticated);
         Ok(())
-
     }
 
     pub fn server_read_auth_request<S: Server>(&mut self,

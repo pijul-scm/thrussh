@@ -3,6 +3,10 @@ use super::ChannelParameters;
 use cryptobuf::CryptoBuf;
 use msg;
 
+pub trait Req {
+    fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf);
+}
+
 pub struct Pty<'a> {
     pub want_reply: bool,
     pub term: &'a str,
@@ -13,8 +17,8 @@ pub struct Pty<'a> {
     pub terminal_modes: &'a [(pty::Option, u32)]
 }
 
-impl<'a> Pty<'a> {
-    pub fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
+impl<'a> Req for Pty<'a> {
+    fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
 
         buffer.clear();
         buffer.push(msg::CHANNEL_REQUEST);
@@ -47,8 +51,8 @@ pub struct X11<'a> {
 }
 
 
-impl<'a> X11<'a> {
-    pub fn req(&mut self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
+impl<'a> Req for X11<'a> {
+    fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
         buffer.clear();
         buffer.push(msg::CHANNEL_REQUEST);
 
@@ -70,8 +74,8 @@ pub struct Env<'a> {
     pub variable_value: &'a str,
 }
 
-impl<'a> Env<'a> {
-    pub fn req(&mut self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
+impl<'a> Req for Env<'a> {
+    fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
         buffer.clear();
         buffer.push(msg::CHANNEL_REQUEST);
 
@@ -87,8 +91,8 @@ pub struct Shell {
     pub want_reply: bool,
 }
 
-impl Shell {
-    pub fn req(&mut self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
+impl Req for Shell {
+    fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
         buffer.clear();
         buffer.push(msg::CHANNEL_REQUEST);
 
@@ -102,8 +106,8 @@ pub struct Exec<'a> {
     pub want_reply: bool,
     pub command:&'a str
 }
-impl<'a> Exec<'a> {
-    pub fn req(&mut self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
+impl<'a> Req for Exec<'a> {
+    fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
         buffer.clear();
         buffer.push(msg::CHANNEL_REQUEST);
 
@@ -118,8 +122,8 @@ pub struct Subsystem<'a> {
     pub want_reply: bool,
     pub name:&'a str
 }
-impl<'a> Subsystem<'a> {
-    pub fn req(&mut self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
+impl<'a> Req for Subsystem<'a> {
+    fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
         buffer.clear();
         buffer.push(msg::CHANNEL_REQUEST);
 
@@ -137,8 +141,8 @@ pub struct WindowChange {
     pix_width: u32,
     pix_height: u32
 }
-impl WindowChange {
-    pub fn req(&mut self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
+impl Req for WindowChange {
+    fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
         buffer.clear();
         buffer.push(msg::CHANNEL_REQUEST);
 
@@ -155,8 +159,8 @@ impl WindowChange {
 pub struct XonXoff {
     client_can_do: bool
 }
-impl XonXoff {
-    pub fn req(&mut self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
+impl Req for XonXoff {
+    fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
         buffer.clear();
         buffer.push(msg::CHANNEL_REQUEST);
 
@@ -170,8 +174,8 @@ impl XonXoff {
 pub struct ExitStatus {
     exit_status: u32
 }
-impl ExitStatus {
-    pub fn req(&mut self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
+impl Req for ExitStatus {
+    fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
         buffer.clear();
         buffer.push(msg::CHANNEL_REQUEST);
 
@@ -199,7 +203,7 @@ pub const SIGTERM: SignalName<'static> = SignalName("TERM");
 pub const SIGUSR1: SignalName<'static> = SignalName("USR1");
 
 impl<'a> SignalName<'a> {
-    pub fn other(name: &'a str) -> SignalName<'a> {
+    fn other(name: &'a str) -> SignalName<'a> {
         SignalName(name)
     }
 }
@@ -212,7 +216,7 @@ pub struct ExitSignal<'a> {
 }
 
 impl<'a> ExitSignal<'a> {
-    pub fn req(&mut self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
+    fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
         buffer.clear();
         buffer.push(msg::CHANNEL_REQUEST);
 

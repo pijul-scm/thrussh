@@ -258,7 +258,7 @@ impl Encrypted<&'static ()> {
 
         if buf[0] == msg::USERAUTH_SUCCESS {
 
-            self.state = Some(EncryptedState::WaitingConnection);
+            self.state = Some(EncryptedState::Authenticated);
 
         } else if buf[0] == msg::USERAUTH_FAILURE {
 
@@ -301,7 +301,7 @@ impl Encrypted<&'static ()> {
             // We've not requested this channel, close connection.
             unimplemented!()
         }
-        self.state = Some(EncryptedState::WaitingConnection);
+        self.state = Some(EncryptedState::Authenticated);
         Ok(())
     }
 }

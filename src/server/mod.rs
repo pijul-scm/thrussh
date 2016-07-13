@@ -58,6 +58,7 @@ impl Default for Config {
 
 pub struct Session<'k> {
     buffers: SSHBuffers,
+    write: CryptoBuf,
     state: Option<ServerState<&'k key::Algorithm>>,
 }
 
@@ -71,6 +72,7 @@ impl <'k>Default for Session<'k> {
         });
         Session {
             buffers: SSHBuffers::new(),
+            write: CryptoBuf::new(),
             state: None,
         }
     }

@@ -41,7 +41,7 @@ pub enum EncryptedState {
     WaitingAuthRequest(auth::AuthRequest),
     WaitingSignature(auth::AuthRequest),
     AuthRequestAnswer(auth::AuthRequest),
-    WaitingConnection
+    Authenticated
 }
 
 
