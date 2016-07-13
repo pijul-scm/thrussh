@@ -18,6 +18,9 @@
 //! [thrussh_client](https://crates.io/crates/thrussh_client) on
 //! crates.io.
 //!
+//! The source code for this crates and the examples is available
+//! online, just follow [the instructions](https://pijul.org/thrussh).
+//!
 //! This library will never do much more than handling the SSH
 //! protocol.  In particular, it does not run a main loop, does not
 //! call external processes, and does not do its own crypto.
@@ -45,7 +48,7 @@ extern crate byteorder;
 extern crate rustc_serialize; // config: read base 64.
 extern crate time;
 
-pub mod sodium;
+mod sodium;
 mod cryptobuf;
 pub use cryptobuf::CryptoBuf;
 
@@ -525,7 +528,7 @@ mod test {
     fn test_session() {
         env_logger::init().unwrap_or(());
 
-        let (client_pk,client_sk) = super::sodium::ed25519::generate_keypair().unwrap();
+
         
         struct S {}
         impl Server for S {
@@ -569,12 +572,9 @@ mod test {
         let mut c_buffer1 = CryptoBuf::new();
 
 
+        let client_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
         client_session.set_method(auth::Method::PublicKey { user:"pe",
-                                                            pubkey: key::Algorithm::Ed25519 {
-                                                                public: client_pk.clone(),
-                                                                secret: client_sk.clone()
-                                                            }
-        });
+                                                            pubkey: client_keypair });
 
         let mut run_loop = |client_session:&mut client::Session| {
             {

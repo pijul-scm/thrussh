@@ -1,10 +1,11 @@
 [package]
 name = "thrussh"
 description = "A client and server SSH library. Memory-safe, doesn't do its own crypto (based on libsodium)."
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
 repository = "https://pijul.org/thrussh"
 homepage = "https://pijul.org/thrussh"
+documentation = "https://pijul.org/thrussh/doc/thrussh"
 license = "Apache-2.0"
 include = [
         "Cargo.toml",
@@ -26,7 +27,9 @@ include = [
         "src/client/mod.rs",
         "src/client/write.rs",
         "src/client/read.rs",
-        "src/key.rs"
+        "src/key.rs",
+        "src/state.rs",
+        "src/sshbuffer.rs"
         ]
 
 [dependencies]

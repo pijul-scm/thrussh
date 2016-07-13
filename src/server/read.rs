@@ -27,6 +27,7 @@ use std;
 use std::collections::hash_map::Entry;
 use key::PubKey;
 use negociation::Named;
+use sodium;
 
 impl<'k> Session<'k> {
     #[doc(hidden)]

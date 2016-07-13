@@ -63,7 +63,7 @@ impl PubKey for Algorithm {
 impl PublicKey {
     pub fn name(&self) -> &'static str {
         match self {
-            &PublicKey::Ed25519(_) => "ssh-ed25519",
+            &PublicKey::Ed25519(_) => ED25519
         }
     }
 }
@@ -71,7 +71,7 @@ impl PublicKey {
 impl Named for Algorithm {
     fn name(&self) -> &'static str {
         match self {
-            &Algorithm::Ed25519 {..} => "ssh-ed25519",
+            &Algorithm::Ed25519 {..} => ED25519
         }
     }
 }
@@ -79,6 +79,22 @@ impl Named for Algorithm {
 use std::path::Path;
 impl Algorithm {
 
+    pub fn generate_keypair(t:&str) -> Option<Self> {
+        match t {
+            ED25519 => {
+                if let Some((pk,sk)) = super::sodium::ed25519::generate_keypair() {
+                    Some(Algorithm::Ed25519 {
+                        public:pk,
+                        secret:sk
+                    })
+                } else {
+                    None
+                }
+            },
+            _ => None
+        }
+    }
+    
     pub fn add_signature(&self, buffer: &mut CryptoBuf, hash: &[u8]) {
         match self {
             &Algorithm::Ed25519 { ref secret, .. } => {
