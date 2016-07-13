@@ -245,7 +245,6 @@ impl Encrypted<&'static ()> {
     /// Handle messages during the authentication phase.
     pub fn client_auth_request_success(&mut self,
                                        buf: &[u8],
-                                       config: &super::Config,
                                        mut auth_request: AuthRequest,
                                        auth_method: &Option<auth::Method<key::Algorithm>>,
                                        write_buffer: &mut SSHBuffer,

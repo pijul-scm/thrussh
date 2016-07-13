@@ -76,7 +76,6 @@ pub enum Kex<Key> {
     NewKeys(NewKeys<Key>), /* The DH is over, we've sent the NEWKEYS packet, and are waiting the NEWKEYS from the other side. */
 }
 
-use std::marker::PhantomData;
 
 #[derive(Debug)]
 pub struct KexInit {
@@ -85,13 +84,6 @@ pub struct KexInit {
     pub session_id: Option<kex::Digest>,
     pub sent: bool,
 }
-
-
-
-
-
-
-
 
 
 impl KexInit {

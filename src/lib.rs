@@ -83,6 +83,7 @@ pub enum Error {
     IndexOutOfBounds,
     Utf8(std::str::Utf8Error),
     UnknownKey,
+    WrongState,
     IO(std::io::Error),
 }
 
@@ -103,7 +104,9 @@ impl From<rustc_serialize::base64::FromBase64Error> for Error {
 }
 
 mod negociation;
-
+pub mod pty;
+pub mod channel_request;
+pub mod global_request;
 mod msg;
 pub mod key;
 mod kex;
@@ -144,27 +147,27 @@ pub mod client;
 
 const SSH_EXTENDED_DATA_STDERR: u32 = 1;
 
-pub struct SignalName<'a> {
-    name: &'a str,
+pub enum ChannelRequest<'a> {
+    Pty(channel_request::Pty<'a>),
+    X11(channel_request::X11<'a>),
+    Env(channel_request::Env<'a>),
+    Shell(channel_request::Shell),
+    Exec(channel_request::Exec<'a>),
+    Subsystem(channel_request::Subsystem<'a>),
+    WindowChange(channel_request::WindowChange),
+    XonXoff(channel_request::XonXoff),
+    ExitStatus(channel_request::ExitStatus),
 }
-pub const SIGABRT: SignalName<'static> = SignalName { name: "ABRT" };
-pub const SIGALRM: SignalName<'static> = SignalName { name: "ALRM" };
-pub const SIGFPE: SignalName<'static> = SignalName { name: "FPE" };
-pub const SIGHUP: SignalName<'static> = SignalName { name: "HUP" };
-pub const SIGILL: SignalName<'static> = SignalName { name: "ILL" };
-pub const SIGINT: SignalName<'static> = SignalName { name: "INT" };
-pub const SIGKILL: SignalName<'static> = SignalName { name: "KILL" };
-pub const SIGPIPE: SignalName<'static> = SignalName { name: "PIPE" };
-pub const SIGQUIT: SignalName<'static> = SignalName { name: "QUIT" };
-pub const SIGSEGV: SignalName<'static> = SignalName { name: "SEGV" };
-pub const SIGTERM: SignalName<'static> = SignalName { name: "TERM" };
-pub const SIGUSR1: SignalName<'static> = SignalName { name: "USR1" };
 
-impl<'a> SignalName<'a> {
-    pub fn other(name: &'a str) -> SignalName<'a> {
-        SignalName { name: name }
-    }
+
+pub enum ChannelType<'a> {
+    Session,
+    X11 { originator_address: &'a str, originator_port: u32 },
+    ForwardedTcpip { connected_address: &'a str, connected_port: u32, originator_address: &'a str, originator_port: u32 },
+    DirectTcpip { host_to_connect: &'a str, port_to_connect: u32, originator_address: &'a str, originator_port: u32 }
 }
+
+
 
 pub struct ChannelBuf<'a> {
     buffer: &'a mut CryptoBuf,
@@ -243,42 +246,6 @@ impl<'a> ChannelBuf<'a> {
     }
     pub fn close(mut self) {
         self.reply(msg::CHANNEL_CLOSE);
-    }
-
-    pub fn exit_status(&mut self, exit_status: u32) {
-        // https://tools.ietf.org/html/rfc4254#section-6.10
-        self.buffer.clear();
-        self.buffer.push(msg::CHANNEL_REQUEST);
-        self.buffer.push_u32_be(self.channel.recipient_channel);
-        self.buffer.extend_ssh_string(b"exit-status");
-        self.buffer.push(0);
-        self.buffer.push_u32_be(exit_status);
-        self.cipher.write(self.buffer.as_slice(), self.write_buffer);
-    }
-
-    pub fn exit_signal(&mut self,
-                       signal_name: SignalName,
-                       core_dumped: bool,
-                       error_message: &str,
-                       language_tag: &str) {
-        // https://tools.ietf.org/html/rfc4254#section-6.10
-        // Windows compatibility: we can't use Unix signal names here.
-        self.buffer.clear();
-        self.buffer.push(msg::CHANNEL_REQUEST);
-        self.buffer.push_u32_be(self.channel.recipient_channel);
-        self.buffer.extend_ssh_string(b"exit-signal");
-        self.buffer.push(0);
-
-        self.buffer.extend_ssh_string(signal_name.name.as_bytes());
-        self.buffer.push(if core_dumped {
-            1
-        } else {
-            0
-        });
-        self.buffer.extend_ssh_string(error_message.as_bytes());
-        self.buffer.extend_ssh_string(language_tag.as_bytes());
-
-        self.cipher.write(self.buffer.as_slice(), self.write_buffer);
     }
 }
 
@@ -601,7 +568,7 @@ mod test {
         }
 
         let mut c_buffer0 = CryptoBuf::new();
-        let channel = client_session.open_channel(&client_config, &mut c_buffer0).unwrap();
+        let channel = client_session.open_channel(ChannelType::Session, &client_config, &mut c_buffer0).unwrap();
 
         loop {
             if let Some(chan) = client_session.channels().and_then(|x| x.get(&channel)) {

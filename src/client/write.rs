@@ -16,8 +16,6 @@ use super::super::*;
 use std::io::Write;
 use super::super::msg;
 use super::super::auth::AuthRequest;
-use rand;
-use rand::Rng;
 use super::super::negociation;
 use super::super::cipher::CipherT;
 use state::*;
@@ -110,37 +108,6 @@ impl Encrypted<&'static ()> {
         }
     }
 
-    pub fn client_open_channel(&mut self,
-                               write_buffer: &mut SSHBuffer,
-                               config: &super::Config,
-                               buffer: &mut CryptoBuf)
-                               -> u32 {
-        let mut sender_channel = 0;
-        while self.channels.contains_key(&sender_channel) || sender_channel == 0 {
-            sender_channel = rand::thread_rng().gen()
-        }
-        buffer.clear();
-        buffer.push(msg::CHANNEL_OPEN);
-        buffer.extend_ssh_string(b"channel name");
-        buffer.push_u32_be(sender_channel); // sender channel id.
-        buffer.push_u32_be(config.window_size); // window.
-        buffer.push_u32_be(config.maxpacket); // max packet size.
-        // Send
-        self.cipher.write(buffer.as_slice(), write_buffer);
-
-
-        let parameters = ChannelParameters {
-            recipient_channel: 0,
-            sender_channel: sender_channel,
-            sender_window_size: config.window_size,
-            recipient_window_size: 0,
-            sender_maximum_packet_size: config.maxpacket,
-            recipient_maximum_packet_size: 0,
-            confirmed: false
-        };
-        self.channels.insert(sender_channel, parameters);
-        sender_channel
-    }
     pub fn client_write_rekey<W: Write>(&mut self,
                                         stream: &mut W,
                                         buffers: &mut SSHBuffers,

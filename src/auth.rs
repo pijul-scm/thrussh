@@ -14,7 +14,6 @@
 //
 
 use std::ops::Sub;
-use super::key;
 use super::encoding;
 use cryptobuf::CryptoBuf;
 

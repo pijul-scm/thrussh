@@ -17,7 +17,6 @@ use time;
 use std;
 use super::negociation::{Preferred, PREFERRED, Select};
 use super::*;
-use super::auth::*;
 use super::msg;
 use super::cipher::CipherT;
 use state::*;
@@ -76,7 +75,6 @@ impl <'k>Default for Session<'k> {
         }
     }
 }
-use std::marker::PhantomData;
 
 impl <'k>Session<'k> {
     pub fn new() -> Self {
