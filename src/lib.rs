@@ -281,34 +281,6 @@ pub trait Client {
 }
 
 
-fn complete_packet(buf: &mut CryptoBuf, off: usize) {
-
-    let block_size = 8; // no MAC yet.
-    let padding_len = {
-        (block_size - ((buf.len() - off) % block_size))
-    };
-    let padding_len = if padding_len < 4 {
-        padding_len + block_size
-    } else {
-        padding_len
-    };
-    let mac_len = 0;
-
-    let packet_len = buf.len() - off - 4 + padding_len + mac_len;
-    {
-        let buf = buf.as_mut_slice();
-        BigEndian::write_u32(&mut buf[off..], packet_len as u32);
-        buf[off + 4] = padding_len as u8;
-    }
-
-
-    let mut padding = [0; 256];
-    sodium::randombytes::into(&mut padding[0..padding_len]);
-
-    buf.extend(&padding[0..padding_len]);
-
-}
-
 #[derive(Debug)]
 #[doc(hidden)]
 pub struct ChannelParameters {
@@ -333,48 +305,6 @@ fn adjust_window_size(write_buffer: &mut SSHBuffer,
     channel.sender_window_size = target;
 }
 
-
-/// Fills the read buffer, and returns whether a complete message has been read.
-///
-/// It would be tempting to return either a slice of `stream`, or a
-/// slice of `read_buffer`, but except for a very small number of
-/// messages, we need double buffering anyway to decrypt in place on
-/// `read_buffer`.
-fn read<R: BufRead>(stream: &mut R,
-                    read_buffer: &mut CryptoBuf,
-                    read_len: usize,
-                    bytes_read: &mut usize)
-                    -> Result<bool, Error> {
-    // This loop consumes something or returns, it cannot loop forever.
-    loop {
-        let consumed_len = match stream.fill_buf() {
-            Ok(buf) => {
-                if read_buffer.len() + buf.len() < read_len + 4 {
-
-                    read_buffer.extend(buf);
-                    buf.len()
-
-                } else {
-                    let consumed_len = read_len + 4 - read_buffer.len();
-                    read_buffer.extend(&buf[0..consumed_len]);
-                    consumed_len
-                }
-            }
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    return Ok(false);
-                } else {
-                    return Err(Error::IO(e));
-                }
-            }
-        };
-        stream.consume(consumed_len);
-        *bytes_read += consumed_len;
-        if read_buffer.len() >= 4 + read_len {
-            return Ok(true);
-        }
-    }
-}
 
 
 const KEYTYPE_ED25519: &'static [u8] = b"ssh-ed25519";

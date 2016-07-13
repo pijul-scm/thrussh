@@ -62,7 +62,7 @@ impl super::CipherT for Cipher {
             read_buffer.len = BigEndian::read_u32(&len) as usize + poly1305::TAGBYTES;
         }
         // - Compute the Poly1305 auth on the first (4+length) first bytes of the packet.
-        if try!(super::super::read(stream, &mut read_buffer.buffer, read_buffer.len, &mut read_buffer.bytes)) {
+        if try!(super::read(stream, &mut read_buffer.buffer, read_buffer.len, &mut read_buffer.bytes)) {
 
             let mut poly_key = [0;32];
             chacha20::stream_xor_inplace(
