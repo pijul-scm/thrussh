@@ -59,7 +59,7 @@ use std::sync::{Once, ONCE_INIT};
 use std::io::{Read, BufRead, BufReader};
 
 
-use byteorder::{ByteOrder};
+use byteorder::{ByteOrder, BigEndian};
 use rustc_serialize::base64::FromBase64;
 use std::path::Path;
 use std::fs::File;
@@ -84,6 +84,7 @@ pub enum Error {
     Utf8(std::str::Utf8Error),
     UnknownKey,
     WrongState,
+    WrongChannel,
     IO(std::io::Error),
 }
 
@@ -186,13 +187,15 @@ pub enum ChannelType<'a> {
 
 
 
-pub struct ChannelBuf<'a> {
-    buffer: &'a mut CryptoBuf,
-    channel: &'a mut ChannelParameters,
-    write_buffer: &'a mut SSHBuffer,
-    cipher: &'a mut cipher::CipherPair,
+pub struct ChannelBuf<'a,K:'a> {
+    session: &'a mut state::Encrypted<K>,
+    write_buffer: &'a mut CryptoBuf,
     wants_reply: bool,
 }
+
+pub type ServerSession<'k, 'a:'k> = ChannelBuf<'a, &'k key::Algorithm>;
+
+/*
 impl<'a> ChannelBuf<'a> {
 
     fn output(&mut self, extended: Option<u32>, buf: &[u8]) -> usize {
@@ -265,6 +268,7 @@ impl<'a> ChannelBuf<'a> {
         self.reply(msg::CHANNEL_CLOSE);
     }
 }
+*/
 
 pub trait Server {
     /// Called when a new channel is created.
@@ -273,14 +277,17 @@ pub trait Server {
     /// Called when a data packet is received. A response can be
     /// written to the `response` argument.
     #[allow(unused_variables)]
-    fn data(&mut self, channel:u32, data: &[u8], response: ChannelBuf) -> Result<(), Error> {
+    fn data(&mut self, channel:u32, data: &[u8], response: ServerSession ) -> Result<(), Error> {
         Ok(())
     }
     #[allow(unused_variables)]
-    fn exec(&mut self, channel:u32, data: &[u8], response: ChannelBuf) -> Result<(), Error> {
+    fn extended_data(&mut self, channel:u32, code:u32, data: &[u8], response: ServerSession ) -> Result<(), Error> {
         Ok(())
     }
-
+    #[allow(unused_variables)]
+    fn exec(&mut self, channel:u32, data: &[u8], response: ServerSession ) -> Result<(), Error> {
+        Ok(())
+    }
     #[allow(unused_variables)]
     fn auth(&self, methods: auth::Methods, method: &auth::Method<key::PublicKey>) -> auth::Auth {
         auth::Auth::Reject {
@@ -290,13 +297,14 @@ pub trait Server {
     }
 }
 
+
 pub trait Client {
     #[allow(unused_variables)]
     fn auth_banner(&mut self, _: &str) {}
     #[allow(unused_variables)]
     fn channel_confirmed(&self, channel:u32) {}
     #[allow(unused_variables)]
-    fn data(&mut self, _: Option<u32>, _: &[u8], _: ChannelBuf) -> Result<(), Error> {
+    fn data(&mut self, _: Option<u32>, _: &[u8], _: ChannelBuf<&()>) -> Result<(), Error> {
         Ok(())
     }
     #[allow(unused_variables)]
@@ -317,16 +325,15 @@ pub struct ChannelParameters {
     pub sender_maximum_packet_size: u32,
     pub confirmed: bool
 }
-fn adjust_window_size(write_buffer: &mut SSHBuffer,
-                      cipher: &mut cipher::CipherPair,
+
+fn adjust_window_size(buffer:&mut CryptoBuf,
                       target: u32,
-                      buffer: &mut CryptoBuf,
                       channel: &mut ChannelParameters) {
-    buffer.clear();
-    buffer.push(msg::CHANNEL_WINDOW_ADJUST);
-    buffer.push_u32_be(channel.recipient_channel);
-    buffer.push_u32_be(target - channel.sender_window_size);
-    cipher.write(buffer.as_slice(), write_buffer);
+    push_packet!(buffer, {
+        buffer.push(msg::CHANNEL_WINDOW_ADJUST);
+        buffer.push_u32_be(channel.recipient_channel);
+        buffer.push_u32_be(target - channel.sender_window_size);
+    });
     channel.sender_window_size = target;
 }
 

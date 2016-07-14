@@ -21,7 +21,7 @@ use auth::*;
 use std;
 use sodium;
 use byteorder::{ByteOrder, BigEndian};
-
+use rand::{thread_rng, Rng};
 
 impl <'k> Encrypted<&'k key::Algorithm> {
 
@@ -77,7 +77,8 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 Ok(())
             }
             Some(EncryptedState::Authenticated) => {
-                self.server_read_authenticated(config, server, buf, buffer, write_buffer)
+                self.state = Some(EncryptedState::Authenticated);
+                self.server_read_authenticated(config, server, buf, write_buffer)
             },
             state => {
                 self.state = state;
@@ -90,101 +91,124 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                                                 config: &'k Config,
                                                 server: &mut S,
                                                 buf: &[u8],
-                                                buffer: &mut CryptoBuf,
                                                 write_buffer: &mut CryptoBuf)
                                                 -> Result<(), Error> {
         debug!("authenticated buf = {:?}", buf);
-        self.state = Some(EncryptedState::Authenticated);
-        Ok(())
-    }
-    /*
-                debug!("buf = {:?}", buf);
-                match buf[0] {
-                    msg::CHANNEL_OPEN => {
-                        try!(self.server_handle_channel_open(config, server, buf, buffer, write_buffer))
-                    }
-                    buf_0 => {
-                        let mut r = buf.reader(1);
-                        let channel_num = try!(r.read_u32());
+        match buf[0] {
+            msg::CHANNEL_OPEN => {
+                try!(self.server_handle_channel_open(config, server, buf, write_buffer));
+                Ok(())
+            },
+            msg::CHANNEL_EXTENDED_DATA |
+            msg::CHANNEL_DATA => {
+                let mut r = buf.reader(1);
+                let channel_num = try!(r.read_u32());
 
-                        if let Entry::Occupied(mut e) = self.channels.entry(channel_num) {
-                            buffer.clear();
-                            debug!("buf: {:?}", buf);
-                            match buf_0 {
-                                msg::CHANNEL_DATA => {
-                                    let channel = e.get_mut();
-                                    let data = try!(r.read_string());
+                let ext = if buf[0] == msg::CHANNEL_DATA {
+                    None
+                } else {
+                    Some(try!(r.read_u32()))
+                };
 
-                                    // Ignore extra data.
-                                    // https://tools.ietf.org/html/rfc4254#section-5.2
-                                    if data.len() as u32 <= channel.sender_window_size {
-                                        channel.sender_window_size -= data.len() as u32;
-                                        let sender_channel = channel.sender_channel;
-                                        let server_buf = ChannelBuf {
-                                            buffer: buffer,
-                                            channel: channel,
-                                            write_buffer: write_buffer,
-                                            cipher: &mut self.cipher,
-                                            wants_reply: false,
-                                        };
-                                        try!(server.data(sender_channel, &data, server_buf))
-                                    }
-                                    debug!("{:?} / {:?}", channel.sender_window_size, config.window_size);
-                                    if channel.sender_window_size < config.window_size / 2 {
-                                        super::super::adjust_window_size(write_buffer,
-                                                                         &mut self.cipher,
-                                                                         config.window_size,
-                                                                         buffer,
-                                                                         channel)
-                                    }
-                                }
-                                msg::CHANNEL_WINDOW_ADJUST => {
-                                    let amount = try!(r.read_u32());
-                                    let channel = e.get_mut();
-                                    channel.recipient_window_size += amount;
-                                }
-                                msg::CHANNEL_REQUEST => {
-                                    let req_type = try!(r.read_string());
-                                    let wants_reply = try!(r.read_byte());
-                                    let channel = e.get_mut();
-                                    let sender_channel = channel.sender_channel;
-                                    let server_buf = ChannelBuf {
-                                        buffer: buffer,
-                                        channel: channel,
-                                        write_buffer: write_buffer,
-                                        cipher: &mut self.cipher,
-                                        wants_reply: wants_reply != 0,
-                                    };
-                                    match req_type {
-                                        b"exec" => {
-                                            let req = try!(r.read_string());
-                                            try!(server.exec(sender_channel, req, server_buf));
-                                        }
-                                        x => {
-                                            debug!("{:?}, line {:?} req_type = {:?}", file!(), line!(), std::str::from_utf8(x))
-                                        }
-                                    }
-                                }
-                                msg::CHANNEL_EOF |
-                                msg::CHANNEL_CLOSE => {
-                                    e.remove();
-                                }
-                                _ => unimplemented!(),
-                            }
+                let data =
+                    if let Some(channel) = self.channels.get_mut(&channel_num) {
+                        let data = try!(r.read_string());
+                        // Ignore extra data.
+                        // https://tools.ietf.org/html/rfc4254#section-5.2
+                        if data.len() as u32 <= channel.sender_window_size {
+                            channel.sender_window_size -= data.len() as u32;
                         }
+                        data
+                    } else {
+                        return Err(Error::WrongChannel)
+                    };
+                {
+                    let buf = ChannelBuf {
+                        session: self,
+                        write_buffer: write_buffer,
+                        wants_reply: false,
+                    };
+                    if let Some(ext) = ext {
+                        try!(server.extended_data(channel_num, ext, &data, buf));
+                    } else {
+                        try!(server.data(channel_num, &data, buf));
                     }
-            }
-            Some(state) => {
-                debug!("buf: {:?}", buf);
-                debug!("replacing state: {:?}", state);
-                self.state = Some(state);
+                }
+                
+                if let Some(channel) = self.channels.get_mut(&channel_num) {
+                    // debug!("{:?} / {:?}", channel.sender_window_size, config.window_size);
+                    if channel.sender_window_size < config.window_size / 2 {
+                        super::super::adjust_window_size(write_buffer,
+                                                         config.window_size,
+                                                         channel)
+                    }
+                }
                 Ok(())
             }
-            None => Ok(()),
+            msg::CHANNEL_WINDOW_ADJUST => {
+                let mut r = buf.reader(1);
+                let channel_num = try!(r.read_u32());
+                let amount = try!(r.read_u32());
+                if let Some(channel) = self.channels.get_mut(&channel_num) {
+                    channel.recipient_window_size += amount;
+                    Ok(())
+                } else {
+                    Err(Error::WrongChannel)
+                }
+            }
+            msg::CHANNEL_REQUEST => {
+                let mut r = buf.reader(1);
+                let channel_num = try!(r.read_u32());
+                let req_type = try!(r.read_string());
+                let wants_reply = try!(r.read_byte());
+                let buf = ChannelBuf {
+                    session: self,
+                    write_buffer: write_buffer,
+                    wants_reply: false,
+                };
+                match req_type {
+                    b"exec" => {
+                        let req = try!(r.read_string());
+                        try!(server.exec(channel_num, req, buf));
+                    }
+                    b"pty-req" => {
+                        unimplemented!()
+                    }
+                    b"x11-req" => {
+                        unimplemented!()
+                    }
+                    b"shell" => {
+                        unimplemented!()
+                    }
+                    b"subsystem" => {
+                        unimplemented!()
+                    }
+                    b"xon-xoff" => {
+                        unimplemented!()
+                    }
+                    b"exit-status" => {
+                        unimplemented!()
+                    }
+                    b"exit-signal" => {
+                        unimplemented!()
+                    }
+                    x => {
+                        debug!("{:?}, line {:?} req_type = {:?}", file!(), line!(), std::str::from_utf8(x))
+                    }
+                }
+                Ok(())
+            }
+            msg::CHANNEL_EOF |
+            msg::CHANNEL_CLOSE => {
+                let mut r = buf.reader(1);
+                let channel_num = try!(r.read_u32());
+                self.channels.remove(&channel_num);
+                Ok(())
+            }
+            _ => Ok(())
         }
-
     }
-    */
+
 
     pub fn server_read_auth_request<S: Server>(&mut self,
                                                server: &S,
@@ -350,27 +374,20 @@ impl <'k> Encrypted<&'k key::Algorithm> {
     }
 
 
-    /*
+
     fn server_handle_channel_open<S: Server>(&mut self,
                                              config: &super::Config,
                                              server: &mut S,
                                              buf: &[u8],
-                                             buffer: &mut CryptoBuf,
-                                             write_buffer: &mut SSHBuffer)
+                                             write_buffer: &mut CryptoBuf)
                                              -> Result<(), Error> {
-
+        
         // https://tools.ietf.org/html/rfc4254#section-5.1
         let mut r = buf.reader(1);
         let typ = try!(r.read_string());
         let sender = try!(r.read_u32());
         let window = try!(r.read_u32());
         let maxpacket = try!(r.read_u32());
-
-        debug!("waiting channel open: type = {:?} sender = {:?} window = {:?} maxpacket = {:?}",
-               String::from_utf8_lossy(typ),
-               sender,
-               window,
-               maxpacket);
 
         let mut sender_channel: u32 = 1;
         while self.channels.contains_key(&sender_channel) || sender_channel == 0 {
@@ -385,17 +402,17 @@ impl <'k> Encrypted<&'k key::Algorithm> {
             sender_maximum_packet_size: config.maximum_packet_size,
             confirmed: true
         };
-
+        debug!("waiting channel open: {:?}", channel);
         // Write the response immediately, so that we're ready when the stream becomes writable.
         server.new_channel(sender_channel);
-        self.server_confirm_channel_open(buffer, &channel, config, write_buffer);
+        server_confirm_channel_open(write_buffer, &channel, config);
         //
         let sender_channel = channel.sender_channel;
         self.channels.insert(sender_channel, channel);
         self.state = Some(EncryptedState::Authenticated);
         Ok(())
     }
-    */
+
 
 }
 
@@ -452,5 +469,18 @@ fn server_reject_auth_request(buffer: &mut CryptoBuf,
         buffer.push(msg::USERAUTH_FAILURE);
         buffer.extend_list(auth_request.methods);
         buffer.push(if auth_request.partial_success { 1 } else { 0 });
+    });
+}
+
+fn server_confirm_channel_open(buffer: &mut CryptoBuf,
+                               channel: &ChannelParameters,
+                               config: &super::Config) {
+
+    push_packet!(buffer, {
+        buffer.push(msg::CHANNEL_OPEN_CONFIRMATION);
+        buffer.push_u32_be(channel.recipient_channel); // remote channel number.
+        buffer.push_u32_be(channel.sender_channel); // our channel number.
+        buffer.push_u32_be(config.window_size);
+        buffer.push_u32_be(config.maximum_packet_size);
     });
 }

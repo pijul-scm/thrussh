@@ -14,8 +14,11 @@
 //
 // https://tools.ietf.org/html/rfc4253#section-12
 pub const DISCONNECT: u8 = 1;
+#[allow(dead_code)]
 pub const IGNORE: u8 = 2;
+#[allow(dead_code)]
 pub const UNIMPLEMENTED: u8 = 3;
+#[allow(dead_code)]
 pub const DEBUG: u8 = 4;
 
 pub const SERVICE_REQUEST: u8 = 5;
