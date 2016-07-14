@@ -136,6 +136,22 @@ macro_rules! transport {
         }
     };
 }
+
+
+macro_rules! push_packet {
+    ( $buffer:expr, $x:expr ) => {
+        {
+            let i0 = $buffer.len();
+            $buffer.extend(b"\0\0\0\0");
+            $x;
+            let i1 = $buffer.len();
+            let buf = $buffer.as_mut_slice();
+            BigEndian::write_u32(&mut buf[i0..], (i1-i0-4) as u32)
+        }
+    };
+}
+
+
 pub enum ReturnCode {
     Ok,
     NotEnoughBytes,

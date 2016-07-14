@@ -154,11 +154,25 @@ impl KexInit {
     }
 */
 
-    pub fn rekey(ex: Exchange, algo: negociation::Names, session_id: &kex::Digest) -> Self {
+    pub fn received_rekey(ex: Exchange, algo: negociation::Names, session_id: &kex::Digest) -> Self {
         let mut kexinit = KexInit {
             exchange: ex,
             algo: Some(algo),
             sent: false,
+            session_id: Some(session_id.clone()),
+        };
+        kexinit.exchange.client_kex_init.clear();
+        kexinit.exchange.server_kex_init.clear();
+        kexinit.exchange.client_ephemeral.clear();
+        kexinit.exchange.server_ephemeral.clear();
+        kexinit
+    }
+
+    pub fn initiate_rekey(ex: Exchange, session_id: &kex::Digest) -> Self {
+        let mut kexinit = KexInit {
+            exchange: ex,
+            algo: None,
+            sent: true,
             session_id: Some(session_id.clone()),
         };
         kexinit.exchange.client_kex_init.clear();
