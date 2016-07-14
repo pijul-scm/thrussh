@@ -135,7 +135,7 @@ impl KexInit {
 }
 
 impl<'k> KexDh<&'k key::Algorithm> {
-    pub fn parse<C:CipherT>(mut self, config:&'k Config, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<Kex<&'k key::Algorithm>, Error> {
+    pub fn parse<C:CipherT>(mut self, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<Kex<&'k key::Algorithm>, Error> {
 
         if self.names.ignore_guessed {
             // If we need to ignore this packet.
@@ -232,12 +232,12 @@ impl <'k>Session<'k> {
                         return Ok(ReturnCode::Ok)
                     }
                     match kex {
-                        Kex::KexInit(mut kexinit) => {
+                        Kex::KexInit(kexinit) => {
                             let next_kex = try!(kexinit.parse(config, buffer, &mut cipher, buf, &mut self.buffers.write));
                             self.state = Some(ServerState::Kex(next_kex));
                         },
-                        Kex::KexDh(mut kexdh) => {
-                            let next_kex = try!(kexdh.parse(config, buffer, buffer2, &mut cipher, buf, &mut self.buffers.write));
+                        Kex::KexDh(kexdh) => {
+                            let next_kex = try!(kexdh.parse(buffer, buffer2, &mut cipher, buf, &mut self.buffers.write));
                             self.state = Some(ServerState::Kex(next_kex));
                         },
                         Kex::NewKeys(newkeys) => {
@@ -270,19 +270,19 @@ impl <'k>Session<'k> {
                         return Ok(ReturnCode::Ok)
                     }
                     if buf[0] > 20 && buf[0] < 50 {
-                        if let Some(mut kex) = std::mem::replace(&mut enc.rekey, None) {
+                        if let Some(kex) = std::mem::replace(&mut enc.rekey, None) {
                             
                             // if we are currently rekeying, and we received a negociation message.
                             match kex {
-                                Kex::KexInit(mut kexinit) =>
+                                Kex::KexInit(kexinit) =>
                                     enc.rekey = Some(
                                         try!(kexinit.parse(config, buffer, &mut enc.cipher, buf, &mut self.buffers.write))
                                     ),
-                                Kex::KexDh(mut kexdh) =>
+                                Kex::KexDh(kexdh) =>
                                     enc.rekey = Some(
-                                        try!(kexdh.parse(config, buffer, buffer2, &mut enc.cipher, buf, &mut self.buffers.write))
+                                        try!(kexdh.parse(buffer, buffer2, &mut enc.cipher, buf, &mut self.buffers.write))
                                     ),
-                                Kex::NewKeys(mut newkeys) =>
+                                Kex::NewKeys(newkeys) =>
                                     if buf[0] == msg::NEWKEYS {
                                         enc.exchange = Some(newkeys.exchange);
                                         enc.kex = newkeys.kex;
@@ -303,7 +303,7 @@ impl <'k>Session<'k> {
                     if buf[0] == msg::KEXINIT {
                         // If we're not currently rekeying, but buf is a rekey request
                         if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
-                            let mut kexinit = KexInit::received_rekey(
+                            let kexinit = KexInit::received_rekey(
                                 exchange,
                                 try!(negociation::Server::read_kex(buf, &config.preferred)),
                                 &enc.session_id

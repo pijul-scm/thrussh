@@ -59,7 +59,7 @@ use std::sync::{Once, ONCE_INIT};
 use std::io::{Read, BufRead, BufReader};
 
 
-use byteorder::{ByteOrder, BigEndian};
+use byteorder::{ByteOrder};
 use rustc_serialize::base64::FromBase64;
 use std::path::Path;
 use std::fs::File;
@@ -268,16 +268,20 @@ impl<'a> ChannelBuf<'a> {
 
 pub trait Server {
     /// Called when a new channel is created.
+    #[allow(unused_variables)]
     fn new_channel(&mut self, channel: u32) {}
     /// Called when a data packet is received. A response can be
     /// written to the `response` argument.
+    #[allow(unused_variables)]
     fn data(&mut self, channel:u32, data: &[u8], response: ChannelBuf) -> Result<(), Error> {
         Ok(())
     }
+    #[allow(unused_variables)]
     fn exec(&mut self, channel:u32, data: &[u8], response: ChannelBuf) -> Result<(), Error> {
         Ok(())
     }
 
+    #[allow(unused_variables)]
     fn auth(&self, methods: auth::Methods, method: &auth::Method<key::PublicKey>) -> auth::Auth {
         auth::Auth::Reject {
             remaining_methods: methods - method,
@@ -287,11 +291,15 @@ pub trait Server {
 }
 
 pub trait Client {
+    #[allow(unused_variables)]
     fn auth_banner(&mut self, _: &str) {}
+    #[allow(unused_variables)]
     fn channel_confirmed(&self, channel:u32) {}
+    #[allow(unused_variables)]
     fn data(&mut self, _: Option<u32>, _: &[u8], _: ChannelBuf) -> Result<(), Error> {
         Ok(())
     }
+    #[allow(unused_variables)]
     fn check_server_key(&self, _: &key::PublicKey) -> bool {
         false
     }

@@ -15,18 +15,10 @@
 use super::*;
 use super::super::*;
 use state::*;
-use sshbuffer::{SSHBuffer};
-use super::super::msg;
-use super::super::negociation;
-use super::super::encoding::Reader;
-use super::super::cipher::CipherT;
-use negociation::Select;
+use msg;
+use encoding::Reader;
 use auth::*;
-use rand::{thread_rng, Rng};
 use std;
-use std::collections::hash_map::Entry;
-use key::PubKey;
-use negociation::Named;
 use sodium;
 use byteorder::{ByteOrder, BigEndian};
 

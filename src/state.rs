@@ -24,9 +24,6 @@ use super::{read_public_key,Error,ChannelParameters,Client};
 use cryptobuf::CryptoBuf;
 use std::collections::HashMap;
 use encoding::Reader;
-use sshbuffer::SSHBuffer;
-use negociation::Named;
-use cipher::CipherT;
 
 #[derive(Debug)]
 pub enum ServerState<Key> {
@@ -88,72 +85,6 @@ pub struct KexInit {
 
 
 impl KexInit {
-
-    /// Move on to KexDh if we have sent our stuff.
-    pub fn kexinit <'k, K:Named> (self, keys:&'k [K]) -> Result<Kex<&'k K>, Error> {
-        if !self.sent {
-            Ok(Kex::KexInit(self))
-        } else {
-            if let Some(names) = self.algo {
-                if let Some(key) = keys.iter().find(|x| x.name() == names.key) {
-                    Ok(Kex::KexDh(KexDh {
-                        exchange: self.exchange,
-                        key: key,
-                        names: names,
-                        session_id: self.session_id,
-                    }))
-                } else {
-                    Err(Error::Kex)
-                }
-            } else {
-                Err(Error::Kex)
-            }
-        }
-    }
-/*
-    pub fn write_kex_init <'k, K:Named, C:CipherT> (mut self,
-                                                    keys:&'k [K],
-                                                    preferred:&negociation::Preferred,
-                                                    write:&mut SSHBuffer,
-                                                    is_server: bool,
-                                                    cipher:C)
-                                                    -> Kex<&'k K>
-    {
-        if !self.sent {
-            let pos = write.buffer.len();
-            write.buffer.extend(b"\0\0\0\0\0");
-            negociation::write_kex(preferred, &mut write.buffer);
-
-            {
-                let buf = write.buffer.as_slice();
-                if is_server {
-                    self.exchange.server_kex_init.extend_from_slice(&buf[5..]);
-                } else {
-                    self.exchange.client_kex_init.extend_from_slice(&buf[5..]);
-                }
-            }
-
-            super::complete_packet(&mut write.buffer, pos);
-            write.seqn += 1;
-            self.sent = true;
-        }
-        if let Some(names) = self.algo {
-            if let Some(key) = keys.iter().find(|x| x.name() == names.key) {
-                Kex::KexDh(KexDh {
-                    exchange: self.exchange,
-                    names: names,
-                    key: key,
-                    session_id: self.session_id,
-                })
-            } else {
-                panic!("")
-            }
-        } else {
-            Kex::KexInit(self)
-        }
-    }
-*/
-
     pub fn received_rekey(ex: Exchange, algo: negociation::Names, session_id: &kex::Digest) -> Self {
         let mut kexinit = KexInit {
             exchange: ex,
