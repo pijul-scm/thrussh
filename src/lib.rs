@@ -122,6 +122,7 @@ mod encoding;
 use encoding::*;
 
 pub mod auth;
+
 macro_rules! transport {
     ( $x:expr ) => {
         {
@@ -143,7 +144,7 @@ pub enum ReturnCode {
 }
 
 pub mod server;
-pub mod client;
+// pub mod client;
 
 const SSH_EXTENDED_DATA_STDERR: u32 = 1;
 
@@ -318,7 +319,7 @@ pub fn load_public_key<P: AsRef<Path>>(p: P) -> Result<key::PublicKey, Error> {
     let mut split = pubkey.split_whitespace();
 
     match (split.next(), split.next()) {
-        (Some(ssh_), Some(key)) if ssh_.starts_with("ssh-") => {
+        (Some(ssh_), Some(key)) => {
             let base = try!(key.from_base64());
             read_public_key(&base)
         }

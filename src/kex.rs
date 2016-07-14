@@ -185,11 +185,11 @@ impl Algorithm {
 
 
                 key.push_to(buffer);
-
-                debug_assert!(exchange.client_ephemeral.len() == 32);
+                debug!("client_ephemeral: {:?}", exchange.client_ephemeral.as_slice());
+                debug_assert_eq!(exchange.client_ephemeral.len(), 32);
                 buffer.extend_ssh_string(&exchange.client_ephemeral);
 
-                debug_assert!(exchange.server_ephemeral.len() == 32);
+                debug_assert_eq!(exchange.server_ephemeral.len(), 32);
                 buffer.extend_ssh_string(&exchange.server_ephemeral);
 
                 debug!("shared: {:?}", kex.shared_secret);

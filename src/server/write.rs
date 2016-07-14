@@ -16,43 +16,12 @@ use super::super::msg;
 use super::super::kex;
 use super::*;
 use super::super::*;
-use super::super::complete_packet;
 use super::super::negociation;
 use super::super::cipher::CipherT;
 use state::*;
 use auth::*;
 use sshbuffer::{SSHBuffer};
 use key::PubKey;
-
-impl <'k> Session<'k> {
-    #[doc(hidden)]
-    pub fn server_cleartext_kex_ecdh_reply(&mut self, kexdhdone: &KexDhDone<&'k key::Algorithm>, hash: &kex::Digest) {
-        // ECDH Key exchange.
-        // http://tools.ietf.org/html/rfc5656#section-4
-        self.buffers.write.buffer.extend(b"\0\0\0\0\0");
-        self.buffers.write.buffer.push(msg::KEX_ECDH_REPLY);
-
-        kexdhdone.key.push_to(&mut self.buffers.write.buffer);
-        // Server ephemeral
-        self.buffers.write.buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
-        // Hash signature
-        kexdhdone.key.add_signature(&mut self.buffers.write.buffer, hash.as_bytes());
-        //
-        complete_packet(&mut self.buffers.write.buffer, 0);
-        self.buffers.write.seqn += 1;
-    }
-    #[doc(hidden)]
-    pub fn server_cleartext_send_newkeys(&mut self) {
-        // Sending the NEWKEYS packet.
-        // https://tools.ietf.org/html/rfc4253#section-7.3
-        // buffer.clear();
-        let pos = self.buffers.write.buffer.len();
-        self.buffers.write.buffer.extend(b"\0\0\0\0\0");
-        self.buffers.write.buffer.push(msg::NEWKEYS);
-        complete_packet(&mut self.buffers.write.buffer, pos);
-        self.buffers.write.seqn += 1;
-    }
-}
 
 impl<'k> Encrypted<&'k key::Algorithm> {
     pub fn server_confirm_channel_open(&mut self,
@@ -117,11 +86,7 @@ impl<'k> Encrypted<&'k key::Algorithm> {
         buffer.push(msg::USERAUTH_FAILURE);
 
         buffer.extend_list(auth_request.methods);
-        buffer.push(if auth_request.partial_success {
-            1
-        } else {
-            0
-        });
+        buffer.push(if auth_request.partial_success { 1 } else { 0 });
 
         self.cipher.write(buffer.as_slice(), write_buffer);
 

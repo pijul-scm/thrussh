@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use encoding::Reader;
 use sshbuffer::SSHBuffer;
 use negociation::Named;
+use cipher::CipherT;
 
 #[derive(Debug)]
 pub enum ServerState<Key> {
@@ -87,6 +88,8 @@ pub struct KexInit {
 
 
 impl KexInit {
+
+    /// Move on to KexDh if we have sent our stuff.
     pub fn kexinit <'k, K:Named> (self, keys:&'k [K]) -> Result<Kex<&'k K>, Error> {
         if !self.sent {
             Ok(Kex::KexInit(self))
@@ -107,14 +110,15 @@ impl KexInit {
             }
         }
     }
-
-    pub fn cleartext_write_kex_init <'k, K:Named> (mut self,
-                                                   keys:&'k [K],
-                                                   preferred:&negociation::Preferred,
-                                                   write:&mut SSHBuffer,
-                                                   is_server: bool)
-                                                   -> ServerState<&'k K> {
-
+/*
+    pub fn write_kex_init <'k, K:Named, C:CipherT> (mut self,
+                                                    keys:&'k [K],
+                                                    preferred:&negociation::Preferred,
+                                                    write:&mut SSHBuffer,
+                                                    is_server: bool,
+                                                    cipher:C)
+                                                    -> Kex<&'k K>
+    {
         if !self.sent {
             let pos = write.buffer.len();
             write.buffer.extend(b"\0\0\0\0\0");
@@ -135,21 +139,20 @@ impl KexInit {
         }
         if let Some(names) = self.algo {
             if let Some(key) = keys.iter().find(|x| x.name() == names.key) {
-                ServerState::Kex(Kex::KexDh(KexDh {
+                Kex::KexDh(KexDh {
                     exchange: self.exchange,
                     names: names,
                     key: key,
                     session_id: self.session_id,
-                }))
+                })
             } else {
                 panic!("")
             }
         } else {
-            ServerState::Kex(Kex::KexInit(self))
+            Kex::KexInit(self)
         }
-
     }
-
+*/
 
     pub fn rekey(ex: Exchange, algo: negociation::Names, session_id: &kex::Digest) -> Self {
         let mut kexinit = KexInit {

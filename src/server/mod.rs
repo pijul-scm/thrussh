@@ -15,12 +15,16 @@
 use std::io::{Write, BufRead};
 use time;
 use std;
-use super::negociation::{Preferred, PREFERRED, Select};
+use super::negociation::{Preferred, PREFERRED, Select, Named};
 use super::*;
 use super::msg;
 use super::cipher::CipherT;
 use state::*;
 use sshbuffer::*;
+use cipher;
+use negociation;
+use key::PubKey;
+use encoding::Reader;
 
 #[derive(Debug)]
 pub struct Config {
@@ -40,7 +44,7 @@ impl Default for Config {
     fn default() -> Config {
         Config {
             server_id: format!("SSH-2.0-{}_{}",
-                               "Thrussh", // env!("CARGO_PKG_NAME")
+                               "Thrussh", // env!("CARGO_PKG_NAME"),
                                env!("CARGO_PKG_VERSION")),
             methods: auth::Methods::all(),
             auth_banner: Some("SSH Authentication\r\n"), // CRLF separated lines.
@@ -121,20 +125,48 @@ impl <'k>Session<'k> {
 
             Some(ServerState::Kex(Kex::KexInit(mut kexinit))) => {
 
-                try!(self.buffers.set_clear_len(stream));
-                if try!(self.buffers.read(stream)) {
-                    {
-                        let payload = self.buffers.get_current_payload();
-                        transport!(payload);
-                        if kexinit.algo.is_none() {
-                            // read algo from packet.
-                            kexinit.algo =
-                                Some(try!(super::negociation::Server::read_kex(payload,
-                                                                               &config.preferred)));
-                            kexinit.exchange.client_kex_init.extend_from_slice(payload);
+                let cipher = cipher::Clear;
+                if let Some(buf) = try!(cipher.read(stream, &mut self.buffers.read)) {
+
+                    debug!("buf = {:?}", buf);
+
+                    if buf[0] >= 1 && buf[0] <= 4 {
+                        // transport
+                        self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
+                        if buf[0] == msg::DISCONNECT {
+                            return Ok(ReturnCode::Disconnect)
+                        } else {
+                            return Ok(ReturnCode::Ok)
                         }
                     }
-                    self.state = Some(kexinit.cleartext_write_kex_init(&config.keys, &config.preferred, &mut self.buffers.write, true));
+
+                    let algo = if kexinit.algo.is_none() {
+                        // read algorithms from packet.
+                        kexinit.exchange.client_kex_init.extend_from_slice(buf);
+                        try!(super::negociation::Server::read_kex(buf, &config.preferred))
+                    } else {
+                        return Err(Error::Kex)
+                    };
+                    if !kexinit.sent {
+                        buffer.clear();
+                        negociation::write_kex(&config.preferred, buffer);
+                        kexinit.exchange.server_kex_init.extend_from_slice(buffer.as_slice());
+                        kexinit.sent = true;
+                        cipher.write(buffer.as_slice(), &mut self.buffers.write)
+                    }
+                    let next_kex =
+                        if let Some(key) = config.keys.iter().find(|x| x.name() == algo.key) {
+                            Kex::KexDh(KexDh {
+                                exchange: kexinit.exchange,
+                                key: key,
+                                names: algo,
+                                session_id: kexinit.session_id,
+                            })
+                        } else {
+                            return Err(Error::UnknownKey)
+                        };
+                    
+                    self.state = Some(ServerState::Kex(next_kex));
                     Ok(ReturnCode::Ok)
 
                 } else {
@@ -144,15 +176,59 @@ impl <'k>Session<'k> {
             }
 
             Some(ServerState::Kex(Kex::KexDh(mut kexdh))) => {
-                try!(self.buffers.set_clear_len(stream));
-                if try!(self.buffers.read(stream)) {
 
+
+                let cipher = cipher::Clear;
+                if let Some(buf) = try!(cipher.read(stream, &mut self.buffers.read)) {
+
+                    debug!("buf= {:?}", buf);
+                    if buf[0] >= 1 && buf[0] <= 4 {
+                        // transport
+                        self.state = Some(ServerState::Kex(Kex::KexDh(kexdh)));
+                        if buf[0] == msg::DISCONNECT {
+                            return Ok(ReturnCode::Disconnect)
+                        } else {
+                            return Ok(ReturnCode::Ok)
+                        }
+                    }
+                    
                     if kexdh.names.ignore_guessed {
+                        // If we need to ignore this packet.
                         kexdh.names.ignore_guessed = false;
                         self.state = Some(ServerState::Kex(Kex::KexDh(kexdh)));
                         Ok(ReturnCode::Ok)
                     } else {
-                        self.server_read_cleartext_kexdh(kexdh, buffer, buffer2)
+                        // Else, process it.
+
+                        assert!(buf[0] == msg::KEX_ECDH_INIT);
+                        let mut r = buf.reader(1);
+                        kexdh.exchange.client_ephemeral.extend_from_slice(try!(r.read_string()));
+                        let kex = try!(super::kex::Algorithm::server_dh(kexdh.names.kex, &mut kexdh.exchange, buf));
+                        // Then, we fill the write buffer right away, so that we
+                        // can output it immediately when the time comes.
+                        let kexdhdone = KexDhDone {
+                            exchange: kexdh.exchange,
+                            kex: kex,
+                            key: kexdh.key,
+                            names: kexdh.names,
+                            session_id: kexdh.session_id,
+                        };
+
+                        let hash = try!(kexdhdone.kex.compute_exchange_hash(kexdhdone.key, &kexdhdone.exchange, buffer));
+
+                        buffer.clear();
+                        buffer.push(msg::KEX_ECDH_REPLY);
+                        kexdhdone.key.push_to(buffer);
+                        // Server ephemeral
+                        buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
+                        // Hash signature
+                        kexdhdone.key.add_signature(buffer, hash.as_bytes());
+                        cipher.write(buffer.as_slice(), &mut self.buffers.write);
+
+                        cipher.write(&[msg::NEWKEYS], &mut self.buffers.write);
+                        
+                        self.state = Some(ServerState::Kex(Kex::NewKeys(try!(kexdhdone.compute_keys(hash, buffer, buffer2, true)))));
+                        Ok(ReturnCode::Ok)
                     }
 
                 } else {
@@ -160,11 +236,28 @@ impl <'k>Session<'k> {
                     Ok(ReturnCode::NotEnoughBytes)
                 }
             }
-
             Some(ServerState::Kex(Kex::NewKeys(newkeys))) => {
-                try!(self.buffers.set_clear_len(stream));
-                if try!(self.buffers.read(stream)) {
-                    self.server_read_cleartext_newkeys(newkeys)
+                let cipher = cipher::Clear;
+                if let Some(buf) = try!(cipher.read(stream, &mut self.buffers.read)) {
+
+                    if buf[0] >= 1 && buf[0] <= 4 {
+                        // transport
+                        self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
+                        if buf[0] == msg::DISCONNECT {
+                            return Ok(ReturnCode::Disconnect)
+                        } else {
+                            return Ok(ReturnCode::Ok)
+                        }
+                    }
+
+                    if buf[0] == msg::NEWKEYS {
+                        // Ok, NEWKEYS received, now encrypted.
+                        self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest)));
+                        Ok(ReturnCode::Ok)
+                    } else {
+                        Err(Error::NewKeys)
+                    }
+
                 } else {
                     self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
                     Ok(ReturnCode::NotEnoughBytes)
@@ -179,23 +272,22 @@ impl <'k>Session<'k> {
 
                         transport!(buf); // return in case of a transport layer packet.
 
-                        let rek = try!(enc.server_read_rekey(buf,
+                        /*let rek = try!(enc.server_read_rekey(buf,
                                                              config,
                                                              buffer,
                                                              buffer2,
-                                                             &mut self.buffers.write));
-                        if rek && enc.rekey.is_none() && buf[0] == msg::NEWKEYS {
+                                                             &mut self.buffers.write));*/
+                        /*if rek && enc.rekey.is_none() && buf[0] == msg::NEWKEYS {
                             // rekeying is finished.
                             (ReturnCode::Ok, true)
-                        } else {
-                            debug!("calling read_encrypted");
-                            try!(enc.server_read_encrypted(config,
-                                                           server,
-                                                           buf,
-                                                           buffer,
-                                                           &mut self.buffers.write));
-                            (ReturnCode::Ok, false)
-                        }
+                        } else {*/
+                        debug!("calling read_encrypted");
+                        try!(enc.server_read_encrypted(config,
+                                                       server,
+                                                       buf,
+                                                       buffer,
+                                                       &mut self.buffers.write));
+                        (ReturnCode::Ok, false)
                     } else {
                         (ReturnCode::NotEnoughBytes, false)
                     };

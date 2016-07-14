@@ -28,7 +28,7 @@ use std::collections::hash_map::Entry;
 use key::PubKey;
 use negociation::Named;
 use sodium;
-
+/*
 impl<'k> Session<'k> {
     #[doc(hidden)]
     pub fn server_read_cleartext_kexdh(&mut self,
@@ -81,7 +81,7 @@ impl<'k> Session<'k> {
         }
     }
 }
-
+*/
 impl <'k> Encrypted<&'k key::Algorithm> {
     pub fn server_read_encrypted<S: Server>(&mut self,
                                             config: &'k Config,
@@ -137,6 +137,8 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 Ok(())
             }
             Some(EncryptedState::Authenticated) => {
+                unimplemented!();
+                    /*
                 debug!("buf = {:?}", buf);
                 match buf[0] {
                     msg::CHANNEL_OPEN => {
@@ -212,9 +214,9 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                             }
                         }
                     }
-                }
-                self.state = Some(EncryptedState::Authenticated);
-                Ok(())
+            }
+                    self.state = Some(EncryptedState::Authenticated);
+                Ok(())*/
             }
             Some(state) => {
                 debug!("buf: {:?}", buf);
@@ -227,6 +229,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
 
     }
 
+    /*
     fn server_handle_channel_open<S: Server>(&mut self,
                                              config: &super::Config,
                                              server: &mut S,
@@ -271,7 +274,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
         self.state = Some(EncryptedState::Authenticated);
         Ok(())
     }
-
+     */
     pub fn server_read_auth_request<S: Server>(&mut self,
                                                server: &S,
                                                buf: &[u8],

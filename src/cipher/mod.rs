@@ -66,9 +66,9 @@ impl CipherT for Cipher {
     }
 }
 
-pub struct NoCipher;
+pub struct Clear;
 
-impl CipherT for NoCipher {
+impl CipherT for Clear {
     fn read<'a, R: BufRead>(&self,
                             stream: &mut R,
                             buffer: &'a mut SSHBuffer)
@@ -87,7 +87,10 @@ impl CipherT for NoCipher {
 
             let padding_length = buffer.buffer[4] as usize;
             let buf = buffer.buffer.as_slice();
-            Ok(Some( &buf[5..(4 + buffer.len - padding_length)] ))
+            let result = &buf[5..(4 + buffer.len - padding_length)];
+            buffer.len = 0;
+
+            Ok(Some(result))
             
         } else {
 
@@ -111,8 +114,9 @@ impl CipherT for NoCipher {
         let packet_len = packet.len() + 1 + padding_len;
         buffer.buffer.push_u32_be(packet_len as u32);
         buffer.buffer.push(padding_len as u8);
-        thread_rng().fill_bytes( buffer.buffer.reserve(padding_len) );
         buffer.buffer.extend(packet);
+        thread_rng().fill_bytes( buffer.buffer.reserve(padding_len) );
+        debug!("write: {:?}", buffer.buffer.as_slice());
         buffer.seqn += 1;
     }
 }
