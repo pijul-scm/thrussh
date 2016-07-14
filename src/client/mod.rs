@@ -19,20 +19,24 @@ use super::msg;
 use super::auth;
 use super::cipher::CipherT;
 use super::negociation;
+use byteorder::{BigEndian, ByteOrder};
 use std::io::{Write, BufRead};
 use time;
 use ReturnCode;
 use std;
-mod write;
 use cryptobuf::CryptoBuf;
 use negociation::Select;
 use state::*;
 use sshbuffer::*;
 use std::collections::HashMap;
-mod read;
 use channel_request;
 use rand;
 use rand::Rng;
+use cipher;
+use kex;
+//mod read;
+//mod write;
+
 
 const UNIT:&'static () = &();
 
@@ -45,6 +49,14 @@ pub struct Config {
     pub window_size: u32,
     pub maxpacket: u32,
     pub preferred: negociation::Preferred,
+}
+
+impl Config {
+    fn needs_rekeying(&self, buffers:&SSHBuffers) -> bool {
+        buffers.read.bytes >= self.rekey_read_limit ||
+            buffers.write.bytes >= self.rekey_write_limit ||
+            time::precise_time_s() >= buffers.last_rekey_s + self.rekey_time_limit_s
+    }
 }
 
 impl std::default::Default for Config {
@@ -68,6 +80,8 @@ impl std::default::Default for Config {
 pub struct Session<'a> {
     buffers: SSHBuffers,
     state: Option<ServerState<&'static ()>>,
+    write: CryptoBuf,
+    write_cursor: usize,
     auth_method: Option<auth::Method<'a, key::Algorithm>>,
 }
 
@@ -79,86 +93,233 @@ impl<'a> Default for Session<'a> {
         Session {
             buffers: SSHBuffers::new(),
             state: None,
+            write: CryptoBuf::new(),
+            write_cursor: 0,
             auth_method: None,
         }
     }
 }
 
-impl<'a> Session<'a> {
-    pub fn new() -> Self {
-        Session::default()
-    }
-    // returns whether a complete packet has been read.
-    pub fn read<R: BufRead, C: super::Client>
-        (&mut self,
-         config: &Config,
-         client: &mut C,
-         stream: &mut R,
-         buffer: &mut CryptoBuf,
-         buffer2: &mut CryptoBuf)
-         -> Result<super::ReturnCode, Error> {
+impl KexInit {
+    pub fn client_parse<'k, C:CipherT>(mut self, config:&'k Config, buffer:&mut CryptoBuf, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<KexDh<&'k ()>, Error> {
 
+        let algo = if self.algo.is_none() {
+            // read algorithms from packet.
+            self.exchange.server_kex_init.extend_from_slice(buf);
+            try!(super::negociation::Client::read_kex(buf, &config.preferred))
+        } else {
+            return Err(Error::Kex)
+        };
+        if !self.sent {
+            self.client_write(config, buffer, cipher, write_buffer)
+        }
+        Ok(KexDh {
+            exchange: self.exchange,
+            key: UNIT,
+            names: algo,
+            session_id: self.session_id,
+        })
+    }
+
+    pub fn client_write<'k, C:CipherT>(&mut self, config:&'k Config, buffer:&mut CryptoBuf, cipher:&mut C, write_buffer:&mut SSHBuffer) {
+        buffer.clear();
+        negociation::write_kex(&config.preferred, buffer);
+        self.exchange.client_kex_init.extend_from_slice(buffer.as_slice());
+        self.sent = true;
+        cipher.write(buffer.as_slice(), write_buffer)
+    }
+}
+
+
+
+impl<'a> Session<'a> {
+
+    pub fn new(config:&Config) -> Self {
+        let mut session = Session::default();
+        session.buffers.write.send_ssh_id(config.client_id.as_bytes());
+        session
+    }
+
+    // returns whether a complete packet has been read.
+    pub fn read<R: BufRead, C: super::Client> (&mut self,
+                                               config: &Config,
+                                               client: &mut C,
+                                               stream: &mut R,
+                                               buffer: &mut CryptoBuf,
+                                               buffer2: &mut CryptoBuf)
+                                               -> Result<super::ReturnCode, Error> {
+        
         debug!("read");
         let state = std::mem::replace(&mut self.state, None);
         debug!("state = {:?}", state);
         match state {
             None => {
-                // We have neither sent nor received the version id.
-                // Do both (read and send).
-                let mut exchange = Exchange::new();
-                // Send our ID, and move on to the next state.
-                self.buffers.write.send_ssh_id(config.client_id.as_bytes());
-                exchange.client_id.extend(config.client_id.as_bytes());
-                //
-                self.client_read_server_id(stream, exchange, &config.preferred)
-            }
-            Some(ServerState::VersionOk(exchange)) => {
-                // We've sent our id, and are waiting for the server's id.
-                self.client_read_server_id(stream, exchange, &config.preferred)
-            }
-            Some(ServerState::Kex(Kex::KexInit(kexinit))) => {
-                try!(self.buffers.set_clear_len(stream));
-                if try!(self.buffers.read(stream)) {
-
-                    self.client_kexinit(kexinit, &config.preferred)
-
-                } else {
-                    self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
-                    Ok(ReturnCode::NotEnoughBytes)
-                }
-            }
-            Some(ServerState::Kex(Kex::KexDh(kexdh))) => {
-                // This is a writing state from the client.
-                debug!("reading kexdh");
-                self.state = Some(ServerState::Kex(Kex::KexDh(kexdh)));
-                Ok(ReturnCode::Ok)
-            }
-            Some(ServerState::Kex(Kex::KexDhDone(mut kexdhdone))) => {
-                try!(self.buffers.set_clear_len(stream));
-                if try!(self.buffers.read(stream)) {
-
-                    if kexdhdone.names.ignore_guessed {
-                        kexdhdone.names.ignore_guessed = false;
-                        self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
-                        Ok(ReturnCode::Ok)
+                let mut exchange;
+                {
+                    let server_id = try!(self.buffers.read.read_ssh_id(stream));
+                    if let Some(server_id) = server_id {
+                        exchange = Exchange::new();
+                        exchange.server_id.extend_from_slice(server_id);
+                        debug!("server id, exchange = {:?}", exchange);
                     } else {
-                        self.client_kexdhdone(client, kexdhdone, buffer, buffer2)
+                        return Ok(ReturnCode::WrongPacket);
                     }
-                } else {
-                    self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
-                    Ok(ReturnCode::NotEnoughBytes)
                 }
-            }
-            Some(ServerState::Kex(Kex::NewKeys(newkeys))) => {
-                try!(self.buffers.set_clear_len(stream));
-                if try!(self.buffers.read(stream)) {
-                    self.client_newkeys(buffer, newkeys)
+                // Preparing the response
+                exchange.client_id.extend(config.client_id.as_bytes());
+                let mut kexinit = KexInit {
+                    exchange: exchange,
+                    algo: None,
+                    sent: false,
+                    session_id: None,
+                };
+                let mut cipher = cipher::Clear;
+                kexinit.client_write(config, buffer, &mut cipher, &mut self.buffers.write);
+                self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
+                Ok(ReturnCode::Ok)
+            },
+            Some(ServerState::Kex(kex)) => {
+
+                let mut cipher = cipher::Clear;
+                if let Some(buf) = try!(cipher.read(stream, &mut self.buffers.read)) {
+                    debug!("buf = {:?}", buf);
+                    if buf[0] == msg::DISCONNECT {
+                        // transport
+                        return Ok(ReturnCode::Disconnect)
+                    }
+                    if buf[0] <= 4 {
+                        self.state = Some(ServerState::Kex(kex));
+                        return Ok(ReturnCode::Ok)
+                    }
+                    match kex {
+                        Kex::KexInit(kexinit) => {
+
+                            let mut cipher = cipher::Clear;
+
+                            let mut kexdh = try!(kexinit.client_parse(config, buffer, &mut cipher, buf, &mut self.buffers.write));
+
+                            buffer.clear();
+                            let kex = try!(kex::Algorithm::client_dh(kexdh.names.kex, &mut kexdh.exchange, buffer));
+                            cipher.write(buffer.as_slice(), &mut self.buffers.write);
+
+                            self.state = Some(ServerState::Kex(Kex::KexDhDone(KexDhDone {
+                                exchange: kexdh.exchange,
+                                names: kexdh.names,
+                                kex: kex,
+                                key: UNIT,
+                                session_id: kexdh.session_id,
+                            })));
+                        },
+                        Kex::KexDhDone(mut kexdhdone) => {
+
+                            if kexdhdone.names.ignore_guessed {
+                                kexdhdone.names.ignore_guessed = false;
+                                self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
+                            } else {
+                                debug!("kexdhdone");
+                                // We've sent ECDH_INIT, waiting for ECDH_REPLY
+                                if buf[0] == msg::KEX_ECDH_REPLY {
+
+                                    let mut cipher = cipher::Clear;
+
+                                    let hash = try!(kexdhdone.client_compute_exchange_hash(client, buf, buffer));
+                                    let mut newkeys = try!(kexdhdone.compute_keys(hash, buffer, buffer2, false));
+
+                                    cipher.write(&[msg::NEWKEYS], &mut self.buffers.write);
+                                    newkeys.sent = true;
+                                    self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
+                                } else {
+                                    return Err(Error::Inconsistent)
+                                }
+                            }
+                        },
+                        Kex::NewKeys(newkeys) => {
+                            if buf[0] != msg::NEWKEYS {
+                                return Err(Error::NewKeys)
+                            }
+                            // Ok, NEWKEYS received, now encrypted.
+                            self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest)));
+                        },
+                        kex => self.state = Some(ServerState::Kex(kex))
+                    }
+                    Ok(ReturnCode::Ok)
                 } else {
-                    self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
+                    self.state = Some(ServerState::Kex(kex));
                     Ok(ReturnCode::NotEnoughBytes)
                 }
             }
             Some(ServerState::Encrypted(mut enc)) => {
+                if let Some(buf) = try!(enc.cipher.read(stream, &mut self.buffers.read)) {
+                    debug!("read buf {:?}", buf);
+                    if buf[0] == msg::DISCONNECT {
+                        return Ok(ReturnCode::Disconnect)
+                    }
+                    if buf[0] <= 4 {
+                        // transport
+                        self.state = Some(ServerState::Encrypted(enc));
+                        return Ok(ReturnCode::Ok)
+                    }
+                    if buf[0] > 20 && buf[0] < 50 {
+                        if let Some(kex) = std::mem::replace(&mut enc.rekey, None) {
+                            unimplemented!()
+                        }
+                        self.state = Some(ServerState::Encrypted(enc));
+                        return Ok(ReturnCode::Ok)
+                    } else {
+                        return Err(Error::Inconsistent)
+                    }
+                    if buf[0] == msg::KEXINIT {
+                        unimplemented!()
+                    }
+                    /*
+                    debug!("calling read_encrypted");
+                    try!(enc.server_read_encrypted(config,
+                                                   server,
+                                                   buf,
+                                                   buffer,
+                                                   &mut self.write));
+                     */
+                    unimplemented!()
+
+                } else {
+                    self.state = Some(ServerState::Encrypted(enc));
+                    return Ok(ReturnCode::NotEnoughBytes)
+                }
+                // If there are pending packets (and we've not started to rekey), flush them.
+                if enc.rekey.is_none() {
+                    {
+                        let packets = self.write.as_slice();
+                        while self.write_cursor < self.write.len() {
+                            if config.needs_rekeying(&self.buffers) {
+                                if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
+
+                                    let mut kexinit = KexInit::initiate_rekey(exchange, &enc.session_id);
+                                    kexinit.client_write(&config,
+                                                         buffer,
+                                                         &mut enc.cipher,
+                                                         &mut self.buffers.write);
+                                    enc.rekey = Some(Kex::KexInit(kexinit))
+                                }
+                                break
+                            } else {
+                                // Read a single packet, encrypt and send it.
+                                let len = BigEndian::read_u32(&packets[self.write_cursor .. ]) as usize;
+                                let packet = &packets [(self.write_cursor+4) .. (self.write_cursor+4+len)];
+                                enc.cipher.write(packet, &mut self.buffers.write);
+                                self.write_cursor += 4+len
+                            }
+                        }
+                    }
+                    if self.write_cursor >= self.write.len() {
+                        self.write_cursor = 0;
+                        self.write.clear();
+                    }
+                }
+                self.state = Some(ServerState::Encrypted(enc));
+                Ok(ReturnCode::Ok)
+
+            }
+            /*
                 debug!("encrypted state {:?}", enc);
                 // self.try_rekey(&mut enc, config);
                 let state = std::mem::replace(&mut enc.state, None);
@@ -321,6 +482,7 @@ impl<'a> Session<'a> {
                     Ok(ReturnCode::NotEnoughBytes)
                 }
             }
+             */
         }
     }
 
@@ -336,7 +498,8 @@ impl<'a> Session<'a> {
             // If there are still bytes to write.
             return Ok(true);
         }
-
+        Ok(true)
+        /*
         let state = std::mem::replace(&mut self.state, None);
         debug!("state = {:?}", state);
         match state {
@@ -385,7 +548,7 @@ impl<'a> Session<'a> {
                 Ok(true)
             }
         }
-
+        */
     }
     /*
     fn try_rekey(&mut self, enc: &mut Encrypted<&'static ()>, config: &Config) {
@@ -440,6 +603,9 @@ impl<'a> Session<'a> {
         }
     }
     */
+
+
+    /*
     pub fn needs_auth_method(&self) -> Option<auth::Methods> {
 
         match self.state {
@@ -607,8 +773,6 @@ impl<'a> Session<'a> {
 
                                 let written = {
                                     let mut channel_buf = ChannelBuf {
-                                        buffer: buffer,
-                                        channel: c,
                                         write_buffer: &mut self.buffers.write,
                                         cipher: &mut enc.cipher,
                                         wants_reply: false,
@@ -631,4 +795,5 @@ impl<'a> Session<'a> {
             _ => Ok(None),
         }
     }
+     */
 }

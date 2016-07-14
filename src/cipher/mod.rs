@@ -74,6 +74,7 @@ impl CipherT for Clear {
                             buffer: &'a mut SSHBuffer)
                             -> Result<Option<&'a [u8]>, Error> {
 
+        debug!("clear buffer: {:?}", buffer);
         if buffer.len == 0 {
 
             // setting the length
@@ -81,7 +82,7 @@ impl CipherT for Clear {
             buffer.buffer.extend(b"\0\0\0\0");
             try!(stream.read_exact(buffer.buffer.as_mut_slice()));
             buffer.len = buffer.buffer.read_u32_be(0) as usize;
-
+            debug!("clear buffer len: {:?}", buffer.len);
         }
         if try!(read(stream, &mut buffer.buffer, buffer.len, &mut buffer.bytes)) {
 

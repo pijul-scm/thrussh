@@ -24,10 +24,14 @@ use super::{read_public_key,Error,ChannelParameters,Client};
 use cryptobuf::CryptoBuf;
 use std::collections::HashMap;
 use encoding::Reader;
+use Limits;
+use sshbuffer::SSHBuffers;
+use std;
+use byteorder::{BigEndian, ByteOrder};
+use cipher::CipherT;
 
 #[derive(Debug)]
 pub enum ServerState<Key> {
-    VersionOk(Exchange),
     Kex(Kex<Key>),
     Encrypted(Encrypted<Key>), // Session is now encrypted.
 }
@@ -223,6 +227,12 @@ impl<Key> NewKeys<Key> {
             state: Some(state),
             rekey: None,
             channels: HashMap::new(),
+
+            // Extra buffer to put extra packets while handling
+            // rekeying (also used to prepare packets before
+            // encryption).
+            write: CryptoBuf::new(),
+            write_cursor: 0,
         }
     }
 }
@@ -238,4 +248,35 @@ pub struct Encrypted<K> {
     pub state: Option<EncryptedState>,
     pub rekey: Option<Kex<K>>,
     pub channels: HashMap<u32, ChannelParameters>,
+    pub write: CryptoBuf,
+    pub write_cursor: usize,
+}
+
+impl<K> Encrypted<K> {
+    pub fn flush(&mut self, limits:&Limits, ssh_buffers: &mut SSHBuffers) -> bool {
+        // If there are pending packets (and we've not started to rekey), flush them.
+        if self.rekey.is_none() {
+            {
+                let packets = self.write.as_slice();
+                while self.write_cursor < self.write.len() {
+                    if limits.needs_rekeying(ssh_buffers) {
+
+                        return true
+
+                    } else {
+                        // Read a single packet, encrypt and send it.
+                        let len = BigEndian::read_u32(&packets[self.write_cursor .. ]) as usize;
+                        let packet = &packets [(self.write_cursor+4) .. (self.write_cursor+4+len)];
+                        self.cipher.write(packet, &mut ssh_buffers.write);
+                        self.write_cursor += 4+len
+                    }
+                }
+            }
+            if self.write_cursor >= self.write.len() {
+                self.write_cursor = 0;
+                self.write.clear();
+            }
+        }
+        false
+    }
 }

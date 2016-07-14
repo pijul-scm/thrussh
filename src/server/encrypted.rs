@@ -29,8 +29,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                                             config: &'k Config,
                                             server: &mut S,
                                             buf: &[u8],
-                                            buffer: &mut CryptoBuf,
-                                            write_buffer: &mut CryptoBuf)
+                                            buffer: &mut CryptoBuf)
                                             -> Result<(), Error> {
         // If we've successfully read a packet.
         debug!("buf = {:?}", buf);
@@ -46,7 +45,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                     let auth_request =
                         server_accept_service(config.auth_banner,
                                               config.methods,
-                                              write_buffer);
+                                              &mut self.write);
                     self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
 
                 } else {
@@ -57,7 +56,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
             },
             Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                 if buf[0] == msg::USERAUTH_REQUEST {
-                    try!(self.server_read_auth_request(server, buf, auth_request, write_buffer));
+                    try!(self.server_read_auth_request(server, buf, auth_request));
                     Ok(())
                 } else {
                     // Wrong request
@@ -69,16 +68,16 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 debug!("receiving signature, {:?}", buf);
                 if buf[0] == msg::USERAUTH_REQUEST {
                     // check signature.
-                    try!(self.server_verify_signature(server, buf, buffer, auth_request, write_buffer));
+                    try!(self.server_verify_signature(server, buf, buffer, auth_request));
                 } else {
-                    server_reject_auth_request(write_buffer, &auth_request);
+                    server_reject_auth_request(&mut self.write, &auth_request);
                     self.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
                 }
                 Ok(())
             }
             Some(EncryptedState::Authenticated) => {
                 self.state = Some(EncryptedState::Authenticated);
-                self.server_read_authenticated(config, server, buf, write_buffer)
+                self.server_read_authenticated(config, server, buf)
             },
             state => {
                 self.state = state;
@@ -90,13 +89,12 @@ impl <'k> Encrypted<&'k key::Algorithm> {
     pub fn server_read_authenticated<S: Server>(&mut self,
                                                 config: &'k Config,
                                                 server: &mut S,
-                                                buf: &[u8],
-                                                write_buffer: &mut CryptoBuf)
+                                                buf: &[u8])
                                                 -> Result<(), Error> {
         debug!("authenticated buf = {:?}", buf);
         match buf[0] {
             msg::CHANNEL_OPEN => {
-                try!(self.server_handle_channel_open(config, server, buf, write_buffer));
+                try!(self.server_handle_channel_open(config, server, buf));
                 Ok(())
             },
             msg::CHANNEL_EXTENDED_DATA |
@@ -125,7 +123,6 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 {
                     let buf = ChannelBuf {
                         session: self,
-                        write_buffer: write_buffer,
                         wants_reply: false,
                     };
                     if let Some(ext) = ext {
@@ -138,7 +135,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 if let Some(channel) = self.channels.get_mut(&channel_num) {
                     // debug!("{:?} / {:?}", channel.sender_window_size, config.window_size);
                     if channel.sender_window_size < config.window_size / 2 {
-                        super::super::adjust_window_size(write_buffer,
+                        super::super::adjust_window_size(&mut self.write,
                                                          config.window_size,
                                                          channel)
                     }
@@ -163,7 +160,6 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 let wants_reply = try!(r.read_byte());
                 let buf = ChannelBuf {
                     session: self,
-                    write_buffer: write_buffer,
                     wants_reply: false,
                 };
                 match req_type {
@@ -205,7 +201,10 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 self.channels.remove(&channel_num);
                 Ok(())
             }
-            _ => Ok(())
+            m => {
+                debug!("unknown message received: {:?}", m);
+                Ok(())
+            }
         }
     }
 
@@ -213,8 +212,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
     pub fn server_read_auth_request<S: Server>(&mut self,
                                                server: &S,
                                                buf: &[u8],
-                                               mut auth_request: AuthRequest,
-                                               write_buffer: &mut CryptoBuf)
+                                               mut auth_request: AuthRequest)
                                                -> Result<(), Error> {
         // https://tools.ietf.org/html/rfc4252#section-5
         let mut r = buf.reader(1);
@@ -239,13 +237,13 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 };
                 match server.auth(auth_request.methods, &method) {
                     Auth::Success => {
-                        server_auth_request_success(write_buffer);
+                        server_auth_request_success(&mut self.write);
                         self.state = Some(EncryptedState::Authenticated);
                     },
                     Auth::Reject { remaining_methods, partial_success } => {
                         auth_request.methods = remaining_methods;
                         auth_request.partial_success = partial_success;
-                        server_reject_auth_request(write_buffer, &auth_request);
+                        server_reject_auth_request(&mut self.write, &auth_request);
                         self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
                     }
                 }
@@ -278,7 +276,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                         // Public key ?
                         auth_request.public_key.extend(pubkey);
                         auth_request.public_key_algorithm.extend(pubkey_algo);
-                        server_send_pk_ok(write_buffer, &mut auth_request);
+                        server_send_pk_ok(&mut self.write, &mut auth_request);
                         self.state = Some(EncryptedState::WaitingSignature(auth_request))
                             
                     }
@@ -286,14 +284,14 @@ impl <'k> Encrypted<&'k key::Algorithm> {
 
                         auth_request.methods = remaining_methods;
                         auth_request.partial_success = partial_success;
-                        server_reject_auth_request(write_buffer, &auth_request);
+                        server_reject_auth_request(&mut self.write, &auth_request);
                         self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
 
                     }
                 }
             } else {
                 // Other methods of the base specification are insecure or optional.
-                server_reject_auth_request(write_buffer, &auth_request);
+                server_reject_auth_request(&mut self.write, &auth_request);
                 self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
             }
         } else {
@@ -307,8 +305,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                                               server: &S,
                                               buf: &[u8],
                                               buffer: &mut CryptoBuf,
-                                              auth_request: AuthRequest,
-                                              write_buffer: &mut CryptoBuf)
+                                              auth_request: AuthRequest)
                                               -> Result<(), Error> {
         // https://tools.ietf.org/html/rfc4252#section-5
         let mut r = buf.reader(1);
@@ -351,25 +348,25 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                             buffer.extend(&buf[0..pos0]);
                             // Verify signature.
                             if sodium::ed25519::verify_detached(&sig, buffer.as_slice(), &key) {
-                                server_auth_request_success(write_buffer);
+                                server_auth_request_success(&mut self.write);
                                 self.state = Some(EncryptedState::Authenticated);
                             } else {
-                                self.reject_auth_request(write_buffer, auth_request);
+                                self.reject_auth_request(auth_request);
                             }
                         }
-                        _ => self.reject_auth_request(write_buffer, auth_request)
+                        _ => self.reject_auth_request(auth_request)
                     }
                 },
-                _ => self.reject_auth_request(write_buffer, auth_request)
+                _ => self.reject_auth_request(auth_request)
             }
         } else {
-            self.reject_auth_request(write_buffer, auth_request)
+            self.reject_auth_request(auth_request)
         }
         Ok(())
     }
 
-    fn reject_auth_request(&mut self, write_buffer:&mut CryptoBuf, auth_request:AuthRequest) {
-        server_reject_auth_request(write_buffer, &auth_request);
+    fn reject_auth_request(&mut self, auth_request:AuthRequest) {
+        server_reject_auth_request(&mut self.write, &auth_request);
         self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
     }
 
@@ -378,8 +375,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
     fn server_handle_channel_open<S: Server>(&mut self,
                                              config: &super::Config,
                                              server: &mut S,
-                                             buf: &[u8],
-                                             write_buffer: &mut CryptoBuf)
+                                             buf: &[u8])
                                              -> Result<(), Error> {
         
         // https://tools.ietf.org/html/rfc4254#section-5.1
@@ -405,22 +401,20 @@ impl <'k> Encrypted<&'k key::Algorithm> {
         debug!("waiting channel open: {:?}", channel);
         // Write the response immediately, so that we're ready when the stream becomes writable.
         server.new_channel(sender_channel);
-        server_confirm_channel_open(write_buffer, &channel, config);
+        server_confirm_channel_open(&mut self.write, &channel, config);
         //
         let sender_channel = channel.sender_channel;
         self.channels.insert(sender_channel, channel);
         self.state = Some(EncryptedState::Authenticated);
         Ok(())
     }
-
-
 }
 
 
 fn server_accept_service(banner: Option<&str>,
-                             methods: auth::Methods,
-                             buffer: &mut CryptoBuf)
-                             -> AuthRequest {
+                         methods: auth::Methods,
+                         buffer: &mut CryptoBuf)
+                         -> AuthRequest {
 
     push_packet!(buffer, {
         buffer.push(msg::SERVICE_ACCEPT);

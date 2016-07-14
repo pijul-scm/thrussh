@@ -33,20 +33,12 @@ pub struct Config {
     pub methods: auth::Methods,
     pub auth_banner: Option<&'static str>,
     pub keys: Vec<key::Algorithm>,
-    pub rekey_write_limit: usize,
-    pub rekey_read_limit: usize,
-    pub rekey_time_limit_s: f64,
+    pub limits: Limits,
     pub window_size: u32,
     pub maximum_packet_size: u32,
     pub preferred: Preferred,
 }
-impl Config {
-    fn needs_rekeying(&self, buffers:&SSHBuffers) -> bool {
-        buffers.read.bytes >= self.rekey_read_limit ||
-            buffers.write.bytes >= self.rekey_write_limit ||
-            time::precise_time_s() >= buffers.last_rekey_s + self.rekey_time_limit_s
-    }
-}
+
 impl Default for Config {
     fn default() -> Config {
         Config {
@@ -59,9 +51,11 @@ impl Default for Config {
             window_size: 100,
             maximum_packet_size: 100,
             // Following the recommendations of https://tools.ietf.org/html/rfc4253#section-9
-            rekey_write_limit: 1 << 30, // 1 Gb
-            rekey_read_limit: 1 << 30, // 1Gb
-            rekey_time_limit_s: 3600.0,
+            limits: Limits {
+                rekey_write_limit: 1 << 30, // 1 Gb
+                rekey_read_limit: 1 << 30, // 1Gb
+                rekey_time_limit_s: 3600.0,
+            },
             preferred: PREFERRED,
         }
     }
@@ -76,8 +70,6 @@ impl Default for Config {
 // pass them to the ciphers.
 pub struct Session<'k> {
     buffers: SSHBuffers,
-    write: CryptoBuf,
-    write_cursor: usize,
     state: Option<ServerState<&'k key::Algorithm>>,
 }
 
@@ -90,15 +82,13 @@ impl <'k>Default for Session<'k> {
         });
         Session {
             buffers: SSHBuffers::new(),
-            write: CryptoBuf::new(),
-            write_cursor: 0,
             state: None,
         }
     }
 }
 
 impl KexInit {
-    pub fn parse<'k, C:CipherT>(mut self, config:&'k Config, buffer:&mut CryptoBuf, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<Kex<&'k key::Algorithm>, Error> {
+    pub fn server_parse<'k, C:CipherT>(mut self, config:&'k Config, buffer:&mut CryptoBuf, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<Kex<&'k key::Algorithm>, Error> {
 
         let algo = if self.algo.is_none() {
             // read algorithms from packet.
@@ -108,7 +98,7 @@ impl KexInit {
             return Err(Error::Kex)
         };
         if !self.sent {
-            self.write(config, buffer, cipher, write_buffer)
+            self.server_write(config, buffer, cipher, write_buffer)
         }
         let next_kex =
             if let Some(key) = config.keys.iter().find(|x| x.name() == algo.key) {
@@ -125,7 +115,7 @@ impl KexInit {
         Ok(next_kex)
     }
 
-    pub fn write<'k, C:CipherT>(&mut self, config:&'k Config, buffer:&mut CryptoBuf, cipher:&mut C, write_buffer:&mut SSHBuffer) {
+    pub fn server_write<'k, C:CipherT>(&mut self, config:&'k Config, buffer:&mut CryptoBuf, cipher:&mut C, write_buffer:&mut SSHBuffer) {
         buffer.clear();
         negociation::write_kex(&config.preferred, buffer);
         self.exchange.server_kex_init.extend_from_slice(buffer.as_slice());
@@ -195,7 +185,7 @@ impl <'k>Session<'k> {
                                        -> Result<ReturnCode, Error> {
         
         let state = std::mem::replace(&mut self.state, None);
-        // debug!("state: {:?}", state);
+        debug!("state: {:?}", state);
         match state {
             None => {
                 let mut exchange;
@@ -211,12 +201,15 @@ impl <'k>Session<'k> {
                 }
                 // Preparing the response
                 exchange.server_id.extend(config.server_id.as_bytes());
-                self.state = Some(ServerState::Kex(Kex::KexInit(KexInit {
+                let mut kexinit = KexInit {
                     exchange: exchange,
                     algo: None,
                     sent: false,
                     session_id: None,
-                })));
+                };
+                let mut cipher = cipher::Clear;
+                kexinit.server_write(config, buffer, &mut cipher, &mut self.buffers.write);
+                self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
                 Ok(ReturnCode::Ok)
             }
 
@@ -235,7 +228,7 @@ impl <'k>Session<'k> {
                     }
                     match kex {
                         Kex::KexInit(kexinit) => {
-                            let next_kex = try!(kexinit.parse(config, buffer, &mut cipher, buf, &mut self.buffers.write));
+                            let next_kex = try!(kexinit.server_parse(config, buffer, &mut cipher, buf, &mut self.buffers.write));
                             self.state = Some(ServerState::Kex(next_kex));
                         },
                         Kex::KexDh(kexdh) => {
@@ -278,7 +271,7 @@ impl <'k>Session<'k> {
                             match kex {
                                 Kex::KexInit(kexinit) =>
                                     enc.rekey = Some(
-                                        try!(kexinit.parse(config, buffer, &mut enc.cipher, buf, &mut self.buffers.write))
+                                        try!(kexinit.server_parse(config, buffer, &mut enc.cipher, buf, &mut self.buffers.write))
                                     ),
                                 Kex::KexDh(kexdh) =>
                                     enc.rekey = Some(
@@ -311,7 +304,7 @@ impl <'k>Session<'k> {
                                 &enc.session_id
                             );
                             enc.rekey = Some(
-                                try!(kexinit.parse(config, buffer, &mut enc.cipher, buf, &mut self.buffers.write))
+                                try!(kexinit.server_parse(config, buffer, &mut enc.cipher, buf, &mut self.buffers.write))
                             );
                         }
                         self.state = Some(ServerState::Encrypted(enc));
@@ -322,8 +315,7 @@ impl <'k>Session<'k> {
                     try!(enc.server_read_encrypted(config,
                                                    server,
                                                    buf,
-                                                   buffer,
-                                                   &mut self.write));
+                                                   buffer));
 
                 } else {
                     self.state = Some(ServerState::Encrypted(enc));
@@ -331,42 +323,8 @@ impl <'k>Session<'k> {
                 }
 
 
-                // If there are pending packets (and we've not started to rekey), flush them.
-                if enc.rekey.is_none() {
-                    {
-                        let packets = self.write.as_slice();
-                        while self.write_cursor < self.write.len() {
-                            if config.needs_rekeying(&self.buffers) {
-                                if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
-
-                                    let mut kexinit = KexInit::initiate_rekey(exchange, &enc.session_id);
-                                    kexinit.write(&config,
-                                                  buffer,
-                                                  &mut enc.cipher,
-                                                  &mut self.buffers.write);
-                                    enc.rekey = Some(Kex::KexInit(kexinit))
-                                }
-                                break
-                            } else {
-                                // Read a single packet, encrypt and send it.
-                                let len = BigEndian::read_u32(&packets[self.write_cursor .. ]) as usize;
-                                let packet = &packets [(self.write_cursor+4) .. (self.write_cursor+4+len)];
-                                enc.cipher.write(packet, &mut self.buffers.write);
-                                self.write_cursor += 4+len
-                            }
-                        }
-                    }
-                    if self.write_cursor >= self.write.len() {
-                        self.write_cursor = 0;
-                        self.write.clear();
-                    }
-                }
                 self.state = Some(ServerState::Encrypted(enc));
                 Ok(ReturnCode::Ok)
-            }
-            _ => {
-                debug!("read: unhandled");
-                Err(Error::Inconsistent)
             }
         }
     }

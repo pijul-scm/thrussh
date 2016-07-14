@@ -160,8 +160,23 @@ pub enum ReturnCode {
     WrongPacket,
 }
 
+#[derive(Debug)]
+pub struct Limits {
+    pub rekey_write_limit: usize,
+    pub rekey_read_limit: usize,
+    pub rekey_time_limit_s: f64,
+}
+
+impl Limits {
+    fn needs_rekeying(&self, buffers:&sshbuffer::SSHBuffers) -> bool {
+        buffers.read.bytes >= self.rekey_read_limit ||
+            buffers.write.bytes >= self.rekey_write_limit ||
+            time::precise_time_s() >= buffers.last_rekey_s + self.rekey_time_limit_s
+    }
+}
+
 pub mod server;
-// pub mod client;
+pub mod client;
 
 const SSH_EXTENDED_DATA_STDERR: u32 = 1;
 
@@ -189,7 +204,6 @@ pub enum ChannelType<'a> {
 
 pub struct ChannelBuf<'a,K:'a> {
     session: &'a mut state::Encrypted<K>,
-    write_buffer: &'a mut CryptoBuf,
     wants_reply: bool,
 }
 
