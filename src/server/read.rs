@@ -28,67 +28,16 @@ use std::collections::hash_map::Entry;
 use key::PubKey;
 use negociation::Named;
 use sodium;
-/*
-impl<'k> Session<'k> {
-    #[doc(hidden)]
-    pub fn server_read_cleartext_kexdh(&mut self,
-                                       mut kexdh: KexDh<&'k key::Algorithm>,
-                                       buffer: &mut CryptoBuf,
-                                       buffer2: &mut CryptoBuf)
-                                       -> Result<ReturnCode, Error> {
-        let kex = {
-            let payload = self.buffers.get_current_payload();
-            transport!(payload);
 
-            debug!("payload = {:?}", payload);
-            assert!(payload[0] == msg::KEX_ECDH_INIT);
-            kexdh.exchange.client_ephemeral.extend_from_slice(&payload[5..]);
-            try!(super::super::kex::Algorithm::server_dh(kexdh.names.kex, &mut kexdh.exchange, payload))
-        };
+use super::write::*;
 
-        // Then, we fill the write buffer right away, so that we
-        // can output it immediately when the time comes.
-        let kexdhdone = KexDhDone {
-            exchange: kexdh.exchange,
-            kex: kex,
-            key: kexdh.key,
-            names: kexdh.names,
-            session_id: kexdh.session_id,
-        };
-
-        let hash = try!(kexdhdone.kex.compute_exchange_hash(kexdhdone.key, &kexdhdone.exchange, buffer));
-        self.server_cleartext_kex_ecdh_reply(&kexdhdone, &hash);
-        self.server_cleartext_send_newkeys();
-
-        self.state = Some(ServerState::Kex(Kex::NewKeys(try!(kexdhdone.compute_keys(hash, buffer, buffer2, true)))));
-        Ok(ReturnCode::Ok)
-    }
-
-    #[doc(hidden)]
-    pub fn server_read_cleartext_newkeys(&mut self, newkeys: NewKeys<&'k key::Algorithm>) -> Result<ReturnCode, Error> {
-        // We have sent a NEWKEYS packet, and are waiting to receive one. Is it this one?
-        let payload_is_newkeys = {
-            let payload = self.buffers.get_current_payload();
-            transport!(payload);
-            payload[0] == msg::NEWKEYS
-        };
-        if payload_is_newkeys {
-            // Ok, NEWKEYS received, now encrypted.
-            self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest)));
-            Ok(ReturnCode::Ok)
-        } else {
-            Err(Error::NewKeys)
-        }
-    }
-}
-*/
 impl <'k> Encrypted<&'k key::Algorithm> {
+
     pub fn server_read_encrypted<S: Server>(&mut self,
                                             config: &'k Config,
                                             server: &mut S,
                                             buf: &[u8],
-                                            buffer: &mut CryptoBuf,
-                                            write_buffer: &mut SSHBuffer)
+                                            write_buffer: &mut CryptoBuf)
                                             -> Result<(), Error> {
         // If we've successfully read a packet.
         debug!("buf = {:?}", buf);
@@ -99,13 +48,12 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 let mut r = buf.reader(1);
                 let request = try!(r.read_string());
                 debug!("request: {:?}", std::str::from_utf8(request));
-                debug!("decrypted {:?}", buf);
                 if request == b"ssh-userauth" {
 
-                    let auth_request = self.server_accept_service(config.auth_banner,
-                                                                  config.methods,
-                                                                  buffer,
-                                                                  write_buffer);
+                    let auth_request =
+                        server_accept_service(config.auth_banner,
+                                              config.methods,
+                                              write_buffer);
                     self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
 
                 } else {
@@ -113,7 +61,11 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                     self.state = Some(EncryptedState::WaitingServiceRequest)
                 }
                 Ok(())
-            }
+            },
+            _ => unimplemented!()
+        }
+    }
+    /*
             Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                 if buf[0] == msg::USERAUTH_REQUEST {
 
@@ -228,7 +180,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
         }
 
     }
-
+    */
     /*
     fn server_handle_channel_open<S: Server>(&mut self,
                                              config: &super::Config,
@@ -274,7 +226,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
         self.state = Some(EncryptedState::Authenticated);
         Ok(())
     }
-     */
+
     pub fn server_read_auth_request<S: Server>(&mut self,
                                                server: &S,
                                                buf: &[u8],
@@ -428,156 +380,5 @@ impl <'k> Encrypted<&'k key::Algorithm> {
         }
         Ok(())
     }
-
-    pub fn server_read_rekey(&mut self,
-                             buf: &[u8],
-                             config: &'k super::Config,
-                             buffer: &mut CryptoBuf,
-                             buffer2: &mut CryptoBuf,
-                             write_buffer: &mut SSHBuffer)
-                             -> Result<bool, Error> {
-        debug!("server_read_rekey {:?}", buf);
-        if buf[0] == msg::KEXINIT {
-            match std::mem::replace(&mut self.rekey, None) {
-                Some(Kex::KexInit(mut kexinit)) => {
-                    debug!("received KEXINIT");
-                    if kexinit.algo.is_none() {
-                        kexinit.algo = Some(try!(negociation::Server::read_kex(buf, &config.preferred)));
-                    }
-                    kexinit.exchange.client_kex_init.extend_from_slice(buf);
-
-                    if !kexinit.sent {
-                        debug!("sending kexinit");
-                        self.write_kexinit(&config.preferred, &mut kexinit, buffer, write_buffer);
-                        kexinit.sent = true;
-                    }
-                    if let Some(names) = kexinit.algo {
-                        debug!("rekey ok");
-                        if let Some(key) = config.keys.iter().find(|x| x.name() == names.key) {
-                            self.rekey = Some(Kex::KexDh(KexDh {
-                                exchange: kexinit.exchange,
-                                names: names,
-                                key: key,
-                                session_id: kexinit.session_id,
-                            }))
-                        } else {
-                            debug!("still kexinit");
-                            panic!("")
-                        }
-                    } else {
-                        debug!("still kexinit");
-                        self.rekey = Some(Kex::KexInit(kexinit))
-                    }
-                    Ok(true)
-                }
-                None => {
-                    // start a rekeying
-                    if let Some(exchange) = std::mem::replace(&mut self.exchange, None) {
-                        let mut kexinit = KexInit::rekey(
-                            exchange,
-                            try!(negociation::Server::read_kex(buf, &config.preferred)),
-                            &self.session_id
-                        );
-                        debug!("sending kexinit");
-                        buffer.clear();
-                        negociation::write_kex(&config.preferred, buffer);
-                        kexinit.exchange.server_kex_init.extend(buffer.as_slice());
-                        self.cipher.write(buffer.as_slice(), write_buffer);
-                        kexinit.sent = true;
-                        kexinit.exchange.client_kex_init.extend_from_slice(buf);
-
-                        if let Some(names) = kexinit.algo {
-                            debug!("rekey ok");
-                            if let Some(key) = config.keys.iter().find(|x| x.name() == names.key) {
-                                self.rekey = Some(Kex::KexDh(KexDh {
-                                    exchange: kexinit.exchange,
-                                    names: names,
-                                    key: key,
-                                    session_id: kexinit.session_id,
-                                }))
-                            } else {
-                                unreachable!() // could not have changed.
-                            }
-                        } else {
-                            unreachable!()
-                        }
-                    }
-                    Ok(true)
-                }
-                _ => {
-                    // Error, maybe?
-                    // unimplemented!()
-                    Ok(true)
-                }
-            }
-        } else {
-
-            let packet_matches = match self.rekey {
-                Some(Kex::KexDh(_)) if buf[0] == msg::KEX_ECDH_INIT => true,
-                Some(Kex::NewKeys(_)) if buf[0] == msg::NEWKEYS => true,
-                _ => false,
-            };
-            debug!("packet_matches: {:?}", packet_matches);
-            if packet_matches {
-                let rekey = std::mem::replace(&mut self.rekey, None);
-                match rekey {
-                    Some(Kex::KexDh(mut kexdh)) => {
-                        debug!("KexDH");
-                        let kex = {
-                            kexdh.exchange.client_ephemeral.extend_from_slice(&buf[5..]);
-                            try!(super::super::kex::Algorithm::server_dh(kexdh.names.kex, &mut kexdh.exchange, buf))
-                        };
-                        let kexdhdone = KexDhDone {
-                            exchange: kexdh.exchange,
-                            names: kexdh.names,
-                            kex: kex,
-                            key: kexdh.key,
-                            session_id: kexdh.session_id,
-                        };
-                        let hash = try!(kexdhdone.kex.compute_exchange_hash(
-                            kexdhdone.key,
-                            &kexdhdone.exchange,
-                            buffer));
-
-                        // http://tools.ietf.org/html/rfc5656#section-4
-                        buffer.clear();
-                        buffer.push(msg::KEX_ECDH_REPLY);
-                        kexdhdone.key.push_to(buffer);
-                        // Server ephemeral
-                        buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
-                        // Hash signature
-                        kexdhdone.key.add_signature(buffer, hash.as_bytes());
-                        //
-                        self.cipher.write(buffer.as_slice(), write_buffer);
-
-                        buffer.clear();
-                        buffer.push(msg::NEWKEYS);
-                        self.cipher.write(buffer.as_slice(), write_buffer);
-
-                        debug!("new keys");
-                        let new_keys = try!(kexdhdone.compute_keys(hash, buffer, buffer2, true));
-                        self.rekey = Some(Kex::NewKeys(new_keys));
-                        Ok(true)
-
-                    }
-                    Some(Kex::NewKeys(kexinit)) => {
-                        debug!("NewKeys");
-                        if buf[0] == msg::NEWKEYS {
-                            self.exchange = Some(kexinit.exchange);
-                            self.kex = kexinit.kex;
-                            self.key = kexinit.key;
-                            self.cipher = kexinit.cipher;
-                            self.mac = kexinit.names.mac;
-                        } else {
-                            self.rekey = Some(Kex::NewKeys(kexinit))
-                        }
-                        Ok(true)
-                    }
-                    _ => Ok(true),
-                }
-            } else {
-                Ok(false)
-            }
-        }
-    }
+     */
 }

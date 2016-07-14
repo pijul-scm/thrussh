@@ -89,7 +89,7 @@ impl CipherT for Clear {
             let buf = buffer.buffer.as_slice();
             let result = &buf[5..(4 + buffer.len - padding_length)];
             buffer.len = 0;
-
+            buffer.seqn += 1;
             Ok(Some(result))
             
         } else {

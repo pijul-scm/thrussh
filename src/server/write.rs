@@ -22,8 +22,52 @@ use state::*;
 use auth::*;
 use sshbuffer::{SSHBuffer};
 use key::PubKey;
+use byteorder::{ByteOrder, BigEndian};
+
+
+
+pub fn server_accept_service(banner: Option<&str>,
+                             methods: auth::Methods,
+                             buffer: &mut CryptoBuf)
+                             -> AuthRequest {
+    let i0 = buffer.len();
+    buffer.extend(b"\0\0\0\0");
+    buffer.push(msg::SERVICE_ACCEPT);
+    buffer.extend_ssh_string(b"ssh-userauth");
+    let i1 = buffer.len();
+    {
+        let buf = buffer.as_mut_slice();
+        BigEndian::write_u32(&mut buf[i0..], (i1-i0-4) as u32)
+    }
+    
+    if let Some(ref banner) = banner {
+        
+        buffer.extend(b"\0\0\0\0");
+        buffer.push(msg::USERAUTH_BANNER);
+        buffer.extend_ssh_string(banner.as_bytes());
+        buffer.extend_ssh_string(b"");
+        let i2 = buffer.len();
+        {
+            let buf = buffer.as_mut_slice();
+            BigEndian::write_u32(&mut buf[i1..], (i2-i1-4) as u32)
+        }
+    }
+
+    AuthRequest {
+        methods: methods,
+        partial_success: false, // not used immediately anway.
+        public_key: CryptoBuf::new(),
+        public_key_algorithm: CryptoBuf::new(),
+        sent_pk_ok: false,
+        public_key_is_ok: false,
+    }
+}
+
+
+
 
 impl<'k> Encrypted<&'k key::Algorithm> {
+    /*
     pub fn server_confirm_channel_open(&mut self,
                                        buffer: &mut CryptoBuf,
                                        channel: &ChannelParameters,
@@ -35,40 +79,10 @@ impl<'k> Encrypted<&'k key::Algorithm> {
         buffer.push_u32_be(channel.sender_channel); // our channel number.
         buffer.push_u32_be(config.window_size);
         buffer.push_u32_be(config.maximum_packet_size);
-        self.cipher.write(buffer.as_slice(), write_buffer);
     }
+     */
 
-    pub fn server_accept_service(&mut self,
-                                 banner: Option<&str>,
-                                 methods: auth::Methods,
-                                 buffer: &mut CryptoBuf,
-                                 write_buffer: &mut SSHBuffer)
-                                 -> AuthRequest {
-        buffer.clear();
-        buffer.push(msg::SERVICE_ACCEPT);
-        buffer.extend_ssh_string(b"ssh-userauth");
-        self.cipher.write(buffer.as_slice(), write_buffer);
-
-        if let Some(ref banner) = banner {
-
-            buffer.clear();
-            buffer.push(msg::USERAUTH_BANNER);
-            buffer.extend_ssh_string(banner.as_bytes());
-            buffer.extend_ssh_string(b"");
-
-            self.cipher.write(buffer.as_slice(), write_buffer);
-        }
-
-        AuthRequest {
-            methods: methods,
-            partial_success: false, // not used immediately anway.
-            public_key: CryptoBuf::new(),
-            public_key_algorithm: CryptoBuf::new(),
-            sent_pk_ok: false,
-            public_key_is_ok: false,
-        }
-    }
-
+    /*
     pub fn server_auth_request_success(&mut self,
                                        buffer: &mut CryptoBuf,
                                        write_buffer: &mut SSHBuffer) {
@@ -103,15 +117,5 @@ impl<'k> Encrypted<&'k key::Algorithm> {
         self.cipher.write(buffer.as_slice(), write_buffer);
         auth_request.sent_pk_ok = true;
     }
-
-    pub fn write_kexinit(&mut self,
-                         preferred: &negociation::Preferred,
-                         kexinit: &mut KexInit,
-                         buffer: &mut CryptoBuf,
-                         write_buffer: &mut SSHBuffer) {
-        buffer.clear();
-        negociation::write_kex(preferred, buffer);
-        kexinit.exchange.server_kex_init.extend(buffer.as_slice());
-        self.cipher.write(buffer.as_slice(), write_buffer);
-    }
+     */
 }
