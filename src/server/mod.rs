@@ -178,8 +178,11 @@ impl<'k> KexDh<&'k key::Algorithm> {
 
 
 impl <'k>Session<'k> {
-    pub fn new() -> Self {
-        Session::default()
+
+    pub fn new(config:&Config) -> Self {
+        let mut session = Session::default();
+        session.buffers.write.send_ssh_id(config.server_id.as_bytes());
+        session
     }
 
     // returns whether a complete packet has been read.
@@ -207,7 +210,6 @@ impl <'k>Session<'k> {
                     }
                 }
                 // Preparing the response
-                self.buffers.write.send_ssh_id(config.server_id.as_bytes());
                 exchange.server_id.extend(config.server_id.as_bytes());
                 self.state = Some(ServerState::Kex(Kex::KexInit(KexInit {
                     exchange: exchange,
