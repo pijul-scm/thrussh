@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-use {Error, Limits, Client, ChannelType, ChannelParameters};
+
+use {Error, Limits, Client, ChannelType, ChannelParameters, ClientSession};
 use super::key;
 use super::msg;
 use super::auth;
@@ -28,6 +29,7 @@ use sshbuffer::*;
 use std::collections::HashMap;
 use cipher;
 use kex;
+use pty;
 
 use rand;
 use rand::{Rng};
@@ -296,17 +298,7 @@ impl<'a> Session<'a> {
                     return Ok(ReturnCode::NotEnoughBytes)
                 }
                 // If there are pending packets (and we've not started to rekey), flush them.
-                if enc.flush(&config.limits, &mut self.buffers) {
-
-                    if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
-                        let mut kexinit = KexInit::initiate_rekey(exchange, &enc.session_id);
-                        kexinit.client_write(&config,
-                                             buffer,
-                                             &mut enc.cipher,
-                                             &mut self.buffers.write);
-                        enc.rekey = Some(Kex::KexInit(kexinit))
-                    }
-                }
+                self.flush(config, buffer);
                 self.state = Some(ServerState::Encrypted(enc));
                 Ok(ReturnCode::Ok)
             }
@@ -344,6 +336,7 @@ impl<'a> Session<'a> {
         self.auth_method = Some(method);
         result
     }
+
     pub fn is_authenticated(&self) -> bool {
 
         match self.state {
@@ -373,103 +366,231 @@ impl<'a> Session<'a> {
             _ => None,
         }
     }
-    pub fn channels(&self) -> Option<&HashMap<u32, super::ChannelParameters>> {
+
+    pub fn as_client_session(&mut self) -> Option<ClientSession> {
         match self.state {
-            Some(ServerState::Encrypted(ref enc)) => {
-                Some(&enc.channels)
-            },
+            Some(ServerState::Encrypted(ref mut enc)) => Some(ClientSession(enc)),
             _ => None
         }
+
+    }
+
+    pub fn flush(&mut self, config:&Config, buffer:&mut CryptoBuf) {
+        match self.state {
+            Some(ServerState::Encrypted(ref mut enc)) => {
+
+                if enc.flush(&config.limits, &mut self.buffers) {
+
+                    if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
+                        let mut kexinit = KexInit::initiate_rekey(exchange, &enc.session_id);
+                        kexinit.client_write(&config,
+                                             buffer,
+                                             &mut enc.cipher,
+                                             &mut self.buffers.write);
+                        enc.rekey = Some(Kex::KexInit(kexinit))
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl<'e> ClientSession<'e> {
+
+    pub fn channels(&self) -> &HashMap<u32, super::ChannelParameters> {
+        &self.0.channels
     }
 
     pub fn channel_open(&mut self, channel_type:super::ChannelType, config:&Config) -> Option<u32> {
-        match self.state {
-            Some(ServerState::Encrypted(ref mut enc)) => {
-                match enc.state {
-                    Some(EncryptedState::Authenticated) => {
-                        debug!("sending open request");
+        match self.0.state {
+            Some(EncryptedState::Authenticated) => {
+                debug!("sending open request");
 
-                        let mut sender_channel = 0;
-                        while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
-                            sender_channel = rand::thread_rng().gen()
-                        }
-                        push_packet!(enc.write, {
-                            enc.write.push(msg::CHANNEL_OPEN);
-
-                            match channel_type {
-                                ChannelType::Session => {
-                                    enc.write.extend_ssh_string(b"session");
-                                    enc.write.push_u32_be(sender_channel); // sender channel id.
-                                    enc.write.push_u32_be(config.window_size); // window.
-                                    enc.write.push_u32_be(config.maxpacket); // max packet size.
-                                },
-                                ChannelType::X11 { originator_address, originator_port } => {
-                                    enc.write.extend_ssh_string(b"x11");
-                                    enc.write.push_u32_be(sender_channel); // sender channel id.
-                                    enc.write.push_u32_be(config.window_size); // window.
-                                    enc.write.push_u32_be(config.maxpacket); // max packet size.
-                                    //
-                                    enc.write.extend_ssh_string(originator_address.as_bytes());
-                                    enc.write.push_u32_be(originator_port); // sender channel id.
-                                },
-                                ChannelType::ForwardedTcpip { connected_address, connected_port, originator_address, originator_port } => {
-                                    enc.write.extend_ssh_string(b"forwarded-tcpip");
-                                    enc.write.push_u32_be(sender_channel); // sender channel id.
-                                    enc.write.push_u32_be(config.window_size); // window.
-                                    enc.write.push_u32_be(config.maxpacket); // max packet size.
-                                    //
-                                    enc.write.extend_ssh_string(connected_address.as_bytes());
-                                    enc.write.push_u32_be(connected_port); // sender channel id.
-                                    enc.write.extend_ssh_string(originator_address.as_bytes());
-                                    enc.write.push_u32_be(originator_port); // sender channel id.
-                                },
-                                ChannelType::DirectTcpip { host_to_connect, port_to_connect, originator_address, originator_port } => {
-                                    enc.write.extend_ssh_string(b"direct-tcpip");
-                                    enc.write.push_u32_be(sender_channel); // sender channel id.
-                                    enc.write.push_u32_be(config.window_size); // window.
-                                    enc.write.push_u32_be(config.maxpacket); // max packet size.
-                                    //
-                                    enc.write.extend_ssh_string(host_to_connect.as_bytes());
-                                    enc.write.push_u32_be(port_to_connect); // sender channel id.
-                                    enc.write.extend_ssh_string(originator_address.as_bytes());
-                                    enc.write.push_u32_be(originator_port); // sender channel id.
-                                }
-                            }
-                        });
-                        // Send
-                        enc.flush(&config.limits, &mut self.buffers);
-
-                        let parameters = ChannelParameters {
-                            recipient_channel: 0,
-                            sender_channel: sender_channel,
-                            sender_window_size: config.window_size,
-                            recipient_window_size: 0,
-                            sender_maximum_packet_size: config.maxpacket,
-                            recipient_maximum_packet_size: 0,
-                            confirmed: false,
-                            needs_answer: false
-                        };
-                        enc.channels.insert(sender_channel, parameters);
-                        Some(sender_channel)
-                    }
-                    _ => None
+                let mut sender_channel = 0;
+                while self.0.channels.contains_key(&sender_channel) || sender_channel == 0 {
+                    sender_channel = rand::thread_rng().gen()
                 }
-            },
+                push_packet!(self.0.write, {
+                    self.0.write.push(msg::CHANNEL_OPEN);
+
+                    match channel_type {
+                        ChannelType::Session => {
+                            self.0.write.extend_ssh_string(b"session");
+                            self.0.write.push_u32_be(sender_channel); // sender channel id.
+                            self.0.write.push_u32_be(config.window_size); // window.
+                            self.0.write.push_u32_be(config.maxpacket); // max packet size.
+                        },
+                        ChannelType::X11 { originator_address, originator_port } => {
+                            self.0.write.extend_ssh_string(b"x11");
+                            self.0.write.push_u32_be(sender_channel); // sender channel id.
+                            self.0.write.push_u32_be(config.window_size); // window.
+                            self.0.write.push_u32_be(config.maxpacket); // max packet size.
+                            //
+                            self.0.write.extend_ssh_string(originator_address.as_bytes());
+                            self.0.write.push_u32_be(originator_port); // sender channel id.
+                        },
+                        ChannelType::ForwardedTcpip { connected_address, connected_port, originator_address, originator_port } => {
+                            self.0.write.extend_ssh_string(b"forwarded-tcpip");
+                            self.0.write.push_u32_be(sender_channel); // sender channel id.
+                            self.0.write.push_u32_be(config.window_size); // window.
+                            self.0.write.push_u32_be(config.maxpacket); // max packet size.
+                            //
+                            self.0.write.extend_ssh_string(connected_address.as_bytes());
+                            self.0.write.push_u32_be(connected_port); // sender channel id.
+                            self.0.write.extend_ssh_string(originator_address.as_bytes());
+                            self.0.write.push_u32_be(originator_port); // sender channel id.
+                        },
+                        ChannelType::DirectTcpip { host_to_connect, port_to_connect, originator_address, originator_port } => {
+                            self.0.write.extend_ssh_string(b"direct-tcpip");
+                            self.0.write.push_u32_be(sender_channel); // sender channel id.
+                            self.0.write.push_u32_be(config.window_size); // window.
+                            self.0.write.push_u32_be(config.maxpacket); // max packet size.
+                            //
+                            self.0.write.extend_ssh_string(host_to_connect.as_bytes());
+                            self.0.write.push_u32_be(port_to_connect); // sender channel id.
+                            self.0.write.extend_ssh_string(originator_address.as_bytes());
+                            self.0.write.push_u32_be(originator_port); // sender channel id.
+                        }
+                    }
+                });
+                let parameters = ChannelParameters {
+                    recipient_channel: 0,
+                    sender_channel: sender_channel,
+                    sender_window_size: config.window_size,
+                    recipient_window_size: 0,
+                    sender_maximum_packet_size: config.maxpacket,
+                    recipient_maximum_packet_size: 0,
+                    confirmed: false,
+                    needs_answer: false
+                };
+                self.0.channels.insert(sender_channel, parameters);
+                Some(sender_channel)
+            }
             _ => None
         }
     }
 
+
     pub fn data(&mut self, channel: u32, extended: Option<u32>, data: &[u8]) -> Result<usize, Error> {
-        match self.state {
-            Some(ServerState::Encrypted(ref mut enc)) => {
+        self.0.data(channel, extended, data)
+    }
 
-                let result = try!(enc.data(channel, extended, data));
-                enc.flush(&self.limits, &mut self.buffers);
-                Ok(result)
+    pub fn pty_request(&mut self, channel:u32, term:&str, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, terminal_modes:&[(pty::Option, u32)]) {
+        if let Some(channel) = self.0.channels.get(&channel) {
+            push_packet!(self.0.write,{
+                self.0.write.push(msg::CHANNEL_REQUEST);
 
-            },
-            _ => Err(Error::Inconsistent)
+                self.0.write.push_u32_be(channel.recipient_channel);
+                self.0.write.extend_ssh_string(b"pty-req");
+                // self.0.write.push(if want_reply { 1 } else { 0 });
+                self.0.write.push(0);
+
+                self.0.write.extend_ssh_string(term.as_bytes());
+                self.0.write.push_u32_be(col_width);
+                self.0.write.push_u32_be(row_height);
+                self.0.write.push_u32_be(pix_width);
+                self.0.write.push_u32_be(pix_height);
+
+                self.0.write.push_u32_be((5 * (1+terminal_modes.len())) as u32);
+                for &(code, value) in terminal_modes {
+                    self.0.write.push(code as u8);
+                    self.0.write.push_u32_be(value)
+                }
+                // 0 code (to terminate the list)
+                self.0.write.push(0);
+                self.0.write.push_u32_be(0);
+            })
         }
     }
 
+    pub fn x11_request(&mut self, channel:u32, single_connection: bool, x11_authentication_protocol: &str, x11_authentication_cookie: &str, x11_screen_number: u32) {
+        if let Some(channel) = self.0.channels.get(&channel) {
+            push_packet!(self.0.write, {
+                self.0.write.push(msg::CHANNEL_REQUEST);
+
+                self.0.write.push_u32_be(channel.recipient_channel);
+                self.0.write.extend_ssh_string(b"x11-req");
+                // self.0.write.push(if self.want_reply { 1 } else { 0 });
+                self.0.write.push(0);
+                self.0.write.push(if single_connection { 1 } else { 0 });
+                self.0.write.extend_ssh_string(x11_authentication_protocol.as_bytes());
+                self.0.write.extend_ssh_string(x11_authentication_cookie.as_bytes());
+                self.0.write.push_u32_be(x11_screen_number);
+            })
+        }
+    }
+
+    pub fn env_request(&mut self, channel:u32, variable_name:&str, variable_value:&str) {
+        if let Some(channel) = self.0.channels.get(&channel) {
+            push_packet!(self.0.write, {
+                self.0.write.push(msg::CHANNEL_REQUEST);
+
+                self.0.write.push_u32_be(channel.recipient_channel);
+                self.0.write.extend_ssh_string(b"env");
+                // self.0.write.push(if self.want_reply { 1 } else { 0 });
+                self.0.write.push(0);
+                self.0.write.extend_ssh_string(variable_name.as_bytes());
+                self.0.write.extend_ssh_string(variable_value.as_bytes());
+            })
+        }
+    }
+
+
+    pub fn shell_request(&mut self, channel:u32) {
+        if let Some(channel) = self.0.channels.get(&channel) {
+            push_packet!(self.0.write, {
+                self.0.write.push(msg::CHANNEL_REQUEST);
+
+                self.0.write.push_u32_be(channel.recipient_channel);
+                self.0.write.extend_ssh_string(b"shell");
+                // self.0.write.push(if self.want_reply { 1 } else { 0 });
+                self.0.write.push(0);
+            })
+        }
+    }
+
+    pub fn exec_request(&mut self, channel:u32, command:&str) {
+        if let Some(channel) = self.0.channels.get(&channel) {
+            push_packet!(self.0.write, {
+                self.0.write.push(msg::CHANNEL_REQUEST);
+
+                self.0.write.push_u32_be(channel.recipient_channel);
+                self.0.write.extend_ssh_string(b"exec");
+                // self.0.write.push(if self.want_reply { 1 } else { 0 });
+                self.0.write.push(0);
+                self.0.write.extend_ssh_string(command.as_bytes());
+            })
+        }
+    }
+
+    pub fn subsystem_request(&mut self, channel:u32, name:&str) {
+        if let Some(channel) = self.0.channels.get(&channel) {
+            push_packet!(self.0.write, {
+                self.0.write.push(msg::CHANNEL_REQUEST);
+
+                self.0.write.push_u32_be(channel.recipient_channel);
+                self.0.write.extend_ssh_string(b"subsystem");
+                // self.0.write.push(if self.want_reply { 1 } else { 0 });
+                self.0.write.push(0);
+                self.0.write.extend_ssh_string(name.as_bytes());
+            })
+        }
+    }
+
+    pub fn window_change_request(&mut self, channel:u32, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32) {
+        if let Some(channel) = self.0.channels.get(&channel) {
+            push_packet!(self.0.write, {
+                self.0.write.push(msg::CHANNEL_REQUEST);
+
+                self.0.write.push_u32_be(channel.recipient_channel);
+                self.0.write.extend_ssh_string(b"window-change");
+                self.0.write.push(0);
+                self.0.write.push_u32_be(col_width);
+                self.0.write.push_u32_be(row_height);
+                self.0.write.push_u32_be(pix_width);
+                self.0.write.push_u32_be(pix_height);
+            })
+        }
+    }
 }

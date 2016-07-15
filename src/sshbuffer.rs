@@ -17,6 +17,7 @@ use std;
 use super::*;
 use std::io::{BufRead};
 use time;
+use cryptobuf::CryptoBuf;
 
 #[derive(Debug)]
 pub struct SSHBuffers {

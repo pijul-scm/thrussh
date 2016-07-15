@@ -40,6 +40,8 @@
 extern crate libc;
 extern crate libsodium_sys;
 extern crate rand;
+#[macro_use]
+extern crate enum_primitive;
 
 #[macro_use]
 extern crate bitflags;
@@ -53,7 +55,7 @@ extern crate time;
 
 mod sodium;
 mod cryptobuf;
-pub use cryptobuf::CryptoBuf;
+use cryptobuf::CryptoBuf;
 
 mod sshbuffer;
 
@@ -124,8 +126,7 @@ impl From<rustc_serialize::base64::FromBase64Error> for Error {
 
 mod negociation;
 pub mod pty;
-pub mod channel_request;
-pub mod global_request;
+// pub mod global_request;
 mod msg;
 pub mod key;
 mod kex;
@@ -160,20 +161,7 @@ pub struct Limits {
 pub mod server;
 pub mod client;
 
-const SSH_EXTENDED_DATA_STDERR: u32 = 1;
-
-pub enum ChannelRequest<'a> {
-    Pty(channel_request::Pty<'a>),
-    X11(channel_request::X11<'a>),
-    Env(channel_request::Env<'a>),
-    Shell(channel_request::Shell),
-    Exec(channel_request::Exec<'a>),
-    Subsystem(channel_request::Subsystem<'a>),
-    WindowChange(channel_request::WindowChange),
-    XonXoff(channel_request::XonXoff),
-    ExitStatus(channel_request::ExitStatus),
-}
-
+// const SSH_EXTENDED_DATA_STDERR: u32 = 1;
 
 pub enum ChannelType<'a> {
     Session,
@@ -183,60 +171,92 @@ pub enum ChannelType<'a> {
 }
 
 
+pub struct ServerSession<'e, 'k:'e>(&'e mut state::Encrypted<&'k key::Algorithm>);
+pub struct ClientSession<'e>(&'e mut state::Encrypted<&'static ()>);
 
-pub type ServerSession<'k> = state::Encrypted<&'k key::Algorithm>;
-pub type ClientSession = state::Encrypted<&'static ()>;
+pub struct SignalName<'a>(&'a str);
 
-/*
-impl<'a> ChannelBuf<'a> {
+pub const SIGABRT: SignalName<'static> = SignalName("ABRT");
+pub const SIGALRM: SignalName<'static> = SignalName("ALRM");
+pub const SIGFPE: SignalName<'static> = SignalName("FPE");
+pub const SIGHUP: SignalName<'static> = SignalName("HUP");
+pub const SIGILL: SignalName<'static> = SignalName("ILL");
+pub const SIGINT: SignalName<'static> = SignalName("INT");
+pub const SIGKILL: SignalName<'static> = SignalName("KILL");
+pub const SIGPIPE: SignalName<'static> = SignalName("PIPE");
+pub const SIGQUIT: SignalName<'static> = SignalName("QUIT");
+pub const SIGSEGV: SignalName<'static> = SignalName("SEGV");
+pub const SIGTERM: SignalName<'static> = SignalName("TERM");
+pub const SIGUSR1: SignalName<'static> = SignalName("USR1");
 
-
-    fn reply(&mut self, msg: u8) {
-        self.buffer.clear();
-        self.buffer.push(msg);
-        self.buffer.push_u32_be(self.channel.recipient_channel);
-        debug!("reply {:?}", self.buffer.as_slice());
-        self.cipher.write(self.buffer.as_slice(), self.write_buffer);
-    }
-    pub fn success(&mut self) {
-        if self.wants_reply {
-            self.reply(msg::CHANNEL_SUCCESS);
-            self.wants_reply = false
-        }
-    }
-    pub fn failure(&mut self) {
-        if self.wants_reply {
-            self.reply(msg::CHANNEL_FAILURE);
-            self.wants_reply = false
-        }
-    }
-    pub fn eof(&mut self) {
-        self.reply(msg::CHANNEL_EOF);
-    }
-    pub fn close(mut self) {
-        self.reply(msg::CHANNEL_CLOSE);
+impl<'a> SignalName<'a> {
+    fn other(name: &'a str) -> SignalName<'a> {
+        SignalName(name)
     }
 }
-*/
 
 pub trait Server {
     /// Called when a new channel is created.
     #[allow(unused_variables)]
     fn new_channel(&mut self, channel: u32) {}
+
     /// Called when a data packet is received. A response can be
     /// written to the `response` argument.
     #[allow(unused_variables)]
-    fn data(&mut self, channel:u32, data: &[u8], response: &mut ServerSession ) -> Result<(), Error> {
+    fn data(&mut self, channel:u32, data: &[u8], session: ServerSession) -> Result<(), Error> {
         Ok(())
     }
+
+    /// Called when an extended data packet is received. Code 1 means
+    /// that this packet comes from stderr, other codes are not
+    /// defined (see [RFC4254](https://tools.ietf.org/html/rfc4254#section-5.2)).
     #[allow(unused_variables)]
-    fn extended_data(&mut self, channel:u32, code:u32, data: &[u8], response: &mut ServerSession ) -> Result<(), Error> {
+    fn extended_data(&mut self, channel:u32, code:u32, data: &[u8], session: ServerSession) -> Result<(), Error> {
         Ok(())
     }
+
     #[allow(unused_variables)]
-    fn exec(&mut self, channel:u32, data: &[u8], response: &mut ServerSession ) -> Result<(), Error> {
+    fn pty_request(&mut self, channel:u32, term:&str, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, modes:&[(pty::Option, u32)], session: ServerSession) -> Result<(), Error> {
         Ok(())
     }
+
+    #[allow(unused_variables)]
+    fn x11_request(&mut self, channel:u32, single_connection:bool, x11_auth_protocol:&str, x11_auth_cookie:&str, x11_screen_number:u32, session: ServerSession) -> Result<(), Error> {
+        Ok(())
+    }
+
+    #[allow(unused_variables)]
+    fn env_request(&mut self, channel:u32, variable_name:&str, variable_value:&str, session: ServerSession) -> Result<(), Error> {
+        Ok(())
+    }
+
+    #[allow(unused_variables)]
+    fn shell_request(&mut self, channel:u32, session: ServerSession) -> Result<(), Error> {
+        Ok(())
+    }
+
+    #[allow(unused_variables)]
+    fn exec_request(&mut self, channel:u32, data: &[u8], session: ServerSession) -> Result<(), Error> {
+        Ok(())
+    }
+
+    #[allow(unused_variables)]
+    fn subsystem_request(&mut self, channel:u32, name: &str, session: ServerSession) -> Result<(), Error> {
+        Ok(())
+    }
+
+    #[allow(unused_variables)]
+    fn window_change_request(&mut self, channel:u32, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, session: ServerSession) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called when the network window is adjusted, meaning that we can send more bytes.
+    #[allow(unused_variables)]
+    fn window_adjusted(&mut self, channel:u32, session: ServerSession) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called to check authentication requests.
     #[allow(unused_variables)]
     fn auth(&self, methods: auth::M, method: &auth::Method<key::PublicKey>) -> auth::Auth {
         auth::Auth::Reject {
@@ -248,18 +268,29 @@ pub trait Server {
 
 
 pub trait Client {
+
     #[allow(unused_variables)]
     fn auth_banner(&mut self, _: &str) {}
+
     #[allow(unused_variables)]
-    fn channel_confirmed(&self, channel:u32) {}
+    fn channel_confirmed(&self, channel:u32, session: ClientSession) {}
+
     #[allow(unused_variables)]
-    fn data(&mut self, channel: Option<u32>, data: &[u8], session: &mut ClientSession) -> Result<(), Error> {
+    fn data(&mut self, channel: Option<u32>, data: &[u8], session: ClientSession) -> Result<(), Error> {
         Ok(())
     }
+
     #[allow(unused_variables)]
     fn check_server_key(&self, _: &key::PublicKey) -> bool {
         false
     }
+
+    /// Called when the network window is adjusted, meaning that we can send more bytes.
+    #[allow(unused_variables)]
+    fn window_adjusted(&mut self, channel:u32, session: ClientSession) -> Result<(), Error> {
+        Ok(())
+    }
+
 }
 
 

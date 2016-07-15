@@ -16,6 +16,7 @@ use std::io::{Write, BufRead};
 use std;
 
 use super::*;
+
 use negociation::{Preferred, PREFERRED, Select, Named};
 use msg;
 use cipher::CipherT;
@@ -25,6 +26,7 @@ use cipher;
 use negociation;
 use key::PubKey;
 use encoding::Reader;
+use cryptobuf::CryptoBuf;
 
 #[derive(Debug)]
 pub struct Config {
@@ -350,4 +352,53 @@ impl <'k>Session<'k> {
         Ok(())
     }
 
+
+}
+
+impl <'e, 'k:'e> ServerSession<'e,'k> {
+    pub fn data(&mut self, channel: u32, extended: Option<u32>, data: &[u8]) -> Result<usize, Error> {
+        self.0.data(channel, extended, data)
+    }
+
+    pub fn xon_xoff_request(&mut self, channel:u32, client_can_do: bool) {
+        if let Some(channel) = self.0.channels.get(&channel) {
+            push_packet!(self.0.write, {
+                self.0.write.push(msg::CHANNEL_REQUEST);
+
+                self.0.write.push_u32_be(channel.recipient_channel);
+                self.0.write.extend_ssh_string(b"xon-xoff");
+                self.0.write.push(0);
+                self.0.write.push(if client_can_do { 1 } else { 0 });
+            })
+        }
+    }
+
+    pub fn exit_status_request(&mut self, channel:u32, exit_status:u32) {
+        if let Some(channel) = self.0.channels.get(&channel) {
+            push_packet!(self.0.write, {
+                self.0.write.push(msg::CHANNEL_REQUEST);
+
+                self.0.write.push_u32_be(channel.recipient_channel);
+                self.0.write.extend_ssh_string(b"exit-status");
+                self.0.write.push(0);
+                self.0.write.push_u32_be(exit_status)
+            })
+        }
+    }
+
+    pub fn exit_signal_request(&mut self, channel:u32, signal_name:SignalName, core_dumped:bool, error_message:&str, language_tag:&str) {
+        if let Some(channel) = self.0.channels.get(&channel) {
+            push_packet!(self.0.write, {
+                self.0.write.push(msg::CHANNEL_REQUEST);
+
+                self.0.write.push_u32_be(channel.recipient_channel);
+                self.0.write.extend_ssh_string(b"exit-signal");
+                self.0.write.push(0);
+                self.0.write.extend_ssh_string(signal_name.0.as_bytes());
+                self.0.write.push(if core_dumped { 1 } else { 0 });
+                self.0.write.extend_ssh_string(error_message.as_bytes());
+                self.0.write.extend_ssh_string(language_tag.as_bytes());
+            })
+        }
+    }
 }

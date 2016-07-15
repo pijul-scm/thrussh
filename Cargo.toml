@@ -27,12 +27,13 @@ include = [
         "src/client/encrypted.rs",
         "src/key.rs",
         "src/state.rs",
-        "src/sshbuffer.rs"
+        "src/sshbuffer.rs",
+        "src/pty.rs"
         ]
 
 [dependencies]
 byteorder = "0.5"
-bitflags = "*"
+bitflags = "0.7"
 libc = "0.2"
 libsodium-sys = "0.0.10"
 log = "0.3"
@@ -40,3 +41,4 @@ env_logger = "0.3"
 rand = "0.3"
 rustc-serialize = "0.3"
 time = "0.1"
+enum_primitive = "0.1"

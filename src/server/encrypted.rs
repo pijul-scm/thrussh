@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
+use enum_primitive::FromPrimitive;
 use super::*;
 use super::super::*;
 use state::*;
@@ -19,9 +20,10 @@ use msg;
 use encoding::Reader;
 use auth::*;
 use std;
-use byteorder::{ByteOrder};
+use byteorder::{ByteOrder, BigEndian};
 use rand::{thread_rng, Rng};
 use key::Verify;
+use cryptobuf::CryptoBuf;
 
 impl <'k> Encrypted<&'k key::Algorithm> {
 
@@ -112,9 +114,9 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                     };
                 {
                     if let Some(ext) = ext {
-                        try!(server.extended_data(channel_num, ext, &data, self));
+                        try!(server.extended_data(channel_num, ext, &data, ServerSession(self)));
                     } else {
-                        try!(server.data(channel_num, &data, self));
+                        try!(server.data(channel_num, &data, ServerSession(self)));
                     }
                 }
                 
@@ -134,10 +136,11 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 let amount = try!(r.read_u32());
                 if let Some(channel) = self.channels.get_mut(&channel_num) {
                     channel.recipient_window_size += amount;
-                    Ok(())
                 } else {
-                    Err(Error::WrongChannel)
+                    return Err(Error::WrongChannel)
                 }
+                try!(server.window_adjusted(channel_num, ServerSession(self)));
+                Ok(())
             }
             msg::CHANNEL_REQUEST => {
                 let mut r = buf.reader(1);
@@ -146,30 +149,57 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 let wants_reply = try!(r.read_byte());
 
                 match req_type {
-                    b"exec" => {
-                        let req = try!(r.read_string());
-                        try!(server.exec(channel_num, req, self));
-                    }
                     b"pty-req" => {
-                        //unimplemented!()
+                        let term = try!(std::str::from_utf8(try!(r.read_string())));
+                        let col_width = try!(r.read_u32());
+                        let row_height = try!(r.read_u32());
+                        let pix_width = try!(r.read_u32());
+                        let pix_height = try!(r.read_u32());
+                        let mut modes = [(pty::Option::TTY_OP_END,0);130];
+                        let mut i = 0;
+                        {
+                            let mode_string = try!(r.read_string());
+                            while 5*i < mode_string.len() {
+                                let code = mode_string[5*i];
+                                if code == 0 {
+                                    break
+                                }
+                                let num = BigEndian::read_u32(&mode_string[5*i+1..]);
+                                modes[i] = (pty::Option::from_u8(code).unwrap(),num);
+                                i += 1
+                            }
+                        }
+                        try!(server.pty_request(channel_num, term, col_width, row_height, pix_width, pix_height, &modes[0..i], ServerSession(self)));
                     }
                     b"x11-req" => {
-                        //unimplemented!()
+                        let single_connection = try!(r.read_byte()) != 0;
+                        let x11_auth_protocol = try!(std::str::from_utf8(try!(r.read_string())));
+                        let x11_auth_cookie = try!(std::str::from_utf8(try!(r.read_string())));
+                        let x11_screen_number = try!(r.read_u32());
+                        try!(server.x11_request(channel_num, single_connection, x11_auth_protocol, x11_auth_cookie, x11_screen_number, ServerSession(self)));
+                    }
+                    b"env" => {
+                        let env_variable = try!(std::str::from_utf8(try!(r.read_string())));
+                        let env_value = try!(std::str::from_utf8(try!(r.read_string())));
+                        try!(server.env_request(channel_num, env_variable, env_value, ServerSession(self)));
                     }
                     b"shell" => {
-                        //unimplemented!()
+                        try!(server.shell_request(channel_num, ServerSession(self)));
+                    }
+                    b"exec" => {
+                        let req = try!(r.read_string());
+                        try!(server.exec_request(channel_num, req, ServerSession(self)));
                     }
                     b"subsystem" => {
-                        //unimplemented!()
+                        let name = try!(std::str::from_utf8(try!(r.read_string())));
+                        try!(server.subsystem_request(channel_num, name, ServerSession(self)));
                     }
-                    b"xon-xoff" => {
-                        //unimplemented!()
-                    }
-                    b"exit-status" => {
-                        //unimplemented!()
-                    }
-                    b"exit-signal" => {
-                        //unimplemented!()
+                    b"window_change" => {
+                        let col_width = try!(r.read_u32());
+                        let row_height = try!(r.read_u32());
+                        let pix_width = try!(r.read_u32());
+                        let pix_height = try!(r.read_u32());
+                        try!(server.window_change_request(channel_num, col_width, row_height, pix_width, pix_height, ServerSession(self)));
                     }
                     x => {
                         debug!("{:?}, line {:?} req_type = {:?}", file!(), line!(), std::str::from_utf8(x))
@@ -357,7 +387,6 @@ impl <'k> Encrypted<&'k key::Algorithm> {
         self.state = Some(EncryptedState::Authenticated);
         Ok(())
     }
-
 }
 
 
