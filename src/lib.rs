@@ -411,7 +411,7 @@ mod test {
         
         struct S {}
         impl Server for S {
-            fn auth(&self, _:auth::Methods, _:&auth::Method<key::PublicKey>) -> auth::Auth {
+            fn auth(&self, _:auth::M, _:&auth::Method<key::PublicKey>) -> auth::Auth {
                 auth::Auth::Success
             }
         }
@@ -440,10 +440,10 @@ mod test {
         let mut server_write:Vec<u8> = Vec::new();
         
         let mut server = S{};
-        let mut server_session = server::Session::new();
+        let mut server_session = server::Session::new(&server_config);
 
         let mut client = C{};
-        let mut client_session = client::Session::new();
+        let mut client_session = client::Session::new(&client_config);
 
         let mut s_buffer0 = CryptoBuf::new();
         let mut s_buffer1 = CryptoBuf::new();
@@ -452,8 +452,8 @@ mod test {
 
 
         let client_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
-        client_session.set_method(auth::Method::PublicKey { user:"pe",
-                                                            pubkey: client_keypair });
+        client_session.authenticate(auth::Method::PublicKey { user:"pe",
+                                                              pubkey: client_keypair });
 
         let mut run_loop = |client_session:&mut client::Session| {
             {
@@ -463,7 +463,7 @@ mod test {
                 }
             }
             server_write.clear();
-            client_session.write(&client_config, &mut server_read, &mut c_buffer0).unwrap();
+            client_session.write(&mut server_read).unwrap();
 
             {
                 let mut sread = &server_read[..];
@@ -476,11 +476,12 @@ mod test {
         };
         
         while !client_session.is_authenticated() {
+            debug!("client_session: {:?}", client_session);
             run_loop(&mut client_session)
         }
 
         let mut c_buffer0 = CryptoBuf::new();
-        let channel = client_session.open_channel(ChannelType::Session, &client_config, &mut c_buffer0).unwrap();
+        let channel = client_session.channel_open(ChannelType::Session, &client_config).unwrap();
 
         loop {
             if let Some(chan) = client_session.channels().and_then(|x| x.get(&channel)) {

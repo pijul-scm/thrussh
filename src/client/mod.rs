@@ -326,14 +326,14 @@ impl<'a> Session<'a> {
         Ok(true)
     }
 
-    pub fn authenticate(&mut self, config:&Config, method: auth::Method<'a, key::Algorithm>) -> Result<(), Error> {
+    pub fn authenticate(&mut self, method: auth::Method<'a, key::Algorithm>) -> Result<(), Error> {
         debug!("authenticate: {:?} {:?}", self.state, method);
         let result = match self.state {
             Some(ServerState::Encrypted(ref mut enc)) => {
                 match enc.state {
                     Some(EncryptedState::WaitingAuthRequest(_)) => {
                         enc.write_auth_request(&method);
-                        enc.flush(&config.limits, &mut self.buffers);
+                        enc.flush(&self.limits, &mut self.buffers);
                         Ok(())
                     },
                     _ => Err(Error::Inconsistent)

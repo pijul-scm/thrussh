@@ -132,7 +132,6 @@ impl<K> Encrypted<K> {
 pub enum EncryptedState {
     WaitingServiceRequest,
     WaitingAuthRequest(auth::AuthRequest),
-    AuthRequestAnswer(auth::AuthRequest),
     Authenticated
 }
 
