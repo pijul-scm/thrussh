@@ -113,4 +113,10 @@ impl SSHBuffers {
         self.write.len = 0;
         Ok(true)
     }
+
+    pub fn needs_rekeying(&self, limits: &Limits) -> bool {
+        self.read.bytes >= limits.rekey_read_limit ||
+            self.write.bytes >= limits.rekey_write_limit ||
+            time::precise_time_s() >= self.last_rekey_s + limits.rekey_time_limit_s
+    }
 }

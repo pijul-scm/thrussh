@@ -15,12 +15,44 @@
 pub use super::sodium::ed25519;
 use cryptobuf::CryptoBuf;
 use negociation::Named;
+use Error;
+use encoding::Reader;
 
 pub const ED25519: &'static str = "ssh-ed25519";
+
+pub trait Verify {
+    fn verify_detached(&self, buffer: &[u8], sig: &[u8]) -> bool;
+}
 
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub enum PublicKey {
     Ed25519(ed25519::PublicKey),
+}
+
+impl PublicKey {
+    pub fn parse(algo:&[u8], pubkey:&[u8]) -> Result<Self, Error> {
+        match algo {
+            b"ssh-ed25519" => {
+                let mut p = pubkey.reader(0);
+                try!(p.read_string());
+                Ok(PublicKey::Ed25519(
+                    ed25519::PublicKey::copy_from_slice(try!(p.read_string()))
+                ))
+            }
+            _ => Err(Error::UnknownKey),
+        }
+    }
+}
+
+impl Verify for PublicKey {
+    fn verify_detached(&self, buffer: &[u8], sig: &[u8]) -> bool {
+        match self {
+            &PublicKey::Ed25519(ref public) => {
+                let sig = ed25519::Signature::copy_from_slice(sig);
+                ed25519::verify_detached(&sig, buffer, public)
+            }
+        }
+    }
 }
 
 #[derive(Debug,Clone)]
@@ -99,6 +131,20 @@ impl Algorithm {
 
                 let mut sign = ed25519::Signature::new_blank();
                 ed25519::sign_detached(&mut sign, hash, secret);
+
+                buffer.push_u32_be((ED25519.len() + ed25519::SIGNATUREBYTES + 8) as u32);
+                buffer.extend_ssh_string(ED25519.as_bytes());
+                buffer.extend_ssh_string(sign.as_bytes());
+            }
+        }
+    }
+
+    pub fn add_self_signature(&self, buffer: &mut CryptoBuf) {
+        match self {
+            &Algorithm::Ed25519 { ref secret, .. } => {
+
+                let mut sign = ed25519::Signature::new_blank();
+                ed25519::sign_detached(&mut sign, buffer.as_slice(), secret);
 
                 buffer.push_u32_be((ED25519.len() + ed25519::SIGNATUREBYTES + 8) as u32);
                 buffer.extend_ssh_string(ED25519.as_bytes());

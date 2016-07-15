@@ -25,7 +25,7 @@ use cryptobuf::CryptoBuf;
 use std::collections::HashMap;
 use encoding::Reader;
 use Limits;
-use sshbuffer::SSHBuffers;
+use sshbuffer::{SSHBuffers, SSHBuffer};
 use std;
 use byteorder::{BigEndian, ByteOrder};
 use cipher::CipherT;
@@ -37,9 +37,52 @@ pub enum ServerState<Key> {
 }
 
 #[derive(Debug)]
+pub struct Encrypted<K> {
+    pub exchange: Option<Exchange>, // It's always Some, except when we std::mem::replace it temporarily.
+    pub kex: kex::Algorithm,
+    pub key: K,
+    pub cipher: cipher::CipherPair,
+    pub mac: &'static str,
+    pub session_id: kex::Digest,
+    pub state: Option<EncryptedState>,
+    pub rekey: Option<Kex<K>>,
+    pub channels: HashMap<u32, ChannelParameters>,
+    pub write: CryptoBuf,
+    pub write_cursor: usize,
+}
+
+impl<K> Encrypted<K> {
+    pub fn flush(&mut self, limits:&Limits, buffers: &mut SSHBuffers) -> bool {
+        // If there are pending packets (and we've not started to rekey), flush them.
+        if self.rekey.is_none() {
+            {
+                let packets = self.write.as_slice();
+                while self.write_cursor < self.write.len() {
+                    if buffers.needs_rekeying(limits) {
+
+                        return true
+
+                    } else {
+                        // Read a single packet, encrypt and send it.
+                        let len = BigEndian::read_u32(&packets[self.write_cursor .. ]) as usize;
+                        let packet = &packets [(self.write_cursor+4) .. (self.write_cursor+4+len)];
+                        self.cipher.write(packet, &mut buffers.write);
+                        self.write_cursor += 4+len
+                    }
+                }
+            }
+            if self.write_cursor >= self.write.len() {
+                self.write_cursor = 0;
+                self.write.clear();
+            }
+        }
+        false
+    }
+}
+
+#[derive(Debug)]
 pub enum EncryptedState {
     WaitingServiceRequest,
-    ServiceRequest,
     WaitingAuthRequest(auth::AuthRequest),
     WaitingSignature(auth::AuthRequest),
     AuthRequestAnswer(auth::AuthRequest),
@@ -234,49 +277,5 @@ impl<Key> NewKeys<Key> {
             write: CryptoBuf::new(),
             write_cursor: 0,
         }
-    }
-}
-
-#[derive(Debug)]
-pub struct Encrypted<K> {
-    pub exchange: Option<Exchange>, // It's always Some, except when we std::mem::replace it temporarily.
-    pub kex: kex::Algorithm,
-    pub key: K,
-    pub cipher: cipher::CipherPair,
-    pub mac: &'static str,
-    pub session_id: kex::Digest,
-    pub state: Option<EncryptedState>,
-    pub rekey: Option<Kex<K>>,
-    pub channels: HashMap<u32, ChannelParameters>,
-    pub write: CryptoBuf,
-    pub write_cursor: usize,
-}
-
-impl<K> Encrypted<K> {
-    pub fn flush(&mut self, limits:&Limits, ssh_buffers: &mut SSHBuffers) -> bool {
-        // If there are pending packets (and we've not started to rekey), flush them.
-        if self.rekey.is_none() {
-            {
-                let packets = self.write.as_slice();
-                while self.write_cursor < self.write.len() {
-                    if limits.needs_rekeying(ssh_buffers) {
-
-                        return true
-
-                    } else {
-                        // Read a single packet, encrypt and send it.
-                        let len = BigEndian::read_u32(&packets[self.write_cursor .. ]) as usize;
-                        let packet = &packets [(self.write_cursor+4) .. (self.write_cursor+4+len)];
-                        self.cipher.write(packet, &mut ssh_buffers.write);
-                        self.write_cursor += 4+len
-                    }
-                }
-            }
-            if self.write_cursor >= self.write.len() {
-                self.write_cursor = 0;
-                self.write.clear();
-            }
-        }
-        false
     }
 }

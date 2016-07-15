@@ -18,6 +18,7 @@ use super::Error;
 use super::cryptobuf::CryptoBuf;
 use super::key;
 use negociation::Named;
+use sodium;
 
 pub trait Bytes {
     fn bytes(&self) -> &[u8];

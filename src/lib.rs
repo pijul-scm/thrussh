@@ -42,6 +42,9 @@ extern crate libsodium_sys;
 extern crate rand;
 
 #[macro_use]
+extern crate bitflags;
+
+#[macro_use]
 extern crate log;
 extern crate byteorder;
 
@@ -142,12 +145,14 @@ macro_rules! transport {
 macro_rules! push_packet {
     ( $buffer:expr, $x:expr ) => {
         {
+            use byteorder::{BigEndian, ByteOrder};
             let i0 = $buffer.len();
             $buffer.extend(b"\0\0\0\0");
-            $x;
+            let x = $x;
             let i1 = $buffer.len();
             let buf = $buffer.as_mut_slice();
-            BigEndian::write_u32(&mut buf[i0..], (i1-i0-4) as u32)
+            BigEndian::write_u32(&mut buf[i0..], (i1-i0-4) as u32);
+            x
         }
     };
 }
@@ -165,14 +170,6 @@ pub struct Limits {
     pub rekey_write_limit: usize,
     pub rekey_read_limit: usize,
     pub rekey_time_limit_s: f64,
-}
-
-impl Limits {
-    fn needs_rekeying(&self, buffers:&sshbuffer::SSHBuffers) -> bool {
-        buffers.read.bytes >= self.rekey_read_limit ||
-            buffers.write.bytes >= self.rekey_write_limit ||
-            time::precise_time_s() >= buffers.last_rekey_s + self.rekey_time_limit_s
-    }
 }
 
 pub mod server;
@@ -303,9 +300,9 @@ pub trait Server {
         Ok(())
     }
     #[allow(unused_variables)]
-    fn auth(&self, methods: auth::Methods, method: &auth::Method<key::PublicKey>) -> auth::Auth {
+    fn auth(&self, methods: auth::M, method: &auth::Method<key::PublicKey>) -> auth::Auth {
         auth::Auth::Reject {
-            remaining_methods: methods - method,
+            remaining_methods: methods - method.num(),
             partial_success: false,
         }
     }

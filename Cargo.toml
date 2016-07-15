@@ -11,8 +11,7 @@ include = [
         "Cargo.toml",
         "src/sodium.rs",
         "src/server/mod.rs",
-        "src/server/write.rs",
-        "src/server/read.rs",
+        "src/server/encrypted.rs",
         "src/negociation.rs",
         "src/kex.rs",
         "src/auth.rs",
@@ -25,8 +24,7 @@ include = [
         "src/encoding.rs",
         "src/client",
         "src/client/mod.rs",
-        "src/client/write.rs",
-        "src/client/read.rs",
+        "src/client/encrypted.rs",
         "src/key.rs",
         "src/state.rs",
         "src/sshbuffer.rs"
@@ -34,6 +32,7 @@ include = [
 
 [dependencies]
 byteorder = "0.5"
+bitflags = "*"
 libc = "0.2"
 libsodium-sys = "0.0.10"
 log = "0.3"

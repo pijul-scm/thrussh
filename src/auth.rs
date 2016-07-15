@@ -17,12 +17,31 @@ use std::ops::Sub;
 use super::encoding;
 use cryptobuf::CryptoBuf;
 
-#[derive(Clone,Debug,Copy,PartialEq,Eq)]
-pub struct M(u32);
-pub const NONE: M = M(1);
-pub const PASSWORD: M = M(2);
-pub const PUBKEY: M = M(4);
-pub const HOSTBASED: M = M(8);
+bitflags! {
+    pub flags M: u32 {
+        const NONE = 1,
+        const PASSWORD = 2,
+        const PUBLICKEY = 4,
+        const HOSTBASED = 8
+    }
+}
+
+impl Iterator for M {
+    type Item = M;
+    fn next(&mut self) -> Option<M> {
+        if self.contains(NONE) {
+            Some(NONE)
+        } else if self.contains(PASSWORD) {
+            Some(PASSWORD)
+        } else if self.contains(PUBLICKEY) {
+            Some(PUBLICKEY)
+        } else if self.contains(HOSTBASED) {
+            Some(HOSTBASED)
+        } else {
+            None
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum Method<'a, K> {
@@ -39,124 +58,37 @@ pub enum Method<'a, K> {
 }
 
 impl<'a,K> Method<'a,K> {
-    fn num(&self) -> M {
+    pub fn num(&self) -> M {
         match *self {
             Method::None => NONE,
             Method::Password { .. } => PASSWORD,
-            Method::PublicKey { .. } => PUBKEY,
+            Method::PublicKey { .. } => PUBLICKEY,
             Method::Hostbased => HOSTBASED,
         }
     }
 }
+
 impl encoding::Bytes for M {
     fn bytes(&self) -> &'static [u8] {
         match *self {
             NONE => b"none",
             PASSWORD => b"password",
-            PUBKEY => b"publickey",
+            PUBLICKEY => b"publickey",
             HOSTBASED => b"hostbased",
             _ => unreachable!(),
         }
     }
 }
 
-// Each group of four bits is one method.
-#[derive(Debug,Clone,Copy)]
-pub struct Methods {
-    list: u32,
-    set: u32,
-}
-
-impl Methods {
-    fn new(s: &[M]) -> Methods {
-        let mut list: u32 = 0;
-        let mut set: u32 = 0;
-        let mut shift = 0;
-        for &M(i) in s {
-            if set & (i) == 0 {
-                // If we don't have that method already
-                list |= (i as u32) << shift;
-                set |= i as u32;
-                shift += 4
-            }
+impl M {
+    pub fn from_bytes(b:&[u8]) -> Option<M> {
+        match b {
+            b"none" => Some(NONE),
+            b"password" => Some(PASSWORD),
+            b"publickey" => Some(PUBLICKEY),
+            b"hostbased" => Some(HOSTBASED),
+            _ => None
         }
-        Methods {
-            list: list,
-            set: set,
-        }
-    }
-    pub fn keep_remaining<'a, I: Iterator<Item = &'a [u8]>>(&mut self, i: I) {
-        for name in i {
-            let x = match name {
-                b"password" => Some(PASSWORD),
-                b"publickey" => Some(PUBKEY),
-                b"none" => Some(NONE),
-                b"hostbased" => Some(HOSTBASED),
-                _ => None,
-            };
-            if let Some(M(i)) = x {
-                self.set &= i as u32;
-            }
-        }
-    }
-    pub fn all() -> Methods {
-        Self::new(&[PUBKEY, PASSWORD, HOSTBASED])
-    }
-}
-
-impl Iterator for Methods {
-    type Item = M;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.list == 0 {
-            None
-        } else {
-            debug_assert!(self.list & 0xf != 0);
-            let mut result = self.list & 0xf;
-            self.list >>= 4;
-
-            // while this method is not in the set of allowed methods, pop the list.
-            while (self.list != 0) && (result & self.set == 0) {
-                result = self.list & 0xf;
-                self.list >>= 4;
-            }
-            if result == 0 {
-                None
-            } else {
-                Some(M(result))
-            }
-        }
-    }
-}
-
-impl Methods {
-    pub fn peek(&self) -> Option<M> {
-        if self.list == 0 {
-            None
-        } else {
-            let mut result = self.list & 0xf;
-            let mut list = self.list;
-            list >>= 4;
-
-            // while this method is not in the set of allowed methods, pop the list.
-            while (list != 0) && (result & self.set == 0) {
-                result = list & 0xf;
-                list >>= 4;
-            }
-            if list == 0 {
-                None
-            } else {
-                Some(M(result))
-            }
-        }
-    }
-}
-
-impl<'a,K> Sub<&'a Method<'a,K>> for Methods {
-    type Output = Methods;
-    fn sub(mut self, m: &Method<K>) -> Self::Output {
-        let M(m) = m.num();
-        self.set &= !m;
-        self
     }
 }
 
@@ -164,14 +96,14 @@ impl<'a,K> Sub<&'a Method<'a,K>> for Methods {
 pub enum Auth {
     Success,
     Reject {
-        remaining_methods: Methods,
+        remaining_methods: M,
         partial_success: bool,
     },
 }
 
 #[derive(Debug)]
 pub struct AuthRequest {
-    pub methods: Methods,
+    pub methods: M,
     pub partial_success: bool,
     pub public_key: CryptoBuf,
     pub public_key_algorithm: CryptoBuf,

@@ -30,7 +30,7 @@ use byteorder::{ByteOrder, BigEndian};
 #[derive(Debug)]
 pub struct Config {
     pub server_id: String,
-    pub methods: auth::Methods,
+    pub methods: auth::M,
     pub auth_banner: Option<&'static str>,
     pub keys: Vec<key::Algorithm>,
     pub limits: Limits,
@@ -45,7 +45,7 @@ impl Default for Config {
             server_id: format!("SSH-2.0-{}_{}",
                                "Thrussh", // env!("CARGO_PKG_NAME"),
                                env!("CARGO_PKG_VERSION")),
-            methods: auth::Methods::all(),
+            methods: auth::M::all(),
             auth_banner: None,
             keys: Vec::new(),
             window_size: 100,
@@ -321,7 +321,18 @@ impl <'k>Session<'k> {
                     self.state = Some(ServerState::Encrypted(enc));
                     return Ok(ReturnCode::NotEnoughBytes)
                 }
+                
+                if enc.flush(&config.limits, &mut self.buffers) {
 
+                    if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
+                        let mut kexinit = KexInit::initiate_rekey(exchange, &enc.session_id);
+                        kexinit.server_write(&config,
+                                             buffer,
+                                             &mut enc.cipher,
+                                             &mut self.buffers.write);
+                        enc.rekey = Some(Kex::KexInit(kexinit))
+                    }
+                }
 
                 self.state = Some(ServerState::Encrypted(enc));
                 Ok(ReturnCode::Ok)
