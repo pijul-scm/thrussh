@@ -52,6 +52,7 @@ extern crate byteorder;
 
 extern crate rustc_serialize; // config: read base 64.
 extern crate time;
+use std::sync::Arc;
 
 mod sodium;
 mod cryptobuf;
@@ -172,27 +173,41 @@ pub enum ChannelType<'a> {
 }
 
 
-pub struct ServerSession<'e, 'k:'e>(&'e mut state::Encrypted<&'k key::Algorithm>);
-pub struct ClientSession<'e>(&'e mut state::Encrypted<&'static ()>);
+pub struct ServerSession<'e>(&'e mut state::Encrypted<Arc<server::Config>>);
+pub struct ClientSession<'e>(&'e mut state::Encrypted<Arc<client::Config>>);
 
-pub struct SignalName<'a>(&'a str);
+#[derive(Debug, Clone, Copy)]
+pub enum Sig {
+    ABRT = libc::SIGABRT as isize,
+    ALRM = libc::SIGALRM as isize,
+    FPE = libc::SIGFPE as isize,
+    HUP = libc::SIGHUP as isize,
+    ILL = libc::SIGILL as isize,
+    INT = libc::SIGINT as isize,
+    KILL = libc::SIGKILL as isize,
+    PIPE = libc::SIGPIPE as isize,
+    QUIT = libc::SIGQUIT as isize,
+    SEGV = libc::SIGSEGV as isize,
+    TERM = libc::SIGTERM as isize,
+    USR1 = libc::SIGUSR1 as isize,
+}
 
-pub const SIGABRT: SignalName<'static> = SignalName("ABRT");
-pub const SIGALRM: SignalName<'static> = SignalName("ALRM");
-pub const SIGFPE: SignalName<'static> = SignalName("FPE");
-pub const SIGHUP: SignalName<'static> = SignalName("HUP");
-pub const SIGILL: SignalName<'static> = SignalName("ILL");
-pub const SIGINT: SignalName<'static> = SignalName("INT");
-pub const SIGKILL: SignalName<'static> = SignalName("KILL");
-pub const SIGPIPE: SignalName<'static> = SignalName("PIPE");
-pub const SIGQUIT: SignalName<'static> = SignalName("QUIT");
-pub const SIGSEGV: SignalName<'static> = SignalName("SEGV");
-pub const SIGTERM: SignalName<'static> = SignalName("TERM");
-pub const SIGUSR1: SignalName<'static> = SignalName("USR1");
-
-impl<'a> SignalName<'a> {
-    fn other(name: &'a str) -> SignalName<'a> {
-        SignalName(name)
+impl Sig {
+    fn name(&self) -> &'static str {
+        match *self {
+            Sig::ABRT => "ABRT",
+            Sig::ALRM => "ALRM",
+            Sig::FPE => "FPE",
+            Sig::HUP => "HUP",
+            Sig::ILL => "ILL",
+            Sig::INT => "INT",
+            Sig::KILL => "KILL",
+            Sig::PIPE => "PIPE",
+            Sig::QUIT => "QUIT",
+            Sig::SEGV => "SEGV",
+            Sig::TERM => "TERM",
+            Sig::USR1 => "USR1"
+        }
     }
 }
 
@@ -271,19 +286,22 @@ pub trait Server {
 pub trait Client {
 
     #[allow(unused_variables)]
-    fn auth_banner(&mut self, _: &str) {}
+    fn auth_banner(&mut self, banner: &str) {}
 
     #[allow(unused_variables)]
-    fn channel_confirmed(&self, channel:u32, session: ClientSession) {}
+    fn check_server_key(&self, server_public_key: &key::PublicKey) -> bool {
+        false
+    }
+
+    #[allow(unused_variables)]
+    fn channel_open_confirmation(&self, channel:u32, session: ClientSession) {}
+
+    #[allow(unused_variables)]
+    fn channel_open_failure(&self, channel:u32, reason: ChannelOpen, description:&str, language:&str, session: ClientSession) {}
 
     #[allow(unused_variables)]
     fn data(&mut self, channel: Option<u32>, data: &[u8], session: ClientSession) -> Result<(), Error> {
         Ok(())
-    }
-
-    #[allow(unused_variables)]
-    fn check_server_key(&self, _: &key::PublicKey) -> bool {
-        false
     }
 
     /// Called when the network window is adjusted, meaning that we can send more bytes.
@@ -294,7 +312,16 @@ pub trait Client {
 
 }
 
-
+enum_from_primitive! {
+    #[derive(Debug, Copy, Clone, PartialEq)]
+    pub enum ChannelOpen {
+        AdministrativelyProhibited = 1,
+        ConnectFailed = 2,
+        UnknownChannelType = 3,
+        ResourceShortage = 4,
+        
+    }
+}
 #[derive(Debug)]
 #[doc(hidden)]
 pub struct ChannelParameters {
@@ -305,7 +332,7 @@ pub struct ChannelParameters {
     pub recipient_maximum_packet_size: u32,
     pub sender_maximum_packet_size: u32,
     pub confirmed: bool,
-    pub needs_answer: bool
+    pub wants_reply: bool
 }
 
 fn adjust_window_size(buffer:&mut CryptoBuf,

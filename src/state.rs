@@ -33,27 +33,28 @@ use cipher::CipherT;
 use time;
 
 #[derive(Debug)]
-pub enum ServerState<Key> {
-    Kex(Kex<Key>),
-    Encrypted(Encrypted<Key>), // Session is now encrypted.
+pub enum ServerState<Config> {
+    Kex(Kex),
+    Encrypted(Encrypted<Config>), // Session is now encrypted.
 }
 
 #[derive(Debug)]
-pub struct Encrypted<K> {
+pub struct Encrypted<C> {
     pub exchange: Option<Exchange>, // It's always Some, except when we std::mem::replace it temporarily.
     pub kex: kex::Algorithm,
-    pub key: K,
+    pub key: usize,
     pub cipher: cipher::CipherPair,
     pub mac: &'static str,
     pub session_id: kex::Digest,
     pub state: Option<EncryptedState>,
-    pub rekey: Option<Kex<K>>,
+    pub rekey: Option<Kex>,
     pub channels: HashMap<u32, ChannelParameters>,
     pub write: CryptoBuf,
     pub write_cursor: usize,
+    pub config: C
 }
 
-impl<K> Encrypted<K> {
+impl<C> Encrypted<C> {
 
     pub fn data(&mut self, channel: u32, extended: Option<u32>, buf: &[u8]) -> Result<usize, Error> {
         if let Some(channel) = self.channels.get_mut(&channel) {
@@ -126,6 +127,21 @@ impl<K> Encrypted<K> {
         }
         false
     }
+    
+    pub fn adjust_window_size(&mut self, channel:u32, data:&[u8], target: u32) {
+        if let Some(ref mut channel) = self.channels.get_mut(&channel) {
+            channel.sender_window_size -= data.len() as u32;
+            if channel.sender_window_size < target / 2 {
+                push_packet!(self.write, {
+                    self.write.push(msg::CHANNEL_WINDOW_ADJUST);
+                    self.write.push_u32_be(channel.recipient_channel);
+                    self.write.push_u32_be(target - channel.sender_window_size);
+                });
+                channel.sender_window_size = target;
+            }
+        }
+    }
+
 }
 
 #[derive(Debug)]
@@ -138,33 +154,33 @@ pub enum EncryptedState {
 
 #[derive(Debug)]
 pub struct Exchange {
-    pub client_id: Vec<u8>,
-    pub server_id: Vec<u8>,
-    pub client_kex_init: Vec<u8>,
-    pub server_kex_init: Vec<u8>,
-    pub client_ephemeral: Vec<u8>,
-    pub server_ephemeral: Vec<u8>,
+    pub client_id: CryptoBuf,
+    pub server_id: CryptoBuf,
+    pub client_kex_init: CryptoBuf,
+    pub server_kex_init: CryptoBuf,
+    pub client_ephemeral: CryptoBuf,
+    pub server_ephemeral: CryptoBuf
 }
 
 impl Exchange {
     pub fn new() -> Self {
         Exchange {
-            client_id: Vec::new(),
-            server_id: Vec::new(),
-            client_kex_init: Vec::new(),
-            server_kex_init: Vec::new(),
-            client_ephemeral: Vec::new(),
-            server_ephemeral: Vec::new(),
+            client_id: CryptoBuf::new(),
+            server_id: CryptoBuf::new(),
+            client_kex_init: CryptoBuf::new(),
+            server_kex_init: CryptoBuf::new(),
+            client_ephemeral: CryptoBuf::new(),
+            server_ephemeral: CryptoBuf::new(),
         }
     }
 }
 
 #[derive(Debug)]
-pub enum Kex<Key> {
+pub enum Kex {
     KexInit(KexInit), /* Version number sent. `algo` and `sent` tell wether kexinit has been received, and sent, respectively. */
-    KexDh(KexDh<Key>), // Algorithms have been determined, the DH algorithm should run.
-    KexDhDone(KexDhDone<Key>), // The kex has run.
-    NewKeys(NewKeys<Key>), /* The DH is over, we've sent the NEWKEYS packet, and are waiting the NEWKEYS from the other side. */
+    KexDh(KexDh), // Algorithms have been determined, the DH algorithm should run.
+    KexDhDone(KexDhDone), // The kex has run.
+    NewKeys(NewKeys), /* The DH is over, we've sent the NEWKEYS packet, and are waiting the NEWKEYS from the other side. */
 }
 
 
@@ -208,29 +224,29 @@ impl KexInit {
 }
 
 #[derive(Debug)]
-pub struct KexDh<Key> {
+pub struct KexDh {
     pub exchange: Exchange,
     pub names: negociation::Names,
-    pub key: Key,
+    pub key: usize,
     pub session_id: Option<kex::Digest>,
 }
 
 #[derive(Debug)]
-pub struct KexDhDone<Key> {
+pub struct KexDhDone {
     pub exchange: Exchange,
     pub kex: kex::Algorithm,
-    pub key: Key,
+    pub key: usize,
     pub session_id: Option<kex::Digest>,
     pub names: negociation::Names,
 }
 
-impl<Key> KexDhDone<Key> {
+impl KexDhDone {
     pub fn compute_keys(self,
-                    hash: kex::Digest,
-                    buffer: &mut CryptoBuf,
-                    buffer2: &mut CryptoBuf,
-                    is_server: bool)
-                    -> Result<NewKeys<Key>, Error> {
+                        hash: kex::Digest,
+                        buffer: &mut CryptoBuf,
+                        buffer2: &mut CryptoBuf,
+                        is_server: bool)
+                        -> Result<NewKeys, Error> {
         let session_id = if let Some(session_id) = self.session_id {
             session_id
         } else {
@@ -264,10 +280,10 @@ impl<Key> KexDhDone<Key> {
             return Err(Error::UnknownKey);
         }
         let server_ephemeral = try!(reader.read_string());
-        self.exchange.server_ephemeral.extend_from_slice(server_ephemeral);
+        self.exchange.server_ephemeral.extend(server_ephemeral);
         let signature = try!(reader.read_string());
 
-        try!(self.kex.compute_shared_secret(&self.exchange.server_ephemeral));
+        try!(self.kex.compute_shared_secret(self.exchange.server_ephemeral.as_slice()));
 
         let hash = try!(self.kex.compute_exchange_hash(&pubkey,
                                                        &self.exchange,
@@ -293,19 +309,19 @@ impl<Key> KexDhDone<Key> {
 }
 
 #[derive(Debug)]
-pub struct NewKeys<Key> {
+pub struct NewKeys {
     pub exchange: Exchange,
     pub names: negociation::Names,
     pub kex: kex::Algorithm,
-    pub key: Key,
+    pub key: usize,
     pub cipher: cipher::CipherPair,
     pub session_id: kex::Digest,
     pub received: bool,
     pub sent: bool,
 }
 
-impl<Key> NewKeys<Key> {
-    pub fn encrypted(self, state: EncryptedState) -> Encrypted<Key> {
+impl NewKeys {
+    pub fn encrypted<Config>(self, state: EncryptedState, config: Config) -> Encrypted<Config> {
         Encrypted {
             exchange: Some(self.exchange),
             kex: self.kex,
@@ -322,6 +338,7 @@ impl<Key> NewKeys<Key> {
             // encryption).
             write: CryptoBuf::new(),
             write_cursor: 0,
+            config: config
         }
     }
 }

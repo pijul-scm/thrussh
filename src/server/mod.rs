@@ -14,6 +14,7 @@
 //
 use std::io::{Write, BufRead};
 use std;
+use std::sync::Arc;
 
 use super::*;
 
@@ -68,42 +69,36 @@ impl Default for Config {
 // in the session's `write` buffer, and flushed later. The write
 // buffer is also useful to prepare complete packets before we can
 // pass them to the ciphers.
-pub struct Session<'k> {
+pub struct Connection {
     buffers: SSHBuffers,
-    state: Option<ServerState<&'k key::Algorithm>>,
+    state: Option<ServerState<Arc<Config>>>,
+    config: Arc<Config>
 }
 
 mod encrypted;
 
-impl <'k>Default for Session<'k> {
-    fn default() -> Self {
-        super::SODIUM_INIT.call_once(|| {
-            super::sodium::init();
-        });
-        Session {
-            buffers: SSHBuffers::new(),
-            state: None,
-        }
-    }
-}
 
 impl KexInit {
-    pub fn server_parse<'k, C:CipherT>(mut self, config:&'k Config, buffer:&mut CryptoBuf, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<Kex<&'k key::Algorithm>, Error> {
+    pub fn server_parse<C:CipherT>(mut self, config:&Config, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<Kex, Error> {
 
         if buf[0] == msg::KEXINIT {
             debug!("server parse");
             let algo = if self.algo.is_none() {
                 // read algorithms from packet.
-                self.exchange.client_kex_init.extend_from_slice(buf);
+                self.exchange.client_kex_init.extend(buf);
                 try!(super::negociation::Server::read_kex(buf, &config.preferred))
             } else {
                 return Err(Error::Kex)
             };
             if !self.sent {
-                self.server_write(config, buffer, cipher, write_buffer)
+                self.server_write(config, cipher, write_buffer)
+            }
+            let mut key = 0;
+            while key < config.keys.len() && config.keys[key].name() != algo.key {
+                key += 1
             }
             let next_kex =
-                if let Some(key) = config.keys.iter().find(|x| x.name() == algo.key) {
+                if key < config.keys.len() {
                     Kex::KexDh(KexDh {
                         exchange: self.exchange,
                         key: key,
@@ -120,17 +115,16 @@ impl KexInit {
         }
     }
 
-    pub fn server_write<'k, C:CipherT>(&mut self, config:&'k Config, buffer:&mut CryptoBuf, cipher:&mut C, write_buffer:&mut SSHBuffer) {
-        buffer.clear();
-        negociation::write_kex(&config.preferred, buffer);
-        self.exchange.server_kex_init.extend_from_slice(buffer.as_slice());
+    pub fn server_write<'k, C:CipherT>(&mut self, config:&'k Config, cipher:&mut C, write_buffer:&mut SSHBuffer) {
+        self.exchange.server_kex_init.clear();
+        negociation::write_kex(&config.preferred, &mut self.exchange.server_kex_init);
         self.sent = true;
-        cipher.write(buffer.as_slice(), write_buffer)
+        cipher.write(self.exchange.server_kex_init.as_slice(), write_buffer)
     }
 }
 
-impl<'k> KexDh<&'k key::Algorithm> {
-    pub fn parse<C:CipherT>(mut self, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<Kex<&'k key::Algorithm>, Error> {
+impl KexDh {
+    pub fn parse<C:CipherT>(mut self, config:&Config, buffer:&mut CryptoBuf, buffer2:&mut CryptoBuf, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<Kex, Error> {
 
         if self.names.ignore_guessed {
             // If we need to ignore this packet.
@@ -140,7 +134,7 @@ impl<'k> KexDh<&'k key::Algorithm> {
             // Else, process it.
             assert!(buf[0] == msg::KEX_ECDH_INIT);
             let mut r = buf.reader(1);
-            self.exchange.client_ephemeral.extend_from_slice(try!(r.read_string()));
+            self.exchange.client_ephemeral.extend(try!(r.read_string()));
             let kex = try!(super::kex::Algorithm::server_dh(self.names.kex, &mut self.exchange, buf));
             // Then, we fill the write buffer right away, so that we
             // can output it immediately when the time comes.
@@ -152,15 +146,15 @@ impl<'k> KexDh<&'k key::Algorithm> {
                 session_id: self.session_id,
             };
 
-            let hash = try!(kexdhdone.kex.compute_exchange_hash(kexdhdone.key, &kexdhdone.exchange, buffer));
+            let hash = try!(kexdhdone.kex.compute_exchange_hash(&config.keys[kexdhdone.key], &kexdhdone.exchange, buffer));
 
             buffer.clear();
             buffer.push(msg::KEX_ECDH_REPLY);
-            kexdhdone.key.push_to(buffer);
+            config.keys[kexdhdone.key].push_to(buffer);
             // Server ephemeral
-            buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
+            buffer.extend_ssh_string(kexdhdone.exchange.server_ephemeral.as_slice());
             // Hash signature
-            kexdhdone.key.add_signature(buffer, hash.as_bytes());
+            config.keys[kexdhdone.key].add_signature(buffer, hash.as_bytes());
             cipher.write(buffer.as_slice(), write_buffer);
 
             cipher.write(&[msg::NEWKEYS], write_buffer);
@@ -172,25 +166,31 @@ impl<'k> KexDh<&'k key::Algorithm> {
 
 
 
-impl <'k>Session<'k> {
+impl Connection {
 
-    pub fn new(config:&Config) -> Self {
-        let mut session = Session::default();
-        session.buffers.write.send_ssh_id(config.server_id.as_bytes());
+    pub fn new(config:Arc<Config>) -> Self {
+        super::SODIUM_INIT.call_once(|| {
+            super::sodium::init();
+        });
+        let mut session = Connection {
+            buffers: SSHBuffers::new(),
+            state: None,
+            config: config
+        };
+        session.buffers.write.send_ssh_id(session.config.as_ref().server_id.as_bytes());
         session
     }
 
     // returns whether a complete packet has been read.
     pub fn read<R: BufRead, S: Server>(&mut self,
                                        server: &mut S,
-                                       config: &'k Config,
                                        stream: &mut R,
                                        buffer: &mut CryptoBuf,
                                        buffer2: &mut CryptoBuf)
                                        -> Result<ReturnCode, Error> {
         
         let state = std::mem::replace(&mut self.state, None);
-        debug!("state: {:?}", state);
+        // debug!("state: {:?}", state);
         match state {
             None => {
                 let mut exchange;
@@ -198,14 +198,14 @@ impl <'k>Session<'k> {
                     let client_id = try!(self.buffers.read.read_ssh_id(stream));
                     if let Some(client_id) = client_id {
                         exchange = Exchange::new();
-                        exchange.client_id.extend_from_slice(client_id);
+                        exchange.client_id.extend(client_id);
                         debug!("client id, exchange = {:?}", exchange);
                     } else {
                         return Ok(ReturnCode::WrongPacket);
                     }
                 }
                 // Preparing the response
-                exchange.server_id.extend(config.server_id.as_bytes());
+                exchange.server_id.extend(self.config.as_ref().server_id.as_bytes());
                 let mut kexinit = KexInit {
                     exchange: exchange,
                     algo: None,
@@ -213,7 +213,7 @@ impl <'k>Session<'k> {
                     session_id: None,
                 };
                 let mut cipher = cipher::Clear;
-                kexinit.server_write(config, buffer, &mut cipher, &mut self.buffers.write);
+                kexinit.server_write(self.config.as_ref(), &mut cipher, &mut self.buffers.write);
                 self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
                 Ok(ReturnCode::Ok)
             }
@@ -233,11 +233,11 @@ impl <'k>Session<'k> {
                     }
                     match kex {
                         Kex::KexInit(kexinit) => {
-                            let next_kex = try!(kexinit.server_parse(config, buffer, &mut cipher, buf, &mut self.buffers.write));
+                            let next_kex = try!(kexinit.server_parse(self.config.as_ref(), &mut cipher, buf, &mut self.buffers.write));
                             self.state = Some(ServerState::Kex(next_kex));
                         },
                         Kex::KexDh(kexdh) => {
-                            let next_kex = try!(kexdh.parse(buffer, buffer2, &mut cipher, buf, &mut self.buffers.write));
+                            let next_kex = try!(kexdh.parse(self.config.as_ref(), buffer, buffer2, &mut cipher, buf, &mut self.buffers.write));
                             self.state = Some(ServerState::Kex(next_kex));
                         },
                         Kex::NewKeys(newkeys) => {
@@ -245,7 +245,7 @@ impl <'k>Session<'k> {
                                 return Err(Error::NewKeys)
                             }
                             // Ok, NEWKEYS received, now encrypted.
-                            self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest)));
+                            self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest, self.config.clone())));
                         },
                         kex => self.state = Some(ServerState::Kex(kex))
                     }
@@ -276,11 +276,11 @@ impl <'k>Session<'k> {
                             match kex {
                                 Kex::KexInit(kexinit) =>
                                     enc.rekey = Some(
-                                        try!(kexinit.server_parse(config, buffer, &mut enc.cipher, buf, &mut self.buffers.write))
+                                        try!(kexinit.server_parse(self.config.as_ref(), &mut enc.cipher, buf, &mut self.buffers.write))
                                     ),
                                 Kex::KexDh(kexdh) =>
                                     enc.rekey = Some(
-                                        try!(kexdh.parse(buffer, buffer2, &mut enc.cipher, buf, &mut self.buffers.write))
+                                        try!(kexdh.parse(self.config.as_ref(), buffer, buffer2, &mut enc.cipher, buf, &mut self.buffers.write))
                                     ),
                                 Kex::NewKeys(newkeys) =>
                                     if buf[0] == msg::NEWKEYS {
@@ -305,19 +305,18 @@ impl <'k>Session<'k> {
                         if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
                             let kexinit = KexInit::received_rekey(
                                 exchange,
-                                try!(negociation::Server::read_kex(buf, &config.preferred)),
+                                try!(negociation::Server::read_kex(buf, &self.config.as_ref().preferred)),
                                 &enc.session_id
                             );
                             enc.rekey = Some(
-                                try!(kexinit.server_parse(config, buffer, &mut enc.cipher, buf, &mut self.buffers.write))
+                                try!(kexinit.server_parse(self.config.as_ref(), &mut enc.cipher, buf, &mut self.buffers.write))
                             );
                         }
                         self.state = Some(ServerState::Encrypted(enc));
                         return Ok(ReturnCode::Ok)
                     }
                     debug!("calling read_encrypted");
-                    try!(enc.server_read_encrypted(config,
-                                                   server,
+                    try!(enc.server_read_encrypted(server,
                                                    buf,
                                                    buffer));
 
@@ -326,12 +325,11 @@ impl <'k>Session<'k> {
                     return Ok(ReturnCode::NotEnoughBytes)
                 }
                 debug!("flushing");
-                if enc.flush(&config.limits, &mut self.buffers) {
+                if enc.flush(&self.config.as_ref().limits, &mut self.buffers) {
 
                     if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
                         let mut kexinit = KexInit::initiate_rekey(exchange, &enc.session_id);
-                        kexinit.server_write(&config,
-                                             buffer,
+                        kexinit.server_write(&self.config.as_ref(),
                                              &mut enc.cipher,
                                              &mut self.buffers.write);
                         enc.rekey = Some(Kex::KexInit(kexinit))
@@ -354,7 +352,30 @@ impl <'k>Session<'k> {
 
 }
 
-impl <'e, 'k:'e> ServerSession<'e,'k> {
+impl<'e> ServerSession<'e> {
+
+    pub fn channel_success(&mut self, channel: u32) {
+        if let Some(channel) = self.0.channels.get(&channel) {
+            if channel.wants_reply {
+                push_packet!(self.0.write, {
+                    self.0.write.push(msg::CHANNEL_SUCCESS);
+                    self.0.write.push_u32_be(channel.recipient_channel);
+                })
+            }
+        }
+    }
+
+    pub fn channel_failure(&mut self, channel: u32) {
+        if let Some(channel) = self.0.channels.get(&channel) {
+            if channel.wants_reply {
+                push_packet!(self.0.write, {
+                    self.0.write.push(msg::CHANNEL_FAILURE);
+                    self.0.write.push_u32_be(channel.recipient_channel);
+                })
+            }
+        }
+    }
+    
     pub fn data(&mut self, channel: u32, extended: Option<u32>, data: &[u8]) -> Result<usize, Error> {
         self.0.data(channel, extended, data)
     }
@@ -385,7 +406,7 @@ impl <'e, 'k:'e> ServerSession<'e,'k> {
         }
     }
 
-    pub fn exit_signal_request(&mut self, channel:u32, signal_name:SignalName, core_dumped:bool, error_message:&str, language_tag:&str) {
+    pub fn exit_signal_request(&mut self, channel:u32, signal:Sig, core_dumped:bool, error_message:&str, language_tag:&str) {
         if let Some(channel) = self.0.channels.get(&channel) {
             push_packet!(self.0.write, {
                 self.0.write.push(msg::CHANNEL_REQUEST);
@@ -393,7 +414,7 @@ impl <'e, 'k:'e> ServerSession<'e,'k> {
                 self.0.write.push_u32_be(channel.recipient_channel);
                 self.0.write.extend_ssh_string(b"exit-signal");
                 self.0.write.push(0);
-                self.0.write.extend_ssh_string(signal_name.0.as_bytes());
+                self.0.write.extend_ssh_string(signal.name().as_bytes());
                 self.0.write.push(if core_dumped { 1 } else { 0 });
                 self.0.write.extend_ssh_string(error_message.as_bytes());
                 self.0.write.extend_ssh_string(language_tag.as_bytes());

@@ -103,7 +103,7 @@ impl Algorithm {
         }
     }
     pub fn client_dh(name: &str,
-                     exchange: &mut Exchange,
+                     client_ephemeral: &mut CryptoBuf,
                      buf: &mut CryptoBuf)
                      -> Result<Algorithm, Error> {
 
@@ -126,8 +126,8 @@ impl Algorithm {
                 curve25519::scalarmult_base(&mut client_pubkey, &client_secret);
 
                 // fill exchange.
-                exchange.client_ephemeral.clear();
-                exchange.client_ephemeral.extend(client_pubkey.as_bytes());
+                client_ephemeral.clear();
+                client_ephemeral.extend(client_pubkey.as_bytes());
 
 
                 buf.push(msg::KEX_ECDH_INIT);
@@ -175,22 +175,22 @@ impl Algorithm {
             &Algorithm::Curve25519(ref kex) => {
 
                 debug!("{:?} {:?}",
-                       std::str::from_utf8(&exchange.client_id),
-                       std::str::from_utf8(&exchange.server_id));
+                       std::str::from_utf8(exchange.client_id.as_slice()),
+                       std::str::from_utf8(exchange.server_id.as_slice()));
                 buffer.clear();
-                buffer.extend_ssh_string(&exchange.client_id);
-                buffer.extend_ssh_string(&exchange.server_id);
-                buffer.extend_ssh_string(&exchange.client_kex_init);
-                buffer.extend_ssh_string(&exchange.server_kex_init);
+                buffer.extend_ssh_string(exchange.client_id.as_slice());
+                buffer.extend_ssh_string(exchange.server_id.as_slice());
+                buffer.extend_ssh_string(exchange.client_kex_init.as_slice());
+                buffer.extend_ssh_string(exchange.server_kex_init.as_slice());
 
 
                 key.push_to(buffer);
                 debug!("client_ephemeral: {:?}", exchange.client_ephemeral.as_slice());
                 debug_assert_eq!(exchange.client_ephemeral.len(), 32);
-                buffer.extend_ssh_string(&exchange.client_ephemeral);
+                buffer.extend_ssh_string(exchange.client_ephemeral.as_slice());
 
                 debug_assert_eq!(exchange.server_ephemeral.len(), 32);
-                buffer.extend_ssh_string(&exchange.server_ephemeral);
+                buffer.extend_ssh_string(exchange.server_ephemeral.as_slice());
 
                 debug!("shared: {:?}", kex.shared_secret);
                 // unimplemented!(); // Should be in wire format.

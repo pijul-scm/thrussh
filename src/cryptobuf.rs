@@ -102,16 +102,20 @@ impl CryptoBuf {
         }
     }
     pub fn clear(&mut self) {
+        self.truncate(0);
+    }
+
+    pub fn truncate(&mut self, len:usize) {
         unsafe {
             if self.capacity > 0 {
-                let mut i = 0;
-                while i < (self.size >> 3) {
-                    *((self.p as *mut u64).offset(i as isize)) = 0;
+                let mut i = len;
+                while i < self.size {
+                    *(self.p).offset(i as isize) = 0;
                     i += 1
                 }
             }
         }
-        self.size = 0;
+        self.size = len;
     }
 
     pub fn push(&mut self, s: u8) {

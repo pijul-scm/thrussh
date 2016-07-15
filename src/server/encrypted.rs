@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
+use std::sync::Arc;
+
 use enum_primitive::FromPrimitive;
 use super::*;
 use super::super::*;
@@ -24,15 +26,14 @@ use byteorder::{ByteOrder, BigEndian};
 use rand::{thread_rng, Rng};
 use key::Verify;
 
-impl <'k> Encrypted<&'k key::Algorithm> {
+impl Encrypted<Arc<Config>> {
 
     #[doc(hidden)]
-    pub fn server_read_encrypted<S: Server>(&mut self,
-                                            config: &'k Config,
-                                            server: &mut S,
-                                            buf: &[u8],
-                                            buffer: &mut CryptoBuf)
-                                            -> Result<(), Error> {
+    pub fn server_read_encrypted<'e, S: Server>(&'e mut self,
+                                                server: &mut S,
+                                                buf: &[u8],
+                                                buffer: &mut CryptoBuf)
+                                                -> Result<(), Error> {
         // If we've successfully read a packet.
         debug!("state = {:?}, buf = {:?}", self.state, buf);
         let state = std::mem::replace(&mut self.state, None);
@@ -45,8 +46,8 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 if request == b"ssh-userauth" {
 
                     let auth_request =
-                        server_accept_service(config.auth_banner,
-                                              config.methods,
+                        server_accept_service(self.config.auth_banner,
+                                              self.config.methods,
                                               &mut self.write);
                     self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
 
@@ -68,7 +69,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
             }
             Some(EncryptedState::Authenticated) => {
                 self.state = Some(EncryptedState::Authenticated);
-                self.server_read_authenticated(config, server, buf)
+                self.server_read_authenticated(server, buf)
             },
             state => {
                 self.state = state;
@@ -78,14 +79,13 @@ impl <'k> Encrypted<&'k key::Algorithm> {
     }
 
     pub fn server_read_authenticated<S: Server>(&mut self,
-                                                config: &'k Config,
                                                 server: &mut S,
                                                 buf: &[u8])
                                                 -> Result<(), Error> {
         debug!("authenticated buf = {:?}", buf);
         match buf[0] {
             msg::CHANNEL_OPEN => {
-                try!(self.server_handle_channel_open(config, server, buf));
+                try!(self.server_handle_channel_open(server, buf));
                 Ok(())
             },
             msg::CHANNEL_EXTENDED_DATA |
@@ -98,7 +98,6 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 } else {
                     Some(try!(r.read_u32()))
                 };
-
                 let data =
                     if let Some(channel) = self.channels.get_mut(&channel_num) {
                         let data = try!(r.read_string());
@@ -118,15 +117,8 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                         try!(server.data(channel_num, &data, ServerSession(self)));
                     }
                 }
-                
-                if let Some(channel) = self.channels.get_mut(&channel_num) {
-                    // debug!("{:?} / {:?}", channel.sender_window_size, config.window_size);
-                    if channel.sender_window_size < config.window_size / 2 {
-                        super::super::adjust_window_size(&mut self.write,
-                                                         config.window_size,
-                                                         channel)
-                    }
-                }
+                let window_size = self.config.window_size;
+                self.adjust_window_size(channel_num, &[], window_size);
                 Ok(())
             }
             msg::CHANNEL_WINDOW_ADJUST => {
@@ -146,7 +138,9 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 let channel_num = try!(r.read_u32());
                 let req_type = try!(r.read_string());
                 let wants_reply = try!(r.read_byte());
-
+                if let Some(channel) = self.channels.get_mut(&channel_num) {
+                    channel.wants_reply = wants_reply != 0;
+                }
                 match req_type {
                     b"pty-req" => {
                         let term = try!(std::str::from_utf8(try!(r.read_string())));
@@ -350,7 +344,6 @@ impl <'k> Encrypted<&'k key::Algorithm> {
     }
 
     fn server_handle_channel_open<S: Server>(&mut self,
-                                             config: &super::Config,
                                              server: &mut S,
                                              buf: &[u8])
                                              -> Result<(), Error> {
@@ -405,24 +398,31 @@ impl <'k> Encrypted<&'k key::Algorithm> {
             }
             t => {
                 debug!("unknown channel type: {:?}", t);
-                return Err(Error::UnknownChannelType)
+                push_packet!(self.write, {
+                    self.write.push(msg::CHANNEL_OPEN_FAILURE);
+                    self.write.push_u32_be(sender);
+                    self.write.push_u32_be(3); // SSH_OPEN_UNKNOWN_CHANNEL_TYPE
+                    self.write.extend_ssh_string(b"Unknown channel type");
+                    self.write.extend_ssh_string(b"en");
+                });
+                return Ok(())
             }
         };
-        server.new_channel(sender_channel, typ, ServerSession(self));
 
+        server.new_channel(sender_channel, typ, ServerSession(self));
         let channel = ChannelParameters {
             recipient_channel: sender,
             sender_channel: sender_channel, /* "sender" is the local end, i.e. we're the sender, the remote is the recipient. */
             recipient_window_size: window,
-            sender_window_size: config.window_size,
+            sender_window_size: self.config.window_size,
             recipient_maximum_packet_size: maxpacket,
-            sender_maximum_packet_size: config.maximum_packet_size,
+            sender_maximum_packet_size: self.config.maximum_packet_size,
             confirmed: true,
-            needs_answer: false
+            wants_reply: false
         };
         debug!("waiting channel open: {:?}", channel);
         // Write the response immediately, so that we're ready when the stream becomes writable.
-        server_confirm_channel_open(&mut self.write, &channel, config);
+        server_confirm_channel_open(&mut self.write, &channel, self.config.as_ref());
         //
         let sender_channel = channel.sender_channel;
         self.channels.insert(sender_channel, channel);
