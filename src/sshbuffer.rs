@@ -115,6 +115,7 @@ impl SSHBuffers {
     }
 
     pub fn needs_rekeying(&self, limits: &Limits) -> bool {
+        debug!("read {:?} bytes, write {:?}", self.read.bytes, self.write.bytes);
         self.read.bytes >= limits.rekey_read_limit ||
             self.write.bytes >= limits.rekey_write_limit ||
             time::precise_time_s() >= self.last_rekey_s + limits.rekey_time_limit_s

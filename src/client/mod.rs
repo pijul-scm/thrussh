@@ -12,16 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-use super::{Error, ChannelBuf, ChannelParameters, ChannelType, Limits};
-use super::encoding::*;
+use {Error, Limits, Client, ChannelType, ChannelParameters};
 use super::key;
 use super::msg;
 use super::auth;
 use super::cipher::CipherT;
 use super::negociation;
-use byteorder::{BigEndian, ByteOrder};
 use std::io::{Write, BufRead};
-use time;
 use ReturnCode;
 use std;
 use cryptobuf::CryptoBuf;
@@ -29,11 +26,11 @@ use negociation::Select;
 use state::*;
 use sshbuffer::*;
 use std::collections::HashMap;
-use channel_request;
-use rand;
-use rand::Rng;
 use cipher;
 use kex;
+
+use rand;
+use rand::{thread_rng, Rng};
 
 mod encrypted;
 
@@ -89,7 +86,7 @@ impl<'a> Default for Session<'a> {
 }
 
 impl KexInit {
-    pub fn client_parse<'k, C:CipherT>(mut self, config:&'k Config, buffer:&mut CryptoBuf, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<KexDh<&'k ()>, Error> {
+    pub fn client_parse<C:CipherT>(mut self, config:&Config, buffer:&mut CryptoBuf, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<KexDhDone<&'static ()>, Error> {
 
         let algo = if self.algo.is_none() {
             // read algorithms from packet.
@@ -101,10 +98,14 @@ impl KexInit {
         if !self.sent {
             self.client_write(config, buffer, cipher, write_buffer)
         }
-        Ok(KexDh {
+        buffer.clear();
+        let kex = try!(kex::Algorithm::client_dh(algo.kex, &mut self.exchange, buffer));
+        cipher.write(buffer.as_slice(), write_buffer);
+        Ok(KexDhDone {
             exchange: self.exchange,
-            key: UNIT,
             names: algo,
+            kex: kex,
+            key: UNIT,
             session_id: self.session_id,
         })
     }
@@ -118,6 +119,28 @@ impl KexInit {
     }
 }
 
+
+impl KexDhDone<&'static ()> {
+    pub fn client_parse<C:CipherT, Cl:Client>(mut self, buffer:&mut CryptoBuf, buffer2: &mut CryptoBuf, client:&mut Cl, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<Kex<&'static ()>, Error> {
+
+        if self.names.ignore_guessed {
+            self.names.ignore_guessed = false;
+            Ok(Kex::KexDhDone(self))
+        } else {
+            debug!("kexdhdone");
+            // We've sent ECDH_INIT, waiting for ECDH_REPLY
+            if buf[0] == msg::KEX_ECDH_REPLY {
+                let hash = try!(self.client_compute_exchange_hash(client, buf, buffer));
+                let mut newkeys = try!(self.compute_keys(hash, buffer, buffer2, false));
+                cipher.write(&[msg::NEWKEYS], write_buffer);
+                newkeys.sent = true;
+                Ok(Kex::NewKeys(newkeys))
+            } else {
+                return Err(Error::Inconsistent)
+            }
+        }
+    }
+}
 
 
 impl<'a> Session<'a> {
@@ -181,52 +204,20 @@ impl<'a> Session<'a> {
                     }
                     match kex {
                         Kex::KexInit(kexinit) => {
-
-                            let mut cipher = cipher::Clear;
-
-                            let mut kexdh = try!(kexinit.client_parse(config, buffer, &mut cipher, buf, &mut self.buffers.write));
-
-                            buffer.clear();
-                            let kex = try!(kex::Algorithm::client_dh(kexdh.names.kex, &mut kexdh.exchange, buffer));
-                            cipher.write(buffer.as_slice(), &mut self.buffers.write);
-
-                            self.state = Some(ServerState::Kex(Kex::KexDhDone(KexDhDone {
-                                exchange: kexdh.exchange,
-                                names: kexdh.names,
-                                kex: kex,
-                                key: UNIT,
-                                session_id: kexdh.session_id,
-                            })));
+                            let kexdhdone = try!(kexinit.client_parse(config, buffer, &mut cipher, buf, &mut self.buffers.write));
+                            self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)))
                         },
-                        Kex::KexDhDone(mut kexdhdone) => {
-
-                            if kexdhdone.names.ignore_guessed {
-                                kexdhdone.names.ignore_guessed = false;
-                                self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)));
-                            } else {
-                                debug!("kexdhdone");
-                                // We've sent ECDH_INIT, waiting for ECDH_REPLY
-                                if buf[0] == msg::KEX_ECDH_REPLY {
-
-                                    let mut cipher = cipher::Clear;
-
-                                    let hash = try!(kexdhdone.client_compute_exchange_hash(client, buf, buffer));
-                                    let mut newkeys = try!(kexdhdone.compute_keys(hash, buffer, buffer2, false));
-
-                                    cipher.write(&[msg::NEWKEYS], &mut self.buffers.write);
-                                    newkeys.sent = true;
-                                    self.state = Some(ServerState::Kex(Kex::NewKeys(newkeys)));
-                                } else {
-                                    return Err(Error::Inconsistent)
-                                }
-                            }
+                        Kex::KexDhDone(kexdhdone) => {
+                            self.state = Some(ServerState::Kex(
+                                try!(kexdhdone.client_parse(buffer, buffer2, client, &mut cipher, buf, &mut self.buffers.write))
+                            ))
                         },
                         Kex::NewKeys(newkeys) => {
                             if buf[0] != msg::NEWKEYS {
                                 return Err(Error::NewKeys)
                             }
-                            let mut encrypted = newkeys.encrypted(EncryptedState::WaitingServiceRequest);
-
+                            let encrypted = newkeys.encrypted(EncryptedState::WaitingServiceRequest);
+                            
                             // Ok, NEWKEYS received, now encrypted.
                             // We can't use flush here, because self.buffers is borrowed.
                             let p = [msg::SERVICE_REQUEST,
@@ -256,13 +247,46 @@ impl<'a> Session<'a> {
                     }
                     if buf[0] > 20 && buf[0] < 50 {
                         if let Some(kex) = std::mem::replace(&mut enc.rekey, None) {
-                            unimplemented!()
+                            match kex {
+                                Kex::KexInit(kexinit) => {
+                                    let kexdhdone = try!(kexinit.client_parse(config, buffer, &mut enc.cipher, buf, &mut self.buffers.write));
+                                    self.state = Some(ServerState::Kex(Kex::KexDhDone(kexdhdone)))
+                                },
+                                Kex::KexDhDone(kexdhdone) => {
+                                    self.state = Some(ServerState::Kex(
+                                        try!(kexdhdone.client_parse(buffer, buffer2, client, &mut enc.cipher, buf, &mut self.buffers.write))
+                                    ))
+                                },
+                                Kex::NewKeys(newkeys) => {
+                                    if buf[0] == msg::NEWKEYS {
+                                        enc.exchange = Some(newkeys.exchange);
+                                        enc.kex = newkeys.kex;
+                                        enc.key = newkeys.key;
+                                        enc.cipher = newkeys.cipher;
+                                        enc.mac = newkeys.names.mac;
+                                    } else {
+                                        return Err(Error::Inconsistent)
+                                    }
+                                }
+                                kex => enc.rekey = Some(kex)
+                            }
                         }
                         self.state = Some(ServerState::Encrypted(enc));
                         return Ok(ReturnCode::Ok)
                     }
                     if buf[0] == msg::KEXINIT {
-                        unimplemented!()
+                        if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
+                            let kexinit = KexInit::received_rekey(
+                                exchange,
+                                try!(negociation::Client::read_kex(buf, &config.preferred)),
+                                &enc.session_id
+                            );
+                            enc.rekey = Some(
+                                Kex::KexDhDone(try!(kexinit.client_parse(config, buffer, &mut enc.cipher, buf, &mut self.buffers.write)))
+                            );
+                        }
+                        self.state = Some(ServerState::Encrypted(enc));
+                        return Ok(ReturnCode::Ok)
                     }
                     debug!("calling read_encrypted");
                     try!(enc.client_read_encrypted(config,
@@ -293,65 +317,6 @@ impl<'a> Session<'a> {
 
             }
             /*
-                debug!("encrypted state {:?}", enc);
-                // self.try_rekey(&mut enc, config);
-                let state = std::mem::replace(&mut enc.state, None);
-
-                let read_complete;
-
-                match state {
-                    Some(EncryptedState::ServiceRequest) => {
-
-                        let is_service_accept = {
-                            if let Some(buf) =
-                                   try!(enc.cipher.read(stream, &mut self.buffers.read)) {
-                                transport!(buf);
-                                read_complete = true;
-                                buf[0] == msg::SERVICE_ACCEPT
-                            } else {
-                                read_complete = false;
-                                false
-                            }
-                        };
-                        if is_service_accept {
-                            try!(enc.client_service_request(&self.auth_method, &mut self.buffers, buffer))
-                        }
-                    }
-                    Some(EncryptedState::AuthRequestAnswer(auth_request)) => {
-                        debug!("auth_request_success");
-                        if let Some(buf) = try!(enc.cipher.read(stream,&mut self.buffers.read)) {
-                            read_complete = true;
-                            try!(enc.client_auth_request_success(buf, auth_request, &self.auth_method, &mut self.buffers.write, buffer, buffer2));
-                        } else {
-                            read_complete = false;
-                        }
-                    }
-                    Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
-                        if let Some(buf) = try!(enc.cipher.read(stream, &mut self.buffers.read)) {
-
-                            transport!(buf);
-
-                            read_complete = true;
-                            if buf[0] == msg::USERAUTH_BANNER {
-                                let mut r = buf.reader(1);
-                                client.auth_banner(try!(std::str::from_utf8(try!(r.read_string()))))
-                            }
-                            debug!("buf = {:?}", buf);
-                        } else {
-                            read_complete = false;
-                        }
-                        enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
-                    }
-                    Some(EncryptedState::WaitingSignature(auth_request)) => {
-                        // The server is waiting for our authentication signature (also USERAUTH_REQUEST).
-                        enc.state = Some(EncryptedState::WaitingSignature(auth_request));
-                        read_complete = false
-                    }
-                    Some(EncryptedState::WaitingServiceRequest) => {
-                        // This is a writing state for the client, we should send a service request.
-                        enc.state = Some(EncryptedState::WaitingServiceRequest);
-                        read_complete = false
-                    }
                     Some(EncryptedState::Authenticated) => {
                         debug!("read state {:?}", state);
                         let mut is_newkeys = false;
@@ -461,9 +426,7 @@ impl<'a> Session<'a> {
 
     // Returns whether the connexion is still alive.
     pub fn write<W: Write>(&mut self,
-                           config: &Config,
-                           stream: &mut W,
-                           buffer: &mut CryptoBuf)
+                           stream: &mut W)
                            -> Result<bool, Error> {
         debug!("write, buffer: {:?}", self.buffers.write);
         // Finish pending writes, if any.
@@ -472,56 +435,6 @@ impl<'a> Session<'a> {
             return Ok(true);
         }
         Ok(true)
-        /*
-        let state = std::mem::replace(&mut self.state, None);
-        debug!("state = {:?}", state);
-        match state {
-            None => {
-                // Maybe the first time we get to talk with the server
-                // is to write to it (i.e. the socket is only
-                // writable). Send our id.
-                self.buffers.write.send_ssh_id(config.client_id.as_bytes());
-                try!(self.buffers.write_all(stream));
-                let mut exchange = Exchange::new();
-                exchange.client_id.extend(config.client_id.as_bytes());
-                debug!("sent!: {:?}", exchange);
-                self.state = Some(ServerState::VersionOk(exchange));
-                Ok(true)
-            }
-            Some(ServerState::Encrypted(mut enc)) => {
-                debug!("encrypted");
-                // self.try_rekey(&mut enc, config);
-                let state = std::mem::replace(&mut enc.state, None);
-                match state {
-                    Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
-                        // This cannot be moved to read, because we
-                        // might need to change the auth method (using
-                        // user input) between read and write: if we
-                        // don't do it exactly there, the event loop
-                        // won't call read/write again.
-                        enc.client_waiting_auth_request(&mut self.buffers.write,
-                                                        auth_request,
-                                                        &self.auth_method,
-                                                        buffer);
-                        try!(self.buffers.write_all(stream));
-                    }
-                    state => {
-                        if let Some(rekey) = std::mem::replace(&mut enc.rekey, None) {
-                            try!(enc.client_write_rekey(stream, &mut self.buffers, rekey, config, buffer));
-                        }
-                        enc.state = state
-                    }
-                }
-
-                self.state = Some(ServerState::Encrypted(enc));
-                Ok(true)
-            }
-            state => {
-                self.state = state;
-                Ok(true)
-            }
-        }
-        */
     }
 
     pub fn authenticate(&mut self, config:&Config, method: auth::Method<'a, key::Algorithm>) -> Result<(), Error> {
@@ -572,63 +485,71 @@ impl<'a> Session<'a> {
             _ => None,
         }
     }
-    /*
-    pub fn channel_open(&mut self, channel_type:super::ChannelType, config:&Config, buffer:&mut CryptoBuf) -> Option<u32> {
+    pub fn channels(&self) -> Option<&HashMap<u32, super::ChannelParameters>> {
+        match self.state {
+            Some(ServerState::Encrypted(ref enc)) => {
+                Some(&enc.channels)
+            },
+            _ => None
+        }
+    }
+
+    pub fn channel_open(&mut self, channel_type:super::ChannelType, config:&Config) -> Option<u32> {
         match self.state {
             Some(ServerState::Encrypted(ref mut enc)) => {
                 match enc.state {
                     Some(EncryptedState::Authenticated) => {
                         debug!("sending open request");
 
-
                         let mut sender_channel = 0;
                         while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
                             sender_channel = rand::thread_rng().gen()
                         }
-                        buffer.clear();
-                        buffer.push(msg::CHANNEL_OPEN);
+                        push_packet!(enc.write, {
+                            enc.write.push(msg::CHANNEL_OPEN);
 
-                        match channel_type {
-                            ChannelType::Session => {
-                                buffer.extend_ssh_string(b"session");
-                                buffer.push_u32_be(sender_channel); // sender channel id.
-                                buffer.push_u32_be(config.window_size); // window.
-                                buffer.push_u32_be(config.maxpacket); // max packet size.
-                            },
-                            ChannelType::X11 { originator_address, originator_port } => {
-                                buffer.extend_ssh_string(b"x11");
-                                buffer.push_u32_be(sender_channel); // sender channel id.
-                                buffer.push_u32_be(config.window_size); // window.
-                                buffer.push_u32_be(config.maxpacket); // max packet size.
-                                //
-                                buffer.extend_ssh_string(originator_address.as_bytes());
-                                buffer.push_u32_be(originator_port); // sender channel id.
-                            },
-                            ChannelType::ForwardedTcpip { connected_address, connected_port, originator_address, originator_port } => {
-                                buffer.extend_ssh_string(b"forwarded-tcpip");
-                                buffer.push_u32_be(sender_channel); // sender channel id.
-                                buffer.push_u32_be(config.window_size); // window.
-                                buffer.push_u32_be(config.maxpacket); // max packet size.
-                                //
-                                buffer.extend_ssh_string(connected_address.as_bytes());
-                                buffer.push_u32_be(connected_port); // sender channel id.
-                                buffer.extend_ssh_string(originator_address.as_bytes());
-                                buffer.push_u32_be(originator_port); // sender channel id.
-                            },
-                            ChannelType::DirectTcpip { host_to_connect, port_to_connect, originator_address, originator_port } => {
-                                buffer.extend_ssh_string(b"direct-tcpip");
-                                buffer.push_u32_be(sender_channel); // sender channel id.
-                                buffer.push_u32_be(config.window_size); // window.
-                                buffer.push_u32_be(config.maxpacket); // max packet size.
-                                //
-                                buffer.extend_ssh_string(host_to_connect.as_bytes());
-                                buffer.push_u32_be(port_to_connect); // sender channel id.
-                                buffer.extend_ssh_string(originator_address.as_bytes());
-                                buffer.push_u32_be(originator_port); // sender channel id.
+                            match channel_type {
+                                ChannelType::Session => {
+                                    enc.write.extend_ssh_string(b"session");
+                                    enc.write.push_u32_be(sender_channel); // sender channel id.
+                                    enc.write.push_u32_be(config.window_size); // window.
+                                    enc.write.push_u32_be(config.maxpacket); // max packet size.
+                                },
+                                ChannelType::X11 { originator_address, originator_port } => {
+                                    enc.write.extend_ssh_string(b"x11");
+                                    enc.write.push_u32_be(sender_channel); // sender channel id.
+                                    enc.write.push_u32_be(config.window_size); // window.
+                                    enc.write.push_u32_be(config.maxpacket); // max packet size.
+                                    //
+                                    enc.write.extend_ssh_string(originator_address.as_bytes());
+                                    enc.write.push_u32_be(originator_port); // sender channel id.
+                                },
+                                ChannelType::ForwardedTcpip { connected_address, connected_port, originator_address, originator_port } => {
+                                    enc.write.extend_ssh_string(b"forwarded-tcpip");
+                                    enc.write.push_u32_be(sender_channel); // sender channel id.
+                                    enc.write.push_u32_be(config.window_size); // window.
+                                    enc.write.push_u32_be(config.maxpacket); // max packet size.
+                                    //
+                                    enc.write.extend_ssh_string(connected_address.as_bytes());
+                                    enc.write.push_u32_be(connected_port); // sender channel id.
+                                    enc.write.extend_ssh_string(originator_address.as_bytes());
+                                    enc.write.push_u32_be(originator_port); // sender channel id.
+                                },
+                                ChannelType::DirectTcpip { host_to_connect, port_to_connect, originator_address, originator_port } => {
+                                    enc.write.extend_ssh_string(b"direct-tcpip");
+                                    enc.write.push_u32_be(sender_channel); // sender channel id.
+                                    enc.write.push_u32_be(config.window_size); // window.
+                                    enc.write.push_u32_be(config.maxpacket); // max packet size.
+                                    //
+                                    enc.write.extend_ssh_string(host_to_connect.as_bytes());
+                                    enc.write.push_u32_be(port_to_connect); // sender channel id.
+                                    enc.write.extend_ssh_string(originator_address.as_bytes());
+                                    enc.write.push_u32_be(originator_port); // sender channel id.
+                                }
                             }
-                        }
+                        });
                         // Send
-                        enc.cipher.write(buffer.as_slice(), &mut self.buffers.write);
+                        enc.flush(&config.limits, &mut self.buffers);
 
                         let parameters = ChannelParameters {
                             recipient_channel: 0,
@@ -649,15 +570,6 @@ impl<'a> Session<'a> {
         }
     }
 
-    pub fn channels(&self) -> Option<&HashMap<u32, super::ChannelParameters>> {
-        match self.state {
-            Some(ServerState::Encrypted(ref enc)) => {
-                Some(&enc.channels)
-            },
-            _ => None
-        }
-    }
-    */
     /*
     pub fn channel_request<W: Write, R:channel_request::Req>(&mut self,
                                                              stream: &mut W,

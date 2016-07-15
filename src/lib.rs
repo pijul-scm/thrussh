@@ -56,13 +56,12 @@ mod cryptobuf;
 pub use cryptobuf::CryptoBuf;
 
 mod sshbuffer;
-use sshbuffer::{SSHBuffer};
 
 use std::sync::{Once, ONCE_INIT};
 use std::io::{Read, BufRead, BufReader};
 
 
-use byteorder::{ByteOrder, BigEndian};
+use byteorder::{ByteOrder};
 use rustc_serialize::base64::FromBase64;
 use std::path::Path;
 use std::fs::File;
@@ -116,7 +115,6 @@ pub mod key;
 mod kex;
 
 mod cipher;
-use cipher::CipherT;
 
 // mod mac;
 // use mac::*;
@@ -200,8 +198,8 @@ pub enum ChannelType<'a> {
 
 
 pub struct ChannelBuf<'a,K:'a> {
-    session: &'a mut state::Encrypted<K>,
-    wants_reply: bool,
+    pub session: &'a mut state::Encrypted<K>,
+    pub wants_reply: bool,
 }
 
 pub type ServerSession<'k, 'a:'k> = ChannelBuf<'a, &'k key::Algorithm>;
@@ -361,7 +359,7 @@ pub fn load_public_key<P: AsRef<Path>>(p: P) -> Result<key::PublicKey, Error> {
     let mut split = pubkey.split_whitespace();
 
     match (split.next(), split.next()) {
-        (Some(ssh_), Some(key)) => {
+        (Some(_), Some(key)) => {
             let base = try!(key.from_base64());
             read_public_key(&base)
         }

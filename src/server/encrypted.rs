@@ -19,8 +19,7 @@ use msg;
 use encoding::Reader;
 use auth::*;
 use std;
-use sodium;
-use byteorder::{ByteOrder, BigEndian};
+use byteorder::{ByteOrder};
 use rand::{thread_rng, Rng};
 use key::Verify;
 
@@ -65,19 +64,6 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                     Ok(())
                 }
             }
-            /*
-            Some(EncryptedState::WaitingSignature(auth_request)) => {
-                debug!("receiving signature, {:?}", buf);
-                if buf[0] == msg::USERAUTH_REQUEST {
-                    // check signature.
-                    try!(self.server_verify_signature(server, buf, buffer, auth_request));
-                } else {
-                    server_reject_auth_request(&mut self.write, &auth_request);
-                    self.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
-                }
-                Ok(())
-            }
-             */
             Some(EncryptedState::Authenticated) => {
                 self.state = Some(EncryptedState::Authenticated);
                 self.server_read_authenticated(config, server, buf)
@@ -163,7 +149,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 let wants_reply = try!(r.read_byte());
                 let buf = ChannelBuf {
                     session: self,
-                    wants_reply: false,
+                    wants_reply: wants_reply != 0,
                 };
                 match req_type {
                     b"exec" => {
@@ -247,8 +233,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                     Auth::Reject { remaining_methods, partial_success } => {
                         auth_request.methods = remaining_methods;
                         auth_request.partial_success = partial_success;
-                        server_reject_auth_request(&mut self.write, &auth_request);
-                        self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+                        self.reject_auth_request(auth_request);
                     }
                 }
                 
@@ -258,6 +243,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 let pubkey_algo = try!(r.read_string());
                 let pubkey_key = try!(r.read_string());
                 let pubkey = try!(key::PublicKey::parse(pubkey_algo, pubkey_key));
+                debug!("is_real = {:?}", is_real);
 
                 if is_real != 0 {
 
@@ -281,14 +267,18 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                             buffer.extend(&buf[0..pos0]);
                             // Verify signature.
                             if pubkey.verify_detached(buffer.as_slice(), sig) {
-                            
+                                debug!("signature verified");
                                 server_auth_request_success(&mut self.write);
                                 self.state = Some(EncryptedState::Authenticated);
                             } else {
+                                debug!("wrong signature");
                                 self.reject_auth_request(auth_request);
                             }
                         }
-                        _ => self.reject_auth_request(auth_request)
+                        _ => {
+                            debug!("rejected");
+                            self.reject_auth_request(auth_request)
+                        }
                     }
 
                 } else {
@@ -304,30 +294,35 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                             auth_request.public_key.extend(pubkey_key);
                             auth_request.public_key_algorithm.extend(pubkey_algo);
                             server_send_pk_ok(&mut self.write, &mut auth_request);
-                            self.state = Some(EncryptedState::WaitingSignature(auth_request))
+                            self.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
                         }
                         Auth::Reject { remaining_methods, partial_success } => {
                             auth_request.methods = remaining_methods;
                             auth_request.partial_success = partial_success;
-                            server_reject_auth_request(&mut self.write, &auth_request);
-                            self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+                            self.reject_auth_request(auth_request);
                         }
                     }
                 }
             } else {
                 // Other methods of the base specification are insecure or optional.
-                server_reject_auth_request(&mut self.write, &auth_request);
-                self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+                self.reject_auth_request(auth_request);
             }
+            Ok(())
         } else {
             // Unknown service
             Err(Error::Inconsistent)
         }
-        Ok(())
     }
     
+
     fn reject_auth_request(&mut self, auth_request:AuthRequest) {
-        server_reject_auth_request(&mut self.write, &auth_request);
+        debug!("rejecting {:?}", auth_request);
+        push_packet!(self.write, {
+            self.write.push(msg::USERAUTH_FAILURE);
+            self.write.extend_list(auth_request.methods);
+            self.write.push(if auth_request.partial_success { 1 } else { 0 });
+        });
+        debug!("packet pushed");
         self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
     }
 
@@ -414,15 +409,6 @@ fn server_send_pk_ok(buffer: &mut CryptoBuf,
         buffer.extend_ssh_string(auth_request.public_key.as_slice());
     });
     auth_request.sent_pk_ok = true;
-}
-
-fn server_reject_auth_request(buffer: &mut CryptoBuf,
-                                  auth_request: &AuthRequest) {
-    push_packet!(buffer, {
-        buffer.push(msg::USERAUTH_FAILURE);
-        buffer.extend_list(auth_request.methods);
-        buffer.push(if auth_request.partial_success { 1 } else { 0 });
-    });
 }
 
 fn server_confirm_channel_open(buffer: &mut CryptoBuf,

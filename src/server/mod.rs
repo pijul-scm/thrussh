@@ -13,7 +13,6 @@
 // limitations under the License.
 //
 use std::io::{Write, BufRead};
-use time;
 use std;
 use super::negociation::{Preferred, PREFERRED, Select, Named};
 use super::*;
@@ -25,7 +24,6 @@ use cipher;
 use negociation;
 use key::PubKey;
 use encoding::Reader;
-use byteorder::{ByteOrder, BigEndian};
 
 #[derive(Debug)]
 pub struct Config {
@@ -321,7 +319,7 @@ impl <'k>Session<'k> {
                     self.state = Some(ServerState::Encrypted(enc));
                     return Ok(ReturnCode::NotEnoughBytes)
                 }
-                
+                debug!("flushing");
                 if enc.flush(&config.limits, &mut self.buffers) {
 
                     if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
@@ -333,6 +331,7 @@ impl <'k>Session<'k> {
                         enc.rekey = Some(Kex::KexInit(kexinit))
                     }
                 }
+                debug!("flushed");
 
                 self.state = Some(ServerState::Encrypted(enc));
                 Ok(ReturnCode::Ok)

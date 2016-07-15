@@ -13,7 +13,6 @@
 // limitations under the License.
 //
 
-use std::ops::Sub;
 use super::encoding;
 use cryptobuf::CryptoBuf;
 
@@ -26,22 +25,29 @@ bitflags! {
     }
 }
 
+macro_rules! iter {
+    ( $y:expr, $x:expr ) => {
+        {
+            if $y.contains($x) {
+                $y.remove($x);
+                return Some($x)
+            }
+        }
+    };
+}
+
+
 impl Iterator for M {
     type Item = M;
     fn next(&mut self) -> Option<M> {
-        if self.contains(NONE) {
-            Some(NONE)
-        } else if self.contains(PASSWORD) {
-            Some(PASSWORD)
-        } else if self.contains(PUBLICKEY) {
-            Some(PUBLICKEY)
-        } else if self.contains(HOSTBASED) {
-            Some(HOSTBASED)
-        } else {
-            None
-        }
+        iter!(self, NONE);
+        iter!(self, PASSWORD);
+        iter!(self, PUBLICKEY);
+        iter!(self, HOSTBASED);
+        None
     }
 }
+
 
 #[derive(Debug)]
 pub enum Method<'a, K> {

@@ -25,8 +25,7 @@ use cryptobuf::CryptoBuf;
 use std::collections::HashMap;
 use encoding::Reader;
 use Limits;
-use sshbuffer::{SSHBuffers, SSHBuffer};
-use std;
+use sshbuffer::{SSHBuffers};
 use byteorder::{BigEndian, ByteOrder};
 use cipher::CipherT;
 
@@ -65,6 +64,7 @@ impl<K> Encrypted<K> {
                     } else {
                         // Read a single packet, encrypt and send it.
                         let len = BigEndian::read_u32(&packets[self.write_cursor .. ]) as usize;
+                        debug!("flushing len {:?}", len);
                         let packet = &packets [(self.write_cursor+4) .. (self.write_cursor+4+len)];
                         self.cipher.write(packet, &mut buffers.write);
                         self.write_cursor += 4+len
@@ -84,7 +84,6 @@ impl<K> Encrypted<K> {
 pub enum EncryptedState {
     WaitingServiceRequest,
     WaitingAuthRequest(auth::AuthRequest),
-    WaitingSignature(auth::AuthRequest),
     AuthRequestAnswer(auth::AuthRequest),
     Authenticated
 }
