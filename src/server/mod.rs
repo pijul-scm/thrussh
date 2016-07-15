@@ -14,10 +14,11 @@
 //
 use std::io::{Write, BufRead};
 use std;
-use super::negociation::{Preferred, PREFERRED, Select, Named};
+
 use super::*;
-use super::msg;
-use super::cipher::CipherT;
+use negociation::{Preferred, PREFERRED, Select, Named};
+use msg;
+use cipher::CipherT;
 use state::*;
 use sshbuffer::*;
 use cipher;
@@ -88,29 +89,34 @@ impl <'k>Default for Session<'k> {
 impl KexInit {
     pub fn server_parse<'k, C:CipherT>(mut self, config:&'k Config, buffer:&mut CryptoBuf, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<Kex<&'k key::Algorithm>, Error> {
 
-        let algo = if self.algo.is_none() {
-            // read algorithms from packet.
-            self.exchange.client_kex_init.extend_from_slice(buf);
-            try!(super::negociation::Server::read_kex(buf, &config.preferred))
-        } else {
-            return Err(Error::Kex)
-        };
-        if !self.sent {
-            self.server_write(config, buffer, cipher, write_buffer)
-        }
-        let next_kex =
-            if let Some(key) = config.keys.iter().find(|x| x.name() == algo.key) {
-                Kex::KexDh(KexDh {
-                    exchange: self.exchange,
-                    key: key,
-                    names: algo,
-                    session_id: self.session_id,
-                })
+        if buf[0] == msg::KEXINIT {
+            debug!("server parse");
+            let algo = if self.algo.is_none() {
+                // read algorithms from packet.
+                self.exchange.client_kex_init.extend_from_slice(buf);
+                try!(super::negociation::Server::read_kex(buf, &config.preferred))
             } else {
-                return Err(Error::UnknownKey)
+                return Err(Error::Kex)
             };
-        
-        Ok(next_kex)
+            if !self.sent {
+                self.server_write(config, buffer, cipher, write_buffer)
+            }
+            let next_kex =
+                if let Some(key) = config.keys.iter().find(|x| x.name() == algo.key) {
+                    Kex::KexDh(KexDh {
+                        exchange: self.exchange,
+                        key: key,
+                        names: algo,
+                        session_id: self.session_id,
+                    })
+                } else {
+                    return Err(Error::UnknownKey)
+                };
+            
+            Ok(next_kex)
+        } else {
+            Ok(Kex::KexInit(self))
+        }
     }
 
     pub fn server_write<'k, C:CipherT>(&mut self, config:&'k Config, buffer:&mut CryptoBuf, cipher:&mut C, write_buffer:&mut SSHBuffer) {
@@ -262,7 +268,7 @@ impl <'k>Session<'k> {
                         self.state = Some(ServerState::Encrypted(enc));
                         return Ok(ReturnCode::Ok)
                     }
-                    if buf[0] > 20 && buf[0] < 50 {
+                    if buf[0] >= 20 && buf[0] < 50 {
                         if let Some(kex) = std::mem::replace(&mut enc.rekey, None) {
                             
                             // if we are currently rekeying, and we received a negociation message.
@@ -308,7 +314,6 @@ impl <'k>Session<'k> {
                         self.state = Some(ServerState::Encrypted(enc));
                         return Ok(ReturnCode::Ok)
                     }
-
                     debug!("calling read_encrypted");
                     try!(enc.server_read_encrypted(config,
                                                    server,

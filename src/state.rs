@@ -13,6 +13,8 @@
 // limitations under the License.
 //
 
+use std;
+
 use auth;
 use negociation;
 use kex;
@@ -28,6 +30,7 @@ use Limits;
 use sshbuffer::{SSHBuffers};
 use byteorder::{BigEndian, ByteOrder};
 use cipher::CipherT;
+use time;
 
 #[derive(Debug)]
 pub enum ServerState<Key> {
@@ -51,6 +54,43 @@ pub struct Encrypted<K> {
 }
 
 impl<K> Encrypted<K> {
+
+    pub fn data(&mut self, channel: u32, extended: Option<u32>, buf: &[u8]) -> Result<usize, Error> {
+        if let Some(channel) = self.channels.get_mut(&channel) {
+            debug!("output {:?} {:?}", channel, buf);
+            let mut buf = if buf.len() as u32 > channel.recipient_window_size {
+                &buf[0 .. channel.recipient_window_size as usize]
+            } else {
+                buf
+            };
+            let buf_len = buf.len();
+
+            while buf.len() > 0 && channel.recipient_window_size > 0 {
+
+                // Compute the length we're allowed to send.
+                let off = std::cmp::min(buf.len(), channel.recipient_maximum_packet_size as usize);
+                let off = std::cmp::min(off, channel.recipient_window_size as usize);
+
+                push_packet!(self.write, {
+                    if let Some(ext) = extended {
+                        self.write.push(msg::CHANNEL_EXTENDED_DATA);
+                        self.write.push_u32_be(channel.recipient_channel);
+                        self.write.push_u32_be(ext);
+                    } else {
+                        self.write.push(msg::CHANNEL_DATA);
+                        self.write.push_u32_be(channel.recipient_channel);
+                    }
+                    self.write.extend_ssh_string(&buf[..off]);
+                });
+                channel.recipient_window_size -= off as u32;
+                buf = &buf[off..]
+            }
+            Ok(buf_len)
+        } else {
+            Err(Error::WrongChannel)
+        }
+    }
+
     pub fn flush(&mut self, limits:&Limits, buffers: &mut SSHBuffers) -> bool {
         // If there are pending packets (and we've not started to rekey), flush them.
         if self.rekey.is_none() {
@@ -59,6 +99,14 @@ impl<K> Encrypted<K> {
                 while self.write_cursor < self.write.len() {
                     if buffers.needs_rekeying(limits) {
 
+                        // Resetting those now is incorrect (since
+                        // we're resetting before the rekeying), but
+                        // since the bytes sent during rekeying will
+                        // be counted, the limits are still an upper
+                        // bound on the size that can be sent.
+                        buffers.write.bytes = 0;
+                        buffers.read.bytes = 0;
+                        buffers.last_rekey_s = time::precise_time_s();
                         return true
 
                     } else {

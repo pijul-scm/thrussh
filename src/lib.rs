@@ -68,6 +68,22 @@ use std::fs::File;
 
 
 static SODIUM_INIT: Once = ONCE_INIT;
+
+macro_rules! push_packet {
+    ( $buffer:expr, $x:expr ) => {
+        {
+            use byteorder::{BigEndian, ByteOrder};
+            let i0 = $buffer.len();
+            $buffer.extend(b"\0\0\0\0");
+            let x = $x;
+            let i1 = $buffer.len();
+            let buf = $buffer.as_mut_slice();
+            BigEndian::write_u32(&mut buf[i0..], (i1-i0-4) as u32);
+            x
+        }
+    };
+}
+
 mod state;
 
 #[derive(Debug)]
@@ -125,35 +141,6 @@ use encoding::*;
 
 pub mod auth;
 
-macro_rules! transport {
-    ( $x:expr ) => {
-        {
-            match $x[0] {
-                msg::DISCONNECT => return Ok(ReturnCode::Disconnect),
-                msg::IGNORE => return Ok(ReturnCode::Ok),
-                msg::UNIMPLEMENTED => return Ok(ReturnCode::Ok),
-                msg::DEBUG => return Ok(ReturnCode::Ok),
-                _ => {}
-            }
-        }
-    };
-}
-
-
-macro_rules! push_packet {
-    ( $buffer:expr, $x:expr ) => {
-        {
-            use byteorder::{BigEndian, ByteOrder};
-            let i0 = $buffer.len();
-            $buffer.extend(b"\0\0\0\0");
-            let x = $x;
-            let i1 = $buffer.len();
-            let buf = $buffer.as_mut_slice();
-            BigEndian::write_u32(&mut buf[i0..], (i1-i0-4) as u32);
-            x
-        }
-    };
-}
 
 
 pub enum ReturnCode {
@@ -163,7 +150,7 @@ pub enum ReturnCode {
     WrongPacket,
 }
 
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub struct Limits {
     pub rekey_write_limit: usize,
     pub rekey_read_limit: usize,
@@ -197,59 +184,12 @@ pub enum ChannelType<'a> {
 
 
 
-pub struct ChannelBuf<'a,K:'a> {
-    pub session: &'a mut state::Encrypted<K>,
-    pub wants_reply: bool,
-}
-
-pub type ServerSession<'k, 'a:'k> = ChannelBuf<'a, &'k key::Algorithm>;
+pub type ServerSession<'k> = state::Encrypted<&'k key::Algorithm>;
+pub type ClientSession = state::Encrypted<&'static ()>;
 
 /*
 impl<'a> ChannelBuf<'a> {
 
-    fn output(&mut self, extended: Option<u32>, buf: &[u8]) -> usize {
-        debug!("output {:?} {:?}", self.channel, buf);
-        let mut buf = if buf.len() as u32 > self.channel.recipient_window_size {
-            &buf[0..self.channel.recipient_window_size as usize]
-        } else {
-            buf
-        };
-        let buf_len = buf.len();
-
-        while buf.len() > 0 && self.channel.recipient_window_size > 0 {
-
-            // Compute the length we're allowed to send.
-            let off = std::cmp::min(buf.len(),
-                                    self.channel.recipient_maximum_packet_size as usize);
-            let off = std::cmp::min(off, self.channel.recipient_window_size as usize);
-
-            //
-            self.buffer.clear();
-
-            if let Some(ext) = extended {
-                self.buffer.push(msg::CHANNEL_EXTENDED_DATA);
-                self.buffer.push_u32_be(self.channel.recipient_channel);
-                self.buffer.push_u32_be(ext);
-            } else {
-                self.buffer.push(msg::CHANNEL_DATA);
-                self.buffer.push_u32_be(self.channel.recipient_channel);
-            }
-            self.buffer.extend_ssh_string(&buf[..off]);
-            debug!("buffer = {:?}", self.buffer.as_slice());
-            self.cipher.write(self.buffer.as_slice(), self.write_buffer);
-
-            self.channel.recipient_window_size -= off as u32;
-
-            buf = &buf[off..]
-        }
-        buf_len
-    }
-    pub fn stdout(&mut self, stdout: &[u8]) -> usize {
-        self.output(None, stdout)
-    }
-    pub fn stderr(&mut self, stderr: &[u8]) -> usize {
-        self.output(Some(SSH_EXTENDED_DATA_STDERR), stderr)
-    }
 
     fn reply(&mut self, msg: u8) {
         self.buffer.clear();
@@ -286,15 +226,15 @@ pub trait Server {
     /// Called when a data packet is received. A response can be
     /// written to the `response` argument.
     #[allow(unused_variables)]
-    fn data(&mut self, channel:u32, data: &[u8], response: ServerSession ) -> Result<(), Error> {
+    fn data(&mut self, channel:u32, data: &[u8], response: &mut ServerSession ) -> Result<(), Error> {
         Ok(())
     }
     #[allow(unused_variables)]
-    fn extended_data(&mut self, channel:u32, code:u32, data: &[u8], response: ServerSession ) -> Result<(), Error> {
+    fn extended_data(&mut self, channel:u32, code:u32, data: &[u8], response: &mut ServerSession ) -> Result<(), Error> {
         Ok(())
     }
     #[allow(unused_variables)]
-    fn exec(&mut self, channel:u32, data: &[u8], response: ServerSession ) -> Result<(), Error> {
+    fn exec(&mut self, channel:u32, data: &[u8], response: &mut ServerSession ) -> Result<(), Error> {
         Ok(())
     }
     #[allow(unused_variables)]
@@ -313,7 +253,7 @@ pub trait Client {
     #[allow(unused_variables)]
     fn channel_confirmed(&self, channel:u32) {}
     #[allow(unused_variables)]
-    fn data(&mut self, _: Option<u32>, _: &[u8], _: ChannelBuf<&()>) -> Result<(), Error> {
+    fn data(&mut self, channel: Option<u32>, data: &[u8], session: &mut ClientSession) -> Result<(), Error> {
         Ok(())
     }
     #[allow(unused_variables)]
@@ -332,7 +272,8 @@ pub struct ChannelParameters {
     pub sender_window_size: u32,
     pub recipient_maximum_packet_size: u32,
     pub sender_maximum_packet_size: u32,
-    pub confirmed: bool
+    pub confirmed: bool,
+    pub needs_answer: bool
 }
 
 fn adjust_window_size(buffer:&mut CryptoBuf,

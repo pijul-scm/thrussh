@@ -25,6 +25,7 @@ use key::Verify;
 
 impl <'k> Encrypted<&'k key::Algorithm> {
 
+    #[doc(hidden)]
     pub fn server_read_encrypted<S: Server>(&mut self,
                                             config: &'k Config,
                                             server: &mut S,
@@ -110,14 +111,10 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                         return Err(Error::WrongChannel)
                     };
                 {
-                    let buf = ChannelBuf {
-                        session: self,
-                        wants_reply: false,
-                    };
                     if let Some(ext) = ext {
-                        try!(server.extended_data(channel_num, ext, &data, buf));
+                        try!(server.extended_data(channel_num, ext, &data, self));
                     } else {
-                        try!(server.data(channel_num, &data, buf));
+                        try!(server.data(channel_num, &data, self));
                     }
                 }
                 
@@ -147,35 +144,32 @@ impl <'k> Encrypted<&'k key::Algorithm> {
                 let channel_num = try!(r.read_u32());
                 let req_type = try!(r.read_string());
                 let wants_reply = try!(r.read_byte());
-                let buf = ChannelBuf {
-                    session: self,
-                    wants_reply: wants_reply != 0,
-                };
+
                 match req_type {
                     b"exec" => {
                         let req = try!(r.read_string());
-                        try!(server.exec(channel_num, req, buf));
+                        try!(server.exec(channel_num, req, self));
                     }
                     b"pty-req" => {
-                        unimplemented!()
+                        //unimplemented!()
                     }
                     b"x11-req" => {
-                        unimplemented!()
+                        //unimplemented!()
                     }
                     b"shell" => {
-                        unimplemented!()
+                        //unimplemented!()
                     }
                     b"subsystem" => {
-                        unimplemented!()
+                        //unimplemented!()
                     }
                     b"xon-xoff" => {
-                        unimplemented!()
+                        //unimplemented!()
                     }
                     b"exit-status" => {
-                        unimplemented!()
+                        //unimplemented!()
                     }
                     b"exit-signal" => {
-                        unimplemented!()
+                        //unimplemented!()
                     }
                     x => {
                         debug!("{:?}, line {:?} req_type = {:?}", file!(), line!(), std::str::from_utf8(x))
@@ -350,7 +344,8 @@ impl <'k> Encrypted<&'k key::Algorithm> {
             sender_window_size: config.window_size,
             recipient_maximum_packet_size: maxpacket,
             sender_maximum_packet_size: config.maximum_packet_size,
-            confirmed: true
+            confirmed: true,
+            needs_answer: false
         };
         debug!("waiting channel open: {:?}", channel);
         // Write the response immediately, so that we're ready when the stream becomes writable.
@@ -362,6 +357,7 @@ impl <'k> Encrypted<&'k key::Algorithm> {
         self.state = Some(EncryptedState::Authenticated);
         Ok(())
     }
+
 }
 
 
@@ -390,6 +386,7 @@ fn server_accept_service(banner: Option<&str>,
         public_key_algorithm: CryptoBuf::new(),
         sent_pk_ok: false,
         public_key_is_ok: false,
+        was_rejected: false
     }
 }
 

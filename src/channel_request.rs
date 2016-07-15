@@ -20,25 +20,26 @@ pub struct Pty<'a> {
 impl<'a> Req for Pty<'a> {
     fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
 
-        buffer.clear();
-        buffer.push(msg::CHANNEL_REQUEST);
+        push_packet!(buffer,{
+            buffer.push(msg::CHANNEL_REQUEST);
 
-        buffer.push_u32_be(channel.recipient_channel);
-        buffer.extend_ssh_string(b"pty-req");
-        buffer.push(if self.want_reply { 1 } else { 0 });
-        buffer.extend_ssh_string(self.term.as_bytes());
-        buffer.push_u32_be(self.col_width);
-        buffer.push_u32_be(self.row_height);
-        buffer.push_u32_be(self.pix_width);
-        buffer.push_u32_be(self.pix_height);
+            buffer.push_u32_be(channel.recipient_channel);
+            buffer.extend_ssh_string(b"pty-req");
+            buffer.push(if self.want_reply { 1 } else { 0 });
+            buffer.extend_ssh_string(self.term.as_bytes());
+            buffer.push_u32_be(self.col_width);
+            buffer.push_u32_be(self.row_height);
+            buffer.push_u32_be(self.pix_width);
+            buffer.push_u32_be(self.pix_height);
 
-        buffer.push_u32_be((5 * self.terminal_modes.len()) as u32);
-        for &(pty::Option(code), value) in self.terminal_modes {
-            buffer.push(code);
-            buffer.push_u32_be(value)
-        }
-        buffer.push(0);
-        buffer.push_u32_be(0);
+            buffer.push_u32_be((5 * self.terminal_modes.len()) as u32);
+            for &(pty::Option(code), value) in self.terminal_modes {
+                buffer.push(code);
+                buffer.push_u32_be(value)
+            }
+            buffer.push(0);
+            buffer.push_u32_be(0);
+        })
     }
 }
 
@@ -53,16 +54,17 @@ pub struct X11<'a> {
 
 impl<'a> Req for X11<'a> {
     fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
-        buffer.clear();
-        buffer.push(msg::CHANNEL_REQUEST);
+        push_packet!(buffer, {
+            buffer.push(msg::CHANNEL_REQUEST);
 
-        buffer.push_u32_be(channel.recipient_channel);
-        buffer.extend_ssh_string(b"x11-req");
-        buffer.push(if self.want_reply { 1 } else { 0 });
-        buffer.push(if self.single_connection { 1 } else { 0 });
-        buffer.extend_ssh_string(self.x11_authentication_protocol.as_bytes());
-        buffer.extend_ssh_string(self.x11_authentication_cookie.as_bytes());
-        buffer.push_u32_be(self.x11_screen_number);
+            buffer.push_u32_be(channel.recipient_channel);
+            buffer.extend_ssh_string(b"x11-req");
+            buffer.push(if self.want_reply { 1 } else { 0 });
+            buffer.push(if self.single_connection { 1 } else { 0 });
+            buffer.extend_ssh_string(self.x11_authentication_protocol.as_bytes());
+            buffer.extend_ssh_string(self.x11_authentication_cookie.as_bytes());
+            buffer.push_u32_be(self.x11_screen_number);
+        })
     }
 }
 
@@ -76,14 +78,15 @@ pub struct Env<'a> {
 
 impl<'a> Req for Env<'a> {
     fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
-        buffer.clear();
-        buffer.push(msg::CHANNEL_REQUEST);
+        push_packet!(buffer, {
+            buffer.push(msg::CHANNEL_REQUEST);
 
-        buffer.push_u32_be(channel.recipient_channel);
-        buffer.extend_ssh_string(b"env");
-        buffer.push(if self.want_reply { 1 } else { 0 });
-        buffer.extend_ssh_string(self.variable_name.as_bytes());
-        buffer.extend_ssh_string(self.variable_value.as_bytes());
+            buffer.push_u32_be(channel.recipient_channel);
+            buffer.extend_ssh_string(b"env");
+            buffer.push(if self.want_reply { 1 } else { 0 });
+            buffer.extend_ssh_string(self.variable_name.as_bytes());
+            buffer.extend_ssh_string(self.variable_value.as_bytes());
+        })
     }
 }
 
@@ -93,12 +96,14 @@ pub struct Shell {
 
 impl Req for Shell {
     fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
-        buffer.clear();
-        buffer.push(msg::CHANNEL_REQUEST);
 
-        buffer.push_u32_be(channel.recipient_channel);
-        buffer.extend_ssh_string(b"shell");
-        buffer.push(if self.want_reply { 1 } else { 0 });
+        push_packet!(buffer, {
+            buffer.push(msg::CHANNEL_REQUEST);
+
+            buffer.push_u32_be(channel.recipient_channel);
+            buffer.extend_ssh_string(b"shell");
+            buffer.push(if self.want_reply { 1 } else { 0 });
+        })
     }
 }
 
@@ -108,13 +113,15 @@ pub struct Exec<'a> {
 }
 impl<'a> Req for Exec<'a> {
     fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
-        buffer.clear();
-        buffer.push(msg::CHANNEL_REQUEST);
 
-        buffer.push_u32_be(channel.recipient_channel);
-        buffer.extend_ssh_string(b"exec");
-        buffer.push(if self.want_reply { 1 } else { 0 });
-        buffer.extend_ssh_string(self.command.as_bytes());
+        push_packet!(buffer, {
+            buffer.push(msg::CHANNEL_REQUEST);
+
+            buffer.push_u32_be(channel.recipient_channel);
+            buffer.extend_ssh_string(b"exec");
+            buffer.push(if self.want_reply { 1 } else { 0 });
+            buffer.extend_ssh_string(self.command.as_bytes());
+        })
     }
 }
 
@@ -124,13 +131,14 @@ pub struct Subsystem<'a> {
 }
 impl<'a> Req for Subsystem<'a> {
     fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
-        buffer.clear();
-        buffer.push(msg::CHANNEL_REQUEST);
+        push_packet!(buffer, {
+            buffer.push(msg::CHANNEL_REQUEST);
 
-        buffer.push_u32_be(channel.recipient_channel);
-        buffer.extend_ssh_string(b"subsystem");
-        buffer.push(if self.want_reply { 1 } else { 0 });
-        buffer.extend_ssh_string(self.name.as_bytes());
+            buffer.push_u32_be(channel.recipient_channel);
+            buffer.extend_ssh_string(b"subsystem");
+            buffer.push(if self.want_reply { 1 } else { 0 });
+            buffer.extend_ssh_string(self.name.as_bytes());
+        })
     }
 }
 
@@ -143,16 +151,17 @@ pub struct WindowChange {
 }
 impl Req for WindowChange {
     fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
-        buffer.clear();
-        buffer.push(msg::CHANNEL_REQUEST);
+        push_packet!(buffer, {
+            buffer.push(msg::CHANNEL_REQUEST);
 
-        buffer.push_u32_be(channel.recipient_channel);
-        buffer.extend_ssh_string(b"window-change");
-        buffer.push(0);
-        buffer.push_u32_be(self.col_width);
-        buffer.push_u32_be(self.row_height);
-        buffer.push_u32_be(self.pix_width);
-        buffer.push_u32_be(self.pix_height);
+            buffer.push_u32_be(channel.recipient_channel);
+            buffer.extend_ssh_string(b"window-change");
+            buffer.push(0);
+            buffer.push_u32_be(self.col_width);
+            buffer.push_u32_be(self.row_height);
+            buffer.push_u32_be(self.pix_width);
+            buffer.push_u32_be(self.pix_height);
+        })
     }
 }
 
@@ -161,13 +170,14 @@ pub struct XonXoff {
 }
 impl Req for XonXoff {
     fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
-        buffer.clear();
-        buffer.push(msg::CHANNEL_REQUEST);
+        push_packet!(buffer, {
+            buffer.push(msg::CHANNEL_REQUEST);
 
-        buffer.push_u32_be(channel.recipient_channel);
-        buffer.extend_ssh_string(b"xon-xoff");
-        buffer.push(0);
-        buffer.push(if self.client_can_do { 1 } else { 0 });
+            buffer.push_u32_be(channel.recipient_channel);
+            buffer.extend_ssh_string(b"xon-xoff");
+            buffer.push(0);
+            buffer.push(if self.client_can_do { 1 } else { 0 });
+        })
     }
 }
 
@@ -176,13 +186,14 @@ pub struct ExitStatus {
 }
 impl Req for ExitStatus {
     fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
-        buffer.clear();
-        buffer.push(msg::CHANNEL_REQUEST);
+        push_packet!(buffer, {
+            buffer.push(msg::CHANNEL_REQUEST);
 
-        buffer.push_u32_be(channel.recipient_channel);
-        buffer.extend_ssh_string(b"exit-status");
-        buffer.push(0);
-        buffer.push_u32_be(self.exit_status)
+            buffer.push_u32_be(channel.recipient_channel);
+            buffer.extend_ssh_string(b"exit-status");
+            buffer.push(0);
+            buffer.push_u32_be(self.exit_status)
+        })
     }
 }
 
@@ -217,15 +228,16 @@ pub struct ExitSignal<'a> {
 
 impl<'a> ExitSignal<'a> {
     fn req(&self, channel:&ChannelParameters, buffer:&mut CryptoBuf) {
-        buffer.clear();
-        buffer.push(msg::CHANNEL_REQUEST);
+        push_packet!(buffer, {
+            buffer.push(msg::CHANNEL_REQUEST);
 
-        buffer.push_u32_be(channel.recipient_channel);
-        buffer.extend_ssh_string(b"exit-signal");
-        buffer.push(0);
-        buffer.extend_ssh_string(self.signal_name.0.as_bytes());
-        buffer.push(if self.core_dumped { 1 } else { 0 });
-        buffer.extend_ssh_string(self.error_message.as_bytes());
-        buffer.extend_ssh_string(self.language_tag.as_bytes());
+            buffer.push_u32_be(channel.recipient_channel);
+            buffer.extend_ssh_string(b"exit-signal");
+            buffer.push(0);
+            buffer.extend_ssh_string(self.signal_name.0.as_bytes());
+            buffer.push(if self.core_dumped { 1 } else { 0 });
+            buffer.extend_ssh_string(self.error_message.as_bytes());
+            buffer.extend_ssh_string(self.language_tag.as_bytes());
+        })
     }
 }

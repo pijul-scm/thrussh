@@ -30,7 +30,7 @@ use cipher;
 use kex;
 
 use rand;
-use rand::{thread_rng, Rng};
+use rand::{Rng};
 
 mod encrypted;
 
@@ -70,19 +70,7 @@ pub struct Session<'a> {
     buffers: SSHBuffers,
     state: Option<ServerState<&'static ()>>,
     auth_method: Option<auth::Method<'a, key::Algorithm>>,
-}
-
-impl<'a> Default for Session<'a> {
-    fn default() -> Self {
-        super::SODIUM_INIT.call_once(|| {
-            super::sodium::init();
-        });
-        Session {
-            buffers: SSHBuffers::new(),
-            state: None,
-            auth_method: None,
-        }
-    }
+    limits: Limits
 }
 
 impl KexInit {
@@ -146,7 +134,15 @@ impl KexDhDone<&'static ()> {
 impl<'a> Session<'a> {
 
     pub fn new(config:&Config) -> Self {
-        let mut session = Session::default();
+        super::SODIUM_INIT.call_once(|| {
+            super::sodium::init();
+        });
+        let mut session = Session {
+            buffers: SSHBuffers::new(),
+            state: None,
+            auth_method: None,
+            limits: config.limits.clone()
+        };
         session.buffers.write.send_ssh_id(config.client_id.as_bytes());
         session
     }
@@ -293,8 +289,7 @@ impl<'a> Session<'a> {
                                                    client,
                                                    &self.auth_method,
                                                    buf,
-                                                   buffer,
-                                                   buffer2));
+                                                   buffer));
 
                 } else {
                     self.state = Some(ServerState::Encrypted(enc));
@@ -314,113 +309,7 @@ impl<'a> Session<'a> {
                 }
                 self.state = Some(ServerState::Encrypted(enc));
                 Ok(ReturnCode::Ok)
-
             }
-            /*
-                    Some(EncryptedState::Authenticated) => {
-                        debug!("read state {:?}", state);
-                        let mut is_newkeys = false;
-                        if let Some(buf) = try!(enc.cipher.read(stream,&mut self.buffers.read)) {
-
-                            transport!(buf);
-
-                            debug!("msg: {:?} {:?}", buf, enc.rekey);
-                            match std::mem::replace(&mut enc.rekey, None) {
-                                Some(rekey) => {
-                                    is_newkeys = try!(enc.client_rekey(client, buf, rekey, &config, buffer, buffer2))
-                                }
-                                None if buf[0] == msg::KEXINIT => {
-                                    if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
-                                        // The server is initiating a rekeying.
-                                        let mut kexinit = KexInit::rekey(
-                                            exchange,
-                                            try!(super::negociation::Client::read_kex(buf, &config.preferred)),
-                                            &enc.session_id
-                                        );
-                                        kexinit.exchange.server_kex_init.extend_from_slice(buf);
-                                        enc.rekey = Some(try!(kexinit.kexinit(&[])));
-                                    }
-                                }
-                                None if buf[0] == msg::CHANNEL_OPEN_CONFIRMATION => {
-                                    try!(enc.client_channel_open_confirmation(client, buf))
-                                }
-                                None if buf[0] == msg::CHANNEL_DATA => {
-
-                                    let mut r = buf.reader(1);
-                                    let channel_num = try!(r.read_u32());
-                                    if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
-
-                                        let data = try!(r.read_string());
-                                        channel.sender_window_size -= data.len() as u32;
-                                        if channel.sender_window_size < config.window_size / 2 {
-                                            super::adjust_window_size(&mut self.buffers.write,
-                                                                      &mut enc.cipher,
-                                                                      config.window_size,
-                                                                      buffer,
-                                                                      channel)
-                                        }
-                                        buffer.clear();
-                                        let server_buf = ChannelBuf {
-                                            buffer: buffer,
-                                            channel: channel,
-                                            write_buffer: &mut self.buffers.write,
-                                            cipher: &mut enc.cipher,
-                                            wants_reply: false,
-                                        };
-                                        try!(client.data(None, &data, server_buf))
-                                    }
-                                }
-                                None if buf[0] == msg::CHANNEL_EXTENDED_DATA => {
-                                    let mut r = buf.reader(1);
-                                    let channel_num = try!(r.read_u32());
-                                    let extended_code = try!(r.read_u32());
-                                    if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
-                                        let data = try!(r.read_string());
-                                        buffer.clear();
-                                        let server_buf = ChannelBuf {
-                                            buffer: buffer,
-                                            channel: channel,
-                                            write_buffer: &mut self.buffers.write,
-                                            cipher: &mut enc.cipher,
-                                            wants_reply: false,
-                                        };
-                                        try!(client.data(Some(extended_code), &data, server_buf))
-                                    }
-                                }
-                                None if buf[0] == msg::CHANNEL_WINDOW_ADJUST => {
-                                    let mut r = buf.reader(1);
-                                    let channel_num = try!(r.read_u32());
-                                    let amount = try!(r.read_u32());
-                                    if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
-                                        channel.recipient_window_size += amount
-                                    }
-                                }
-                                None => {
-                                    info!("Unhandled packet: {:?}", buf);
-                                }
-                            }
-                            read_complete = true;
-                        } else {
-                            read_complete = false
-                        };
-                        if read_complete && is_newkeys {
-                            self.buffers.read.bytes = 0;
-                            self.buffers.write.bytes = 0;
-                        }
-                        enc.state = state;
-                    },
-                    None => {
-                        read_complete = false
-                    }
-                }
-                self.state = Some(ServerState::Encrypted(enc));
-                if read_complete {
-                    Ok(ReturnCode::Ok)
-                } else {
-                    Ok(ReturnCode::NotEnoughBytes)
-                }
-            }
-             */
         }
     }
 
@@ -469,15 +358,14 @@ impl<'a> Session<'a> {
     }
 
     pub fn needs_auth_method(&self) -> Option<auth::M> {
-
         match self.state {
             Some(ServerState::Encrypted(ref enc)) => {
                 match enc.state {
-                    Some(EncryptedState::WaitingAuthRequest(ref auth_request)) => {
-
-                        debug!("needs_auth_method: {:?}", auth_request);
+                    Some(EncryptedState::WaitingAuthRequest(ref auth_request)) if auth_request.was_rejected => {
                         Some(auth_request.methods)
-
+                    }
+                    Some(EncryptedState::WaitingAuthRequest(ref auth_request)) if self.auth_method.is_none() => {
+                        Some(auth_request.methods)
                     }
                     _ => None,
                 }
@@ -558,7 +446,8 @@ impl<'a> Session<'a> {
                             recipient_window_size: 0,
                             sender_maximum_packet_size: config.maxpacket,
                             recipient_maximum_packet_size: 0,
-                            confirmed: false
+                            confirmed: false,
+                            needs_answer: false
                         };
                         enc.channels.insert(sender_channel, parameters);
                         Some(sender_channel)
@@ -570,75 +459,17 @@ impl<'a> Session<'a> {
         }
     }
 
-    /*
-    pub fn channel_request<W: Write, R:channel_request::Req>(&mut self,
-                                                             stream: &mut W,
-                                                             buffer: &mut CryptoBuf,
-                                                             channel: u32,
-                                                             req: R)
-                                                             -> Result<(), Error> {
-        
+    pub fn data(&mut self, channel: u32, extended: Option<u32>, data: &[u8]) -> Result<usize, Error> {
         match self.state {
             Some(ServerState::Encrypted(ref mut enc)) => {
-                match enc.state {
-                    Some(EncryptedState::Authenticated) => {
-                        // No rekeying here, since we need answers
-                        // from the server before we can send this
-                        // request.
-                        if let Some(c) = enc.channels.get_mut(&channel) {
-                            req.req(c, buffer);
-                            enc.cipher.write(buffer.as_slice(), &mut self.buffers.write);
-                        }
-                        Ok(())
-                    },
-                    _ => Err(Error::WrongState)
-                }
+
+                let result = try!(enc.data(channel, extended, data));
+                enc.flush(&self.limits, &mut self.buffers);
+                Ok(result)
+
             },
-            _ => Err(Error::WrongState)
+            _ => Err(Error::Inconsistent)
         }
     }
 
-    pub fn msg<W: Write>(&mut self,
-                         stream: &mut W,
-                         buffer: &mut CryptoBuf,
-                         msg: &[u8],
-                         channel: u32)
-                         -> Result<Option<usize>, Error> {
-
-        match self.state {
-            Some(ServerState::Encrypted(ref mut enc)) => {
-                debug!("msg, encrypted, {:?} {:?}", enc.state, enc.rekey);
-
-
-                if enc.rekey.is_none() {
-
-                    match enc.state {
-                        Some(EncryptedState::Authenticated) => {
-                            if let Some(c) = enc.channels.get_mut(&channel) {
-
-                                let written = {
-                                    let mut channel_buf = ChannelBuf {
-                                        write_buffer: &mut self.buffers.write,
-                                        cipher: &mut enc.cipher,
-                                        wants_reply: false,
-                                    };
-                                    channel_buf.output(None, msg)
-                                };
-                                try!(self.buffers.write_all(stream));
-                                Ok(Some(written))
-                            } else {
-                                Ok(None)
-                            }
-                        }
-                        _ => Ok(None),
-                    }
-
-                } else {
-                    Ok(None)
-                }
-            }
-            _ => Ok(None),
-        }
-    }
-     */
 }
