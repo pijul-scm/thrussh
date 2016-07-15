@@ -23,7 +23,6 @@ use std;
 use byteorder::{ByteOrder, BigEndian};
 use rand::{thread_rng, Rng};
 use key::Verify;
-use cryptobuf::CryptoBuf;
 
 impl <'k> Encrypted<&'k key::Algorithm> {
 
@@ -367,6 +366,50 @@ impl <'k> Encrypted<&'k key::Algorithm> {
         while self.channels.contains_key(&sender_channel) || sender_channel == 0 {
             sender_channel = thread_rng().gen()
         }
+
+        let typ = match typ {
+            b"session" => {
+                ChannelType::Session
+            },
+            b"x11" => {
+                let a = try!(std::str::from_utf8(try!(r.read_string())));
+                let b = try!(r.read_u32());
+                ChannelType::X11 {
+                    originator_address: a,
+                    originator_port: b
+                }
+            },
+            b"forwarded_tcpip" => {
+                let a = try!(std::str::from_utf8(try!(r.read_string())));
+                let b = try!(r.read_u32());
+                let c = try!(std::str::from_utf8(try!(r.read_string())));
+                let d = try!(r.read_u32());
+                ChannelType::ForwardedTcpip {
+                    connected_address:a,
+                    connected_port:b,
+                    originator_address:c,
+                    originator_port:d
+                }
+            },
+            b"direct-tcpip" => {
+                let a = try!(std::str::from_utf8(try!(r.read_string())));
+                let b = try!(r.read_u32());
+                let c = try!(std::str::from_utf8(try!(r.read_string())));
+                let d = try!(r.read_u32());
+                ChannelType::DirectTcpip {
+                    host_to_connect:a,
+                    port_to_connect:b,
+                    originator_address:c,
+                    originator_port:d
+                }
+            }
+            t => {
+                debug!("unknown channel type: {:?}", t);
+                return Err(Error::UnknownChannelType)
+            }
+        };
+        server.new_channel(sender_channel, typ, ServerSession(self));
+
         let channel = ChannelParameters {
             recipient_channel: sender,
             sender_channel: sender_channel, /* "sender" is the local end, i.e. we're the sender, the remote is the recipient. */
@@ -379,7 +422,6 @@ impl <'k> Encrypted<&'k key::Algorithm> {
         };
         debug!("waiting channel open: {:?}", channel);
         // Write the response immediately, so that we're ready when the stream becomes writable.
-        server.new_channel(sender_channel);
         server_confirm_channel_open(&mut self.write, &channel, config);
         //
         let sender_channel = channel.sender_channel;

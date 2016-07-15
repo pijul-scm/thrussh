@@ -26,7 +26,6 @@ use cipher;
 use negociation;
 use key::PubKey;
 use encoding::Reader;
-use cryptobuf::CryptoBuf;
 
 #[derive(Debug)]
 pub struct Config {

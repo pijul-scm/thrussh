@@ -55,7 +55,7 @@ extern crate time;
 
 mod sodium;
 mod cryptobuf;
-use cryptobuf::CryptoBuf;
+pub use cryptobuf::CryptoBuf;
 
 mod sshbuffer;
 
@@ -105,6 +105,7 @@ pub enum Error {
     UnknownKey,
     WrongState,
     WrongChannel,
+    UnknownChannelType,
     IO(std::io::Error),
 }
 
@@ -198,7 +199,7 @@ impl<'a> SignalName<'a> {
 pub trait Server {
     /// Called when a new channel is created.
     #[allow(unused_variables)]
-    fn new_channel(&mut self, channel: u32) {}
+    fn new_channel(&mut self, channel: u32, channel_type: ChannelType, session: ServerSession) {}
 
     /// Called when a data packet is received. A response can be
     /// written to the `response` argument.
