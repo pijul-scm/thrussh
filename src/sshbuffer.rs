@@ -16,14 +16,6 @@
 use std;
 use super::*;
 use std::io::{BufRead};
-use time;
-
-#[derive(Debug)]
-pub struct SSHBuffers {
-    pub read: SSHBuffer,
-    pub write: SSHBuffer,
-    pub last_rekey_s: f64,
-}
 
 #[derive(Debug)]
 pub struct SSHBuffer {
@@ -80,24 +72,16 @@ impl SSHBuffer {
         self.buffer.push(b'\r');
         self.buffer.push(b'\n');
     }
-}
-impl SSHBuffers {
-    pub fn new() -> Self {
-        SSHBuffers {
-            read: SSHBuffer::new(),
-            write: SSHBuffer::new(),
-            last_rekey_s: time::precise_time_s(),
-        }
-    }
+
     // Returns true iff the write buffer has been completely written.
     pub fn write_all<W: std::io::Write>(&mut self, stream: &mut W) -> Result<bool, Error> {
-        debug!("write_all, self = {:?}", self.write.buffer.as_slice());
-        while self.write.len < self.write.buffer.len() {
-            match self.write.buffer.write_all_from(self.write.len, stream) {
+        debug!("write_all, self = {:?}", self.buffer.as_slice());
+        while self.len < self.buffer.len() {
+            match self.buffer.write_all_from(self.len, stream) {
                 Ok(s) => {
                     debug!("written {:?} bytes", s);
-                    self.write.len += s;
-                    self.write.bytes += s;
+                    self.len += s;
+                    self.bytes += s;
                     try!(stream.flush());
                 }
                 Err(e) => {
@@ -109,15 +93,9 @@ impl SSHBuffers {
                 }
             }
         }
-        self.write.buffer.clear();
-        self.write.len = 0;
+        self.buffer.clear();
+        self.len = 0;
         Ok(true)
     }
 
-    pub fn needs_rekeying(&self, limits: &Limits) -> bool {
-        debug!("read {:?} bytes, write {:?}", self.read.bytes, self.write.bytes);
-        self.read.bytes >= limits.rekey_read_limit ||
-            self.write.bytes >= limits.rekey_write_limit ||
-            time::precise_time_s() >= self.last_rekey_s + limits.rekey_time_limit_s
-    }
 }

@@ -27,15 +27,29 @@ use cryptobuf::CryptoBuf;
 use std::collections::HashMap;
 use encoding::Reader;
 use Limits;
-use sshbuffer::{SSHBuffers};
+use sshbuffer::{SSHBuffer};
 use byteorder::{BigEndian, ByteOrder};
 use cipher::CipherT;
 use time;
 
 #[derive(Debug)]
 pub enum ServerState<Config> {
-    Kex(Kex),
+    None { write_buffer: SSHBuffer },
+    Kex { write_buffer: SSHBuffer, kex: Kex },
     Encrypted(Encrypted<Config>), // Session is now encrypted.
+}
+
+impl<Config> ServerState<Config>  {
+
+    pub fn write<W: std::io::Write>(&mut self, stream: &mut W) -> Result<(), Error> {
+        // Finish pending writes, if any.
+        match *self {
+            ServerState::None { ref mut write_buffer } => { try!(write_buffer.write_all(stream)); },
+            ServerState::Kex { ref mut write_buffer,.. } => { try!(write_buffer.write_all(stream)); },
+            ServerState::Encrypted(ref mut enc) => { try!(enc.write_buffer.write_all(stream)); },
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -52,7 +66,9 @@ pub struct Encrypted<C> {
     pub write: CryptoBuf,
     pub write_cursor: usize,
     pub config: C,
-    pub wants_reply: bool
+    pub wants_reply: bool,
+    pub write_buffer: SSHBuffer,
+    pub last_rekey_s: f64
 }
 
 impl<C> Encrypted<C> {
@@ -93,22 +109,25 @@ impl<C> Encrypted<C> {
         }
     }
 
-    pub fn flush(&mut self, limits:&Limits, buffers: &mut SSHBuffers) -> bool {
+    pub fn flush(&mut self, limits:&Limits, read_buffer:&mut SSHBuffer) -> bool {
         // If there are pending packets (and we've not started to rekey), flush them.
         if self.rekey.is_none() {
             {
                 let packets = self.write.as_slice();
                 while self.write_cursor < self.write.len() {
-                    if buffers.needs_rekeying(limits) {
+                    if read_buffer.bytes >= limits.rekey_read_limit ||
+                        self.write_buffer.bytes >= limits.rekey_write_limit ||
+                        time::precise_time_s() >= self.last_rekey_s + limits.rekey_time_limit_s {
+
 
                         // Resetting those now is incorrect (since
                         // we're resetting before the rekeying), but
                         // since the bytes sent during rekeying will
                         // be counted, the limits are still an upper
                         // bound on the size that can be sent.
-                        buffers.write.bytes = 0;
-                        buffers.read.bytes = 0;
-                        buffers.last_rekey_s = time::precise_time_s();
+                        read_buffer.bytes = 0;
+                        self.write_buffer.bytes = 0;
+                        self.last_rekey_s = time::precise_time_s();
                         return true
 
                     } else {
@@ -116,7 +135,7 @@ impl<C> Encrypted<C> {
                         let len = BigEndian::read_u32(&packets[self.write_cursor .. ]) as usize;
                         debug!("flushing len {:?}", len);
                         let packet = &packets [(self.write_cursor+4) .. (self.write_cursor+4+len)];
-                        self.cipher.write(packet, &mut buffers.write);
+                        self.cipher.write(packet, &mut self.write_buffer);
                         self.write_cursor += 4+len
                     }
                 }
@@ -144,6 +163,7 @@ impl<C> Encrypted<C> {
     }
 
 }
+
 
 #[derive(Debug)]
 pub enum EncryptedState {
@@ -322,7 +342,7 @@ pub struct NewKeys {
 }
 
 impl NewKeys {
-    pub fn encrypted<Config>(self, state: EncryptedState, config: Config) -> Encrypted<Config> {
+    pub fn encrypted<Config>(self, write_buffer: SSHBuffer, state: EncryptedState, config: Config) -> Encrypted<Config> {
         Encrypted {
             exchange: Some(self.exchange),
             kex: self.kex,
@@ -340,7 +360,9 @@ impl NewKeys {
             write: CryptoBuf::new(),
             write_cursor: 0,
             config: config,
-            wants_reply: false
+            wants_reply: false,
+            write_buffer: write_buffer,
+            last_rekey_s: time::precise_time_s()
         }
     }
 }

@@ -70,7 +70,7 @@ impl Default for Config {
 // buffer is also useful to prepare complete packets before we can
 // pass them to the ciphers.
 pub struct Connection {
-    buffers: SSHBuffers,
+    read_buffer: SSHBuffer,
     state: Option<ServerState<Arc<Config>>>,
     config: Arc<Config>
 }
@@ -172,12 +172,13 @@ impl Connection {
         super::SODIUM_INIT.call_once(|| {
             super::sodium::init();
         });
-        let mut session = Connection {
-            buffers: SSHBuffers::new(),
-            state: None,
+        let mut write_buffer = SSHBuffer::new();
+        write_buffer.send_ssh_id(config.as_ref().server_id.as_bytes());
+        let session = Connection {
+            read_buffer: SSHBuffer::new(),
+            state: Some(ServerState::None { write_buffer: write_buffer }),
             config: config
         };
-        session.buffers.write.send_ssh_id(session.config.as_ref().server_id.as_bytes());
         session
     }
 
@@ -192,10 +193,11 @@ impl Connection {
         let state = std::mem::replace(&mut self.state, None);
         // debug!("state: {:?}", state);
         match state {
-            None => {
+            None => unreachable!(),
+            Some(ServerState::None { mut write_buffer }) => {
                 let mut exchange;
                 {
-                    let client_id = try!(self.buffers.read.read_ssh_id(stream));
+                    let client_id = try!(self.read_buffer.read_ssh_id(stream));
                     if let Some(client_id) = client_id {
                         exchange = Exchange::new();
                         exchange.client_id.extend(client_id);
@@ -213,45 +215,52 @@ impl Connection {
                     session_id: None,
                 };
                 let mut cipher = cipher::Clear;
-                kexinit.server_write(self.config.as_ref(), &mut cipher, &mut self.buffers.write);
-                self.state = Some(ServerState::Kex(Kex::KexInit(kexinit)));
+                kexinit.server_write(self.config.as_ref(), &mut cipher, &mut write_buffer);
+                self.state = Some(ServerState::Kex {
+                    kex:Kex::KexInit(kexinit),
+                    write_buffer: write_buffer
+                });
                 Ok(ReturnCode::Ok)
             }
 
-            Some(ServerState::Kex(kex)) => {
+            Some(ServerState::Kex { kex, mut write_buffer }) => {
 
                 let mut cipher = cipher::Clear;
-                if let Some(buf) = try!(cipher.read(stream, &mut self.buffers.read)) {
+                if let Some(buf) = try!(cipher.read(stream, &mut self.read_buffer)) {
                     debug!("buf = {:?}", buf);
                     if buf[0] == msg::DISCONNECT {
                         // transport
                         return Ok(ReturnCode::Disconnect)
                     }
                     if buf[0] <= 4 {
-                        self.state = Some(ServerState::Kex(kex));
+                        self.state = Some(ServerState::Kex { kex:kex, write_buffer: write_buffer });
                         return Ok(ReturnCode::Ok)
                     }
                     match kex {
                         Kex::KexInit(kexinit) => {
-                            let next_kex = try!(kexinit.server_parse(self.config.as_ref(), &mut cipher, buf, &mut self.buffers.write));
-                            self.state = Some(ServerState::Kex(next_kex));
+                            let next_kex = try!(kexinit.server_parse(self.config.as_ref(), &mut cipher, buf, &mut write_buffer));
+                            self.state = Some(ServerState::Kex { kex:next_kex, write_buffer: write_buffer });
                         },
                         Kex::KexDh(kexdh) => {
-                            let next_kex = try!(kexdh.parse(self.config.as_ref(), buffer, buffer2, &mut cipher, buf, &mut self.buffers.write));
-                            self.state = Some(ServerState::Kex(next_kex));
+                            let next_kex = try!(kexdh.parse(self.config.as_ref(), buffer, buffer2, &mut cipher, buf, &mut write_buffer));
+                            self.state = Some(ServerState::Kex { kex:next_kex, write_buffer: write_buffer });
                         },
                         Kex::NewKeys(newkeys) => {
                             if buf[0] != msg::NEWKEYS {
                                 return Err(Error::NewKeys)
                             }
                             // Ok, NEWKEYS received, now encrypted.
-                            self.state = Some(ServerState::Encrypted(newkeys.encrypted(EncryptedState::WaitingServiceRequest, self.config.clone())));
+                            self.state = Some(ServerState::Encrypted(newkeys.encrypted(
+                                write_buffer,
+                                EncryptedState::WaitingServiceRequest,
+                                self.config.clone()
+                            )));
                         },
-                        kex => self.state = Some(ServerState::Kex(kex))
+                        kex => self.state = Some(ServerState::Kex { kex:kex, write_buffer:write_buffer })
                     }
                     Ok(ReturnCode::Ok)
                 } else {
-                    self.state = Some(ServerState::Kex(kex));
+                    self.state = Some(ServerState::Kex { kex:kex, write_buffer: write_buffer });
                     Ok(ReturnCode::NotEnoughBytes)
                 }
             }
@@ -259,7 +268,7 @@ impl Connection {
             Some(ServerState::Encrypted(mut enc)) => {
                 debug!("read: encrypted {:?} {:?}", enc.state, enc.rekey);
                 
-                if let Some(buf) = try!(enc.cipher.read(stream, &mut self.buffers.read)) {
+                if let Some(buf) = try!(enc.cipher.read(stream, &mut self.read_buffer)) {
                     debug!("read buf {:?}", buf);
                     if buf[0] == msg::DISCONNECT {
                         return Ok(ReturnCode::Disconnect)
@@ -276,11 +285,11 @@ impl Connection {
                             match kex {
                                 Kex::KexInit(kexinit) =>
                                     enc.rekey = Some(
-                                        try!(kexinit.server_parse(self.config.as_ref(), &mut enc.cipher, buf, &mut self.buffers.write))
+                                        try!(kexinit.server_parse(self.config.as_ref(), &mut enc.cipher, buf, &mut enc.write_buffer))
                                     ),
                                 Kex::KexDh(kexdh) =>
                                     enc.rekey = Some(
-                                        try!(kexdh.parse(self.config.as_ref(), buffer, buffer2, &mut enc.cipher, buf, &mut self.buffers.write))
+                                        try!(kexdh.parse(self.config.as_ref(), buffer, buffer2, &mut enc.cipher, buf, &mut enc.write_buffer))
                                     ),
                                 Kex::NewKeys(newkeys) =>
                                     if buf[0] == msg::NEWKEYS {
@@ -309,7 +318,7 @@ impl Connection {
                                 &enc.session_id
                             );
                             enc.rekey = Some(
-                                try!(kexinit.server_parse(self.config.as_ref(), &mut enc.cipher, buf, &mut self.buffers.write))
+                                try!(kexinit.server_parse(self.config.as_ref(), &mut enc.cipher, buf, &mut enc.write_buffer))
                             );
                         }
                         self.state = Some(ServerState::Encrypted(enc));
@@ -325,13 +334,13 @@ impl Connection {
                     return Ok(ReturnCode::NotEnoughBytes)
                 }
                 debug!("flushing");
-                if enc.flush(&self.config.as_ref().limits, &mut self.buffers) {
+                if enc.flush(&self.config.as_ref().limits, &mut self.read_buffer) {
 
                     if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
                         let mut kexinit = KexInit::initiate_rekey(exchange, &enc.session_id);
                         kexinit.server_write(&self.config.as_ref(),
                                              &mut enc.cipher,
-                                             &mut self.buffers.write);
+                                             &mut enc.write_buffer);
                         enc.rekey = Some(Kex::KexInit(kexinit))
                     }
                 }
@@ -344,11 +353,11 @@ impl Connection {
     }
 
     pub fn write<W: Write>(&mut self, stream: &mut W) -> Result<(), Error> {
-        // Finish pending writes, if any.
-        try!(self.buffers.write_all(stream));
+        if let Some(ref mut state) = self.state {
+            try!(state.write(stream))
+        }
         Ok(())
     }
-
 
 }
 
