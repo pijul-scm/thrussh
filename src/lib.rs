@@ -451,9 +451,9 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::io::BufReader;
     extern crate env_logger;
-
+    use std::sync::Arc;
+    
     #[test]
     fn test_session() {
         env_logger::init().unwrap_or(());
@@ -483,18 +483,18 @@ mod test {
                     public: pk, secret: sk
                 }
             );
-            config
+            Arc::new(config)
         };
-        let client_config = Default::default();
+        let client_config = Arc::new(Default::default());
 
         let mut server_read:Vec<u8> = Vec::new();
         let mut server_write:Vec<u8> = Vec::new();
         
         let mut server = S{};
-        let mut server_session = server::Session::new(&server_config);
+        let mut server_session = server::Connection::new(server_config.clone());
 
         let mut client = C{};
-        let mut client_session = client::Session::new(&client_config);
+        let mut client_session = client::Connection::new(client_config);
 
         let mut s_buffer0 = CryptoBuf::new();
         let mut s_buffer1 = CryptoBuf::new();
@@ -506,11 +506,11 @@ mod test {
         client_session.authenticate(auth::Method::PublicKey { user:"pe",
                                                               pubkey: client_keypair });
 
-        let mut run_loop = |client_session:&mut client::Session| {
+        let mut run_loop = |client_session:&mut client::Connection| {
             {
                 let mut swrite = &server_write[..];
                 while swrite.len() > 0 {
-                    client_session.read(&client_config, &mut client, &mut swrite, &mut c_buffer0, &mut c_buffer1).unwrap();
+                    client_session.read(&mut client, &mut swrite, &mut c_buffer0, &mut c_buffer1).unwrap();
                 }
             }
             server_write.clear();
@@ -519,7 +519,7 @@ mod test {
             {
                 let mut sread = &server_read[..];
                 while sread.len() > 0 {
-                    server_session.read(&mut server, &server_config, &mut sread, &mut s_buffer0, &mut s_buffer1).unwrap();
+                    server_session.read(&mut server, &mut sread, &mut s_buffer0, &mut s_buffer1).unwrap();
                 }
             }
             server_read.clear();
@@ -531,18 +531,17 @@ mod test {
             run_loop(&mut client_session)
         }
 
-        let mut c_buffer0 = CryptoBuf::new();
-        let channel = client_session.channel_open(ChannelType::Session, &client_config).unwrap();
+        let channel = client_session.state.channel_open(ChannelType::Session).unwrap();
+        client_session.flush();
 
         loop {
-            if let Some(chan) = client_session.channels().and_then(|x| x.get(&channel)) {
+            if let Some(chan) = client_session.state.channels().and_then(|x| x.get(&channel)) {
                 if chan.confirmed {
                     break
                 }
             }
             run_loop(&mut client_session);
         }
-    
         
     }
 }

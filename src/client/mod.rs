@@ -300,26 +300,26 @@ impl<'a> Connection<'a> {
             None
         }
     }
-
-
-
     pub fn flush(&mut self) {
-        if let Some(ref mut enc) = self.state.encrypted {
-            if enc.flush(&self.state.config.as_ref().limits, &mut self.state.cipher, &mut self.state.write_buffer) {
+        self.state.flush()
+    }
+}
 
+impl<'a> State<'a> {
+
+    fn flush(&mut self) {
+        if let Some(ref mut enc) = self.encrypted {
+            if enc.flush(&self.config.as_ref().limits, &mut self.cipher, &mut self.write_buffer) {
                 if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
                     let mut kexinit = KexInit::initiate_rekey(exchange, &enc.session_id);
-                    kexinit.client_write(&self.state.config.as_ref(),
-                                         &mut self.state.cipher,
-                                         &mut self.state.write_buffer);
+                    kexinit.client_write(&self.config.as_ref(),
+                                         &mut self.cipher,
+                                         &mut self.write_buffer);
                     enc.rekey = Some(Kex::KexInit(kexinit))
                 }
             }
         }
     }
-}
-
-impl<'a> State<'a> {
 
     pub fn channels(&self) -> Option<&HashMap<u32, ChannelParameters>> {
         if let Some(ref enc) = self.encrypted {
@@ -330,7 +330,7 @@ impl<'a> State<'a> {
     }
 
     pub fn channel_open(&mut self, channel_type:super::ChannelType) -> Option<u32> {
-        if let Some(ref mut enc) = self.encrypted {
+        let result = if let Some(ref mut enc) = self.encrypted {
             match enc.state {
                 Some(EncryptedState::Authenticated) => {
                     debug!("sending open request");
@@ -399,15 +399,19 @@ impl<'a> State<'a> {
             }
         } else {
             None
-        }
+        };
+        self.flush();
+        result
     }
 
     pub fn data(&mut self, channel: u32, extended: Option<u32>, data: &[u8]) -> Result<usize, Error> {
-        if let Some(ref mut enc) = self.encrypted {
-            enc.data(channel, extended, data)
+        let result = if let Some(ref mut enc) = self.encrypted {
+            try!(enc.data(channel, extended, data))
         } else {
-            Err(Error::Inconsistent)
-        }
+            return Err(Error::Inconsistent)
+        };
+        self.flush();
+        Ok(result)
     }
 
     pub fn request_pty(&mut self, channel:u32, term:&str, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, terminal_modes:&[(pty::Option, u32)]) {
@@ -435,9 +439,10 @@ impl<'a> State<'a> {
                     // 0 code (to terminate the list)
                     enc.write.push(0);
                     enc.write.push_u32_be(0);
-                })
+                });
             }
         }
+        self.flush();
     }
 
     pub fn request_x11(&mut self, channel:u32, single_connection: bool, x11_authentication_protocol: &str, x11_authentication_cookie: &str, x11_screen_number: u32) {
@@ -454,9 +459,10 @@ impl<'a> State<'a> {
                     enc.write.extend_ssh_string(x11_authentication_protocol.as_bytes());
                     enc.write.extend_ssh_string(x11_authentication_cookie.as_bytes());
                     enc.write.push_u32_be(x11_screen_number);
-                })
+                });
             }
         }
+        self.flush();
     }
 
     pub fn set_env(&mut self, channel:u32, variable_name:&str, variable_value:&str) {
@@ -471,9 +477,10 @@ impl<'a> State<'a> {
                     enc.write.push(0);
                     enc.write.extend_ssh_string(variable_name.as_bytes());
                     enc.write.extend_ssh_string(variable_value.as_bytes());
-                })
+                });
             }
         }
+        self.flush();
     }
 
 
@@ -487,9 +494,10 @@ impl<'a> State<'a> {
                     enc.write.extend_ssh_string(b"shell");
                     // enc.write.push(if self.want_reply { 1 } else { 0 });
                     enc.write.push(0);
-                })
+                });
             }
         }
+        self.flush();
     }
     pub fn exec(&mut self, channel:u32, command:&str) {
         if let Some(ref mut enc) = self.encrypted {
@@ -502,9 +510,10 @@ impl<'a> State<'a> {
                     // enc.write.push(if self.want_reply { 1 } else { 0 });
                     enc.write.push(0);
                     enc.write.extend_ssh_string(command.as_bytes());
-                })
+                });
             }
         }
+        self.flush();
     }
 
     pub fn request_subsystem(&mut self, channel:u32, name:&str) {
@@ -518,9 +527,10 @@ impl<'a> State<'a> {
                     // enc.write.push(if self.want_reply { 1 } else { 0 });
                     enc.write.push(0);
                     enc.write.extend_ssh_string(name.as_bytes());
-                })
+                });
             }
         }
+        self.flush();
     }
 
     pub fn window_change(&mut self, channel:u32, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32) {
@@ -536,9 +546,10 @@ impl<'a> State<'a> {
                     enc.write.push_u32_be(row_height);
                     enc.write.push_u32_be(pix_width);
                     enc.write.push_u32_be(pix_height);
-                })
+                });
             }
         }
+        self.flush();
     }
     
     pub fn tcpip_forward(&mut self, address:&str, port:u32) {
@@ -550,8 +561,9 @@ impl<'a> State<'a> {
                 enc.write.push(0);
                 enc.write.extend_ssh_string(address.as_bytes());
                 enc.write.push_u32_be(port);
-            })
+            });
         }
+        self.flush();
     }
 
     pub fn cancel_tcpip_forward(&mut self, address:&str, port:u32) {
@@ -563,8 +575,9 @@ impl<'a> State<'a> {
                 enc.write.push(0);
                 enc.write.extend_ssh_string(address.as_bytes());
                 enc.write.push_u32_be(port);
-            })
+            });
         }
+        self.flush();
     }
 
 }

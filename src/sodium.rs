@@ -88,12 +88,6 @@ pub mod chacha20 {
     newtype!(Nonce,NONCEBYTES);
     from_slice!(Nonce,NONCEBYTES);
 
-    #[cfg(test)]
-    pub fn gen_key() -> Key {
-        let mut key = Key([0; KEYBYTES]);
-        super::randombytes::into(&mut key.0);
-        key
-    }
     pub fn stream_xor_inplace(m: &mut [u8], &Nonce(ref n): &Nonce, &Key(ref k): &Key) {
         unsafe {
             libsodium_sys::crypto_stream_chacha20_xor(m.as_mut_ptr(),
