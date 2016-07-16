@@ -106,6 +106,7 @@ pub enum Error {
     WrongState,
     WrongChannel,
     UnknownChannelType,
+    UnknownSignal,
     IO(std::io::Error),
 }
 
@@ -201,6 +202,23 @@ impl Sig {
             Sig::SEGV => "SEGV",
             Sig::TERM => "TERM",
             Sig::USR1 => "USR1"
+        }
+    }
+    fn from_name(name: &[u8]) -> Option<Sig> {
+        match name {
+            b"ABRT" => Some(Sig::ABRT),
+            b"ALRM" => Some(Sig::ALRM),
+            b"FPE" => Some(Sig::FPE),
+            b"HUP" => Some(Sig::HUP),
+            b"ILL" => Some(Sig::ILL),
+            b"INT" => Some(Sig::INT),
+            b"KILL" => Some(Sig::KILL),
+            b"PIPE" => Some(Sig::PIPE),
+            b"QUIT" => Some(Sig::QUIT),
+            b"SEGV" => Some(Sig::SEGV),
+            b"TERM" => Some(Sig::TERM),
+            b"USR1" => Some(Sig::USR1),
+            _ => None
         }
     }
 }
@@ -306,6 +324,21 @@ pub trait Client {
 
     #[allow(unused_variables)]
     fn data(&mut self, channel: Option<u32>, data: &[u8], session: &mut client::State) -> Result<(), Error> {
+        Ok(())
+    }
+
+    #[allow(unused_variables)]
+    fn xon_xoff(&mut self, channel: u32, client_can_do: bool, session: &mut client::State) -> Result<(), Error> {
+        Ok(())
+    }
+
+    #[allow(unused_variables)]
+    fn exit_status(&mut self, channel: u32, exit_status: u32, session: &mut client::State) -> Result<(), Error> {
+        Ok(())
+    }
+
+    #[allow(unused_variables)]
+    fn exit_signal(&mut self, channel: u32, signal_name: Sig, core_dumped: bool, error_message:&str, lang_tag:&str, session: &mut client::State) -> Result<(), Error> {
         Ok(())
     }
 
