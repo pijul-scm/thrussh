@@ -38,8 +38,6 @@ use rand::{Rng};
 
 mod encrypted;
 
-const UNIT:&'static () = &();
-
 #[derive(Debug)]
 pub struct Config {
     pub client_id: String,
@@ -619,7 +617,7 @@ impl<'e> ClientSession<'e> {
     pub fn cancel_tcpip_forward(&mut self, address:&str, port:u32) {
         push_packet!(self.0.write, {
             self.0.write.push(msg::GLOBAL_REQUEST);
-            self.0.write.extend_ssh_string(b"tcpip-forward");
+            self.0.write.extend_ssh_string(b"cancel-tcpip-forward");
             // self.0.write.push(if self.want_reply { 1 } else { 0 });
             self.0.write.push(0);
             self.0.write.extend_ssh_string(address.as_bytes());

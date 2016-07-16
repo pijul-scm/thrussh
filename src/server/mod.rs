@@ -354,6 +354,16 @@ impl Connection {
 
 impl<'e> ServerSession<'e> {
 
+    pub fn request_success(&mut self) {
+        if self.0.wants_reply {
+            push_packet!(self.0.write, self.0.write.push(msg::REQUEST_SUCCESS))
+        }
+    }
+
+    pub fn request_failure(&mut self) {
+        push_packet!(self.0.write, self.0.write.push(msg::REQUEST_FAILURE))
+    }
+
     pub fn channel_success(&mut self, channel: u32) {
         if let Some(channel) = self.0.channels.get(&channel) {
             if channel.wants_reply {

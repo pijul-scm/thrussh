@@ -272,6 +272,16 @@ pub trait Server {
         Ok(())
     }
 
+    #[allow(unused_variables)]
+    fn tcpip_forward(&mut self, address:&str, port: u32) -> Result<(), Error> {
+        Ok(())
+    }
+
+    #[allow(unused_variables)]
+    fn cancel_tcpip_forward(&mut self, address:&str, port: u32) -> Result<(), Error> {
+        Ok(())
+    }
+    
     /// Called to check authentication requests.
     #[allow(unused_variables)]
     fn auth(&self, methods: auth::M, method: &auth::Method<key::PublicKey>) -> auth::Auth {
@@ -334,19 +344,6 @@ pub struct ChannelParameters {
     pub confirmed: bool,
     pub wants_reply: bool
 }
-
-fn adjust_window_size(buffer:&mut CryptoBuf,
-                      target: u32,
-                      channel: &mut ChannelParameters) {
-    push_packet!(buffer, {
-        buffer.push(msg::CHANNEL_WINDOW_ADJUST);
-        buffer.push_u32_be(channel.recipient_channel);
-        buffer.push_u32_be(target - channel.sender_window_size);
-    });
-    channel.sender_window_size = target;
-}
-
-
 
 const KEYTYPE_ED25519: &'static [u8] = b"ssh-ed25519";
 

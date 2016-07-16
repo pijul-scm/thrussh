@@ -51,7 +51,8 @@ pub struct Encrypted<C> {
     pub channels: HashMap<u32, ChannelParameters>,
     pub write: CryptoBuf,
     pub write_cursor: usize,
-    pub config: C
+    pub config: C,
+    pub wants_reply: bool
 }
 
 impl<C> Encrypted<C> {
@@ -338,7 +339,8 @@ impl NewKeys {
             // encryption).
             write: CryptoBuf::new(),
             write_cursor: 0,
-            config: config
+            config: config,
+            wants_reply: false
         }
     }
 }

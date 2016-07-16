@@ -195,7 +195,10 @@ impl Encrypted<Arc<Config>> {
                         try!(server.window_change_request(channel_num, col_width, row_height, pix_width, pix_height, ServerSession(self)));
                     }
                     x => {
-                        debug!("{:?}, line {:?} req_type = {:?}", file!(), line!(), std::str::from_utf8(x))
+                        debug!("{:?}, line {:?} req_type = {:?}", file!(), line!(), std::str::from_utf8(x));
+                        push_packet!(self.write, {
+                            self.write.push(msg::CHANNEL_FAILURE);
+                        });
                     }
                 }
                 Ok(())
@@ -206,6 +209,45 @@ impl Encrypted<Arc<Config>> {
                 let channel_num = try!(r.read_u32());
                 self.channels.remove(&channel_num);
                 Ok(())
+            }
+            msg::GLOBAL_REQUEST => {
+                let mut r = buf.reader(1);
+                let req_type = try!(r.read_string());
+                self.wants_reply = try!(r.read_byte()) != 0;
+                match req_type {
+                    b"tcpip-forward" => {
+                        let address = try!(std::str::from_utf8(try!(r.read_string())));
+                        let port = try!(r.read_u32());
+                        let result = server.tcpip_forward(address, port);
+                        if self.wants_reply {
+                            if result.is_ok() {
+                                push_packet!(self.write, self.write.push(msg::REQUEST_SUCCESS))
+                            } else {
+                                push_packet!(self.write, self.write.push(msg::REQUEST_FAILURE))
+                            }
+                        }
+                        result
+                    },
+                    b"cancel-tcpip-forward" => {
+                        let address = try!(std::str::from_utf8(try!(r.read_string())));
+                        let port = try!(r.read_u32());
+                        let result = server.cancel_tcpip_forward(address, port);
+                        if self.wants_reply {
+                            if result.is_ok() {
+                                push_packet!(self.write, self.write.push(msg::REQUEST_SUCCESS))
+                            } else {
+                                push_packet!(self.write, self.write.push(msg::REQUEST_FAILURE))
+                            }
+                        }
+                        result
+                    },
+                    _ => {
+                        push_packet!(self.write, {
+                            self.write.push(msg::REQUEST_FAILURE);
+                        });
+                        Ok(())
+                    }
+                }
             }
             m => {
                 debug!("unknown message received: {:?}", m);
