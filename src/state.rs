@@ -31,14 +31,9 @@ use sshbuffer::{SSHBuffer};
 use byteorder::{BigEndian, ByteOrder};
 use cipher::CipherT;
 use time;
+use std::sync::Arc;
 
-#[derive(Debug)]
-pub enum ServerState<Config> {
-    None { write_buffer: SSHBuffer },
-    Kex { write_buffer: SSHBuffer, kex: Kex },
-    Encrypted(Encrypted<Config>), // Session is now encrypted.
-}
-
+/*
 impl<Config> ServerState<Config>  {
 
     pub fn write<W: std::io::Write>(&mut self, stream: &mut W) -> Result<(), Error> {
@@ -51,27 +46,50 @@ impl<Config> ServerState<Config>  {
         Ok(())
     }
 }
+ */
 
 #[derive(Debug)]
-pub struct Encrypted<C> {
+pub struct Encrypted {
+    pub state: Option<EncryptedState>,
     pub exchange: Option<Exchange>, // It's always Some, except when we std::mem::replace it temporarily.
     pub kex: kex::Algorithm,
     pub key: usize,
-    pub cipher: cipher::CipherPair,
     pub mac: &'static str,
     pub session_id: kex::Digest,
-    pub state: Option<EncryptedState>,
     pub rekey: Option<Kex>,
     pub channels: HashMap<u32, ChannelParameters>,
+    pub wants_reply: bool,
     pub write: CryptoBuf,
     pub write_cursor: usize,
-    pub config: C,
-    pub wants_reply: bool,
-    pub write_buffer: SSHBuffer,
-    pub last_rekey_s: f64
 }
 
-impl<C> Encrypted<C> {
+#[derive(Debug)]
+pub struct CommonState<'a, Config> {
+    pub encrypted: Option<Encrypted>,
+    pub auth_method: Option<auth::Method<'a, key::Algorithm>>,
+    pub write_buffer: SSHBuffer,
+    pub kex: Option<Kex>,
+    pub cipher: cipher::CipherPair,
+    pub config: Arc<Config>,
+    pub last_rekey_s: f64,
+    pub wants_reply: bool
+}
+
+
+impl Encrypted {
+    pub fn adjust_window_size(&mut self, channel:u32, data:&[u8], target: u32) {
+        if let Some(ref mut channel) = self.channels.get_mut(&channel) {
+            channel.sender_window_size -= data.len() as u32;
+            if channel.sender_window_size < target / 2 {
+                push_packet!(self.write, {
+                    self.write.push(msg::CHANNEL_WINDOW_ADJUST);
+                    self.write.push_u32_be(channel.recipient_channel);
+                    self.write.push_u32_be(target - channel.sender_window_size);
+                });
+                channel.sender_window_size = target;
+            }
+        }
+    }
 
     pub fn data(&mut self, channel: u32, extended: Option<u32>, buf: &[u8]) -> Result<usize, Error> {
         if let Some(channel) = self.channels.get_mut(&channel) {
@@ -108,7 +126,9 @@ impl<C> Encrypted<C> {
             Err(Error::WrongChannel)
         }
     }
-
+}
+/*
+    /*
     pub fn flush(&mut self, limits:&Limits, read_buffer:&mut SSHBuffer) -> bool {
         // If there are pending packets (and we've not started to rekey), flush them.
         if self.rekey.is_none() {
@@ -147,23 +167,10 @@ impl<C> Encrypted<C> {
         }
         false
     }
-    
-    pub fn adjust_window_size(&mut self, channel:u32, data:&[u8], target: u32) {
-        if let Some(ref mut channel) = self.channels.get_mut(&channel) {
-            channel.sender_window_size -= data.len() as u32;
-            if channel.sender_window_size < target / 2 {
-                push_packet!(self.write, {
-                    self.write.push(msg::CHANNEL_WINDOW_ADJUST);
-                    self.write.push_u32_be(channel.recipient_channel);
-                    self.write.push_u32_be(target - channel.sender_window_size);
-                });
-                channel.sender_window_size = target;
-            }
-        }
-    }
+    */
 
 }
-
+*/
 
 #[derive(Debug)]
 pub enum EncryptedState {
@@ -339,30 +346,4 @@ pub struct NewKeys {
     pub session_id: kex::Digest,
     pub received: bool,
     pub sent: bool,
-}
-
-impl NewKeys {
-    pub fn encrypted<Config>(self, write_buffer: SSHBuffer, state: EncryptedState, config: Config) -> Encrypted<Config> {
-        Encrypted {
-            exchange: Some(self.exchange),
-            kex: self.kex,
-            key: self.key,
-            cipher: self.cipher,
-            mac: self.names.mac,
-            session_id: self.session_id,
-            state: Some(state),
-            rekey: None,
-            channels: HashMap::new(),
-
-            // Extra buffer to put extra packets while handling
-            // rekeying (also used to prepare packets before
-            // encryption).
-            write: CryptoBuf::new(),
-            write_cursor: 0,
-            config: config,
-            wants_reply: false,
-            write_buffer: write_buffer,
-            last_rekey_s: time::precise_time_s()
-        }
-    }
 }

@@ -22,6 +22,7 @@ pub mod chacha20poly1305;
 
 #[derive(Debug)]
 pub enum Cipher {
+    Clear,
     Chacha20Poly1305(chacha20poly1305::Cipher),
 }
 
@@ -37,6 +38,11 @@ pub struct CipherPair {
     pub local_to_remote: Cipher,
     pub remote_to_local: Cipher,
 }
+
+pub const CLEAR_PAIR:CipherPair = CipherPair {
+    local_to_remote: Cipher::Clear,
+    remote_to_local: Cipher::Clear
+};
 
 pub trait CipherT {
     fn read<'a, R: BufRead>(&self,
@@ -55,12 +61,14 @@ impl CipherT for Cipher {
                             -> Result<Option<&'a [u8]>, Error> {
 
         match *self {
+            Cipher::Clear => Clear.read(stream, buffer),
             Cipher::Chacha20Poly1305(ref cipher) => cipher.read(stream, buffer),
         }
     }
     fn write(&self, packet: &[u8], buffer: &mut SSHBuffer) {
 
         match *self {
+            Cipher::Clear => Clear.write(packet, buffer),
             Cipher::Chacha20Poly1305(ref cipher) => cipher.write(packet, buffer),
         }
     }

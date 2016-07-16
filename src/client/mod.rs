@@ -70,10 +70,9 @@ impl std::default::Default for Config {
 #[derive(Debug)]
 pub struct Connection<'a> {
     read_buffer: SSHBuffer,
-    state: Option<ServerState<Arc<Config>>>,
-    auth_method: Option<auth::Method<'a, key::Algorithm>>,
-    config: Arc<Config>
+    state: State<'a>
 }
+
 
 impl KexInit {
     pub fn client_parse<C:CipherT>(mut self, config:&Config, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<KexDhDone, Error> {
@@ -155,9 +154,15 @@ impl<'a> Connection<'a> {
         write_buffer.send_ssh_id(config.as_ref().client_id.as_bytes());
         let session = Connection {
             read_buffer: SSHBuffer::new(),
-            state: Some(ServerState::None { write_buffer:write_buffer }),
-            auth_method: None,
-            config: config
+            state: State {
+                write_buffer: write_buffer,
+                kex: None,
+                cipher: cipher::CLEAR_PAIR,
+                encrypted: None,
+                config: config,
+                last_rekey_s: time::precise_time_s(),
+                wants_reply: false
+            },
         };
         session
     }

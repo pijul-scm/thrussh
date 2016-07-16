@@ -25,57 +25,88 @@ use std;
 use byteorder::{ByteOrder, BigEndian};
 use rand::{thread_rng, Rng};
 use key::Verify;
+use negociation;
+use negociation::Select;
 
-impl Encrypted<Arc<Config>> {
+impl State {
 
     #[doc(hidden)]
-    pub fn server_read_encrypted<'e, S: Server>(&'e mut self,
-                                                server: &mut S,
-                                                buf: &[u8],
-                                                buffer: &mut CryptoBuf)
-                                                -> Result<(), Error> {
-        // If we've successfully read a packet.
-        debug!("state = {:?}, buf = {:?}", self.state, buf);
-        let state = std::mem::replace(&mut self.state, None);
-        match state {
-            Some(EncryptedState::WaitingServiceRequest) if buf[0] == msg::SERVICE_REQUEST => {
+    pub fn server_read_encrypted<S: Server>(&mut self,
+                                            server: &mut S,
+                                            buf: &[u8],
+                                            buffer: &mut CryptoBuf)
+                                            -> Result<(), Error> {
 
-                let mut r = buf.reader(1);
-                let request = try!(r.read_string());
-                debug!("request: {:?}", std::str::from_utf8(request));
-                if request == b"ssh-userauth" {
+        // Either this packet is a KEXINIT, in which case we start a key re-exchange.
+        if buf[0] == msg::KEXINIT {
+            // Now, if we're encrypted:
+            if let Some(ref mut enc) = self.encrypted {
 
-                    let auth_request =
-                        server_accept_service(self.config.auth_banner,
-                                              self.config.methods,
-                                              &mut self.write);
-                    self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
-
-                } else {
-
-                    self.state = Some(EncryptedState::WaitingServiceRequest)
+                // If we're not currently rekeying, but buf is a rekey request
+                if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
+                    let kexinit = KexInit::received_rekey(
+                        exchange,
+                        try!(negociation::Server::read_kex(buf, &self.config.as_ref().preferred)),
+                        &enc.session_id
+                    );
+                    self.kex = Some(
+                        try!(kexinit.server_parse(
+                            self.config.as_ref(),
+                            &mut self.cipher,
+                            buf,
+                            &mut self.write_buffer
+                        ))
+                    );
                 }
-                Ok(())
-            },
-            Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
-                if buf[0] == msg::USERAUTH_REQUEST {
-                    try!(self.server_read_auth_request(server, buf, buffer, auth_request));
-                    Ok(())
-                } else {
-                    // Wrong request
-                    self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
-                    Ok(())
-                }
-            }
-            Some(EncryptedState::Authenticated) => {
-                self.state = Some(EncryptedState::Authenticated);
-                self.server_read_authenticated(server, buf)
-            },
-            state => {
-                self.state = state;
-                Ok(())
+                return Ok(())
             }
         }
+        // If we've successfully read a packet.
+        // debug!("state = {:?}, buf = {:?}", self.state, buf);
+        let mut is_authenticated = false;
+        if let Some(ref mut enc) = self.encrypted {
+            let state = std::mem::replace(&mut enc.state, None);
+            match state {
+                Some(EncryptedState::WaitingServiceRequest) if buf[0] == msg::SERVICE_REQUEST => {
+
+                    let mut r = buf.reader(1);
+                    let request = try!(r.read_string());
+                    debug!("request: {:?}", std::str::from_utf8(request));
+                    if request == b"ssh-userauth" {
+                        
+                        let auth_request =
+                            server_accept_service(self.config.as_ref().auth_banner,
+                                                  self.config.as_ref().methods,
+                                                  &mut enc.write);
+                        enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+
+                    } else {
+
+                        enc.state = Some(EncryptedState::WaitingServiceRequest)
+                    }
+                },
+                Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
+                    if buf[0] == msg::USERAUTH_REQUEST {
+                        try!(enc.server_read_auth_request(server, buf, buffer, auth_request));
+                    } else {
+                        // Wrong request
+                        enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+                    }
+                }
+                Some(EncryptedState::Authenticated) => {
+                    is_authenticated = true;
+                    enc.state = Some(EncryptedState::Authenticated)
+                }
+                state => {
+                    enc.state = state;
+                }
+            }
+        }
+        if is_authenticated {
+            self.server_read_authenticated(server, buf)
+        } else {
+            Ok(())
+        }    
     }
 
     pub fn server_read_authenticated<S: Server>(&mut self,
@@ -99,47 +130,59 @@ impl Encrypted<Arc<Config>> {
                     Some(try!(r.read_u32()))
                 };
                 let data =
-                    if let Some(channel) = self.channels.get_mut(&channel_num) {
+                    if let Some(ref mut enc) = self.encrypted {
+
                         let data = try!(r.read_string());
-                        // Ignore extra data.
-                        // https://tools.ietf.org/html/rfc4254#section-5.2
-                        if data.len() as u32 <= channel.sender_window_size {
-                            channel.sender_window_size -= data.len() as u32;
+                        if let Some(channel) = enc.channels.get_mut(&channel_num) {
+                            // Ignore extra data.
+                            // https://tools.ietf.org/html/rfc4254#section-5.2
+                            if data.len() as u32 <= channel.sender_window_size {
+                                channel.sender_window_size -= data.len() as u32;
+                            }
+                        } else {
+                            return Err(Error::WrongChannel)
                         }
+                        let window_size = self.config.window_size;
+                        enc.adjust_window_size(channel_num, data, window_size);
                         data
+
                     } else {
-                        return Err(Error::WrongChannel)
+                        unreachable!()
                     };
                 {
                     if let Some(ext) = ext {
-                        try!(server.extended_data(channel_num, ext, &data, ServerSession(self)));
+                        try!(server.extended_data(channel_num, ext, &data, self));
                     } else {
-                        try!(server.data(channel_num, &data, ServerSession(self)));
+                        try!(server.data(channel_num, &data, self));
                     }
                 }
-                let window_size = self.config.window_size;
-                self.adjust_window_size(channel_num, &[], window_size);
                 Ok(())
             }
+
             msg::CHANNEL_WINDOW_ADJUST => {
                 let mut r = buf.reader(1);
                 let channel_num = try!(r.read_u32());
                 let amount = try!(r.read_u32());
-                if let Some(channel) = self.channels.get_mut(&channel_num) {
-                    channel.recipient_window_size += amount;
-                } else {
-                    return Err(Error::WrongChannel)
+                if let Some(ref mut enc) = self.encrypted {
+                    if let Some(channel) = enc.channels.get_mut(&channel_num) {
+                        channel.recipient_window_size += amount;
+                    } else {
+                        return Err(Error::WrongChannel)
+                    }
                 }
-                try!(server.window_adjusted(channel_num, ServerSession(self)));
+                try!(server.window_adjusted(channel_num, self));
                 Ok(())
             }
+
             msg::CHANNEL_REQUEST => {
                 let mut r = buf.reader(1);
                 let channel_num = try!(r.read_u32());
                 let req_type = try!(r.read_string());
                 let wants_reply = try!(r.read_byte());
-                if let Some(channel) = self.channels.get_mut(&channel_num) {
-                    channel.wants_reply = wants_reply != 0;
+                if let Some(ref mut enc) = self.encrypted {
+                    if let Some(channel) = enc.channels.get_mut(&channel_num) {
+                        channel.wants_reply = wants_reply != 0;
+                    }
                 }
                 match req_type {
                     b"pty-req" => {
@@ -162,43 +205,45 @@ impl Encrypted<Arc<Config>> {
                                 i += 1
                             }
                         }
-                        try!(server.pty_request(channel_num, term, col_width, row_height, pix_width, pix_height, &modes[0..i], ServerSession(self)));
+                        try!(server.pty_request(channel_num, term, col_width, row_height, pix_width, pix_height, &modes[0..i], self));
                     }
                     b"x11-req" => {
                         let single_connection = try!(r.read_byte()) != 0;
                         let x11_auth_protocol = try!(std::str::from_utf8(try!(r.read_string())));
                         let x11_auth_cookie = try!(std::str::from_utf8(try!(r.read_string())));
                         let x11_screen_number = try!(r.read_u32());
-                        try!(server.x11_request(channel_num, single_connection, x11_auth_protocol, x11_auth_cookie, x11_screen_number, ServerSession(self)));
+                        try!(server.x11_request(channel_num, single_connection, x11_auth_protocol, x11_auth_cookie, x11_screen_number, self));
                     }
                     b"env" => {
                         let env_variable = try!(std::str::from_utf8(try!(r.read_string())));
                         let env_value = try!(std::str::from_utf8(try!(r.read_string())));
-                        try!(server.env_request(channel_num, env_variable, env_value, ServerSession(self)));
+                        try!(server.env_request(channel_num, env_variable, env_value, self));
                     }
                     b"shell" => {
-                        try!(server.shell_request(channel_num, ServerSession(self)));
+                        try!(server.shell_request(channel_num, self));
                     }
                     b"exec" => {
                         let req = try!(r.read_string());
-                        try!(server.exec_request(channel_num, req, ServerSession(self)));
+                        try!(server.exec_request(channel_num, req, self));
                     }
                     b"subsystem" => {
                         let name = try!(std::str::from_utf8(try!(r.read_string())));
-                        try!(server.subsystem_request(channel_num, name, ServerSession(self)));
+                        try!(server.subsystem_request(channel_num, name, self));
                     }
                     b"window_change" => {
                         let col_width = try!(r.read_u32());
                         let row_height = try!(r.read_u32());
                         let pix_width = try!(r.read_u32());
                         let pix_height = try!(r.read_u32());
-                        try!(server.window_change_request(channel_num, col_width, row_height, pix_width, pix_height, ServerSession(self)));
+                        try!(server.window_change_request(channel_num, col_width, row_height, pix_width, pix_height, self));
                     }
                     x => {
                         debug!("{:?}, line {:?} req_type = {:?}", file!(), line!(), std::str::from_utf8(x));
-                        push_packet!(self.write, {
-                            self.write.push(msg::CHANNEL_FAILURE);
-                        });
+                        if let Some(ref mut enc) = self.encrypted {
+                            push_packet!(enc.write, {
+                                enc.write.push(msg::CHANNEL_FAILURE);
+                            });
+                        }
                     }
                 }
                 Ok(())
@@ -207,7 +252,9 @@ impl Encrypted<Arc<Config>> {
             msg::CHANNEL_CLOSE => {
                 let mut r = buf.reader(1);
                 let channel_num = try!(r.read_u32());
-                self.channels.remove(&channel_num);
+                if let Some(ref mut enc) = self.encrypted {
+                    enc.channels.remove(&channel_num);
+                }
                 Ok(())
             }
             msg::GLOBAL_REQUEST => {
@@ -220,10 +267,12 @@ impl Encrypted<Arc<Config>> {
                         let port = try!(r.read_u32());
                         let result = server.tcpip_forward(address, port);
                         if self.wants_reply {
-                            if result.is_ok() {
-                                push_packet!(self.write, self.write.push(msg::REQUEST_SUCCESS))
-                            } else {
-                                push_packet!(self.write, self.write.push(msg::REQUEST_FAILURE))
+                            if let Some(ref mut enc) = self.encrypted {
+                                if result.is_ok() {
+                                    push_packet!(enc.write, enc.write.push(msg::REQUEST_SUCCESS))
+                                } else {
+                                    push_packet!(enc.write, enc.write.push(msg::REQUEST_FAILURE))
+                                }
                             }
                         }
                         result
@@ -233,18 +282,22 @@ impl Encrypted<Arc<Config>> {
                         let port = try!(r.read_u32());
                         let result = server.cancel_tcpip_forward(address, port);
                         if self.wants_reply {
-                            if result.is_ok() {
-                                push_packet!(self.write, self.write.push(msg::REQUEST_SUCCESS))
-                            } else {
-                                push_packet!(self.write, self.write.push(msg::REQUEST_FAILURE))
+                            if let Some(ref mut enc) = self.encrypted {
+                                if result.is_ok() {
+                                    push_packet!(enc.write, enc.write.push(msg::REQUEST_SUCCESS))
+                                } else {
+                                    push_packet!(enc.write, enc.write.push(msg::REQUEST_FAILURE))
+                                }
                             }
                         }
                         result
                     },
                     _ => {
-                        push_packet!(self.write, {
-                            self.write.push(msg::REQUEST_FAILURE);
-                        });
+                        if let Some(ref mut enc) = self.encrypted {
+                            push_packet!(enc.write, {
+                                enc.write.push(msg::REQUEST_FAILURE);
+                            });
+                        }
                         Ok(())
                     }
                 }
@@ -256,6 +309,103 @@ impl Encrypted<Arc<Config>> {
         }
     }
 
+    fn server_handle_channel_open<S: Server>(&mut self,
+                                             server: &mut S,
+                                             buf: &[u8])
+                                             -> Result<(), Error> {
+        
+        // https://tools.ietf.org/html/rfc4254#section-5.1
+        let mut r = buf.reader(1);
+        let typ = try!(r.read_string());
+        let sender = try!(r.read_u32());
+        let window = try!(r.read_u32());
+        let maxpacket = try!(r.read_u32());
+
+        let mut sender_channel: u32 = 1;
+        let typ =
+            if let Some(ref mut enc) = self.encrypted {
+                while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
+                    sender_channel = thread_rng().gen()
+                }
+
+                match typ {
+                    b"session" => {
+                        ChannelType::Session
+                    },
+                    b"x11" => {
+                        let a = try!(std::str::from_utf8(try!(r.read_string())));
+                        let b = try!(r.read_u32());
+                        ChannelType::X11 {
+                            originator_address: a,
+                            originator_port: b
+                        }
+                    },
+                    b"forwarded_tcpip" => {
+                        let a = try!(std::str::from_utf8(try!(r.read_string())));
+                        let b = try!(r.read_u32());
+                        let c = try!(std::str::from_utf8(try!(r.read_string())));
+                        let d = try!(r.read_u32());
+                        ChannelType::ForwardedTcpip {
+                            connected_address:a,
+                            connected_port:b,
+                            originator_address:c,
+                            originator_port:d
+                        }
+                    },
+                    b"direct-tcpip" => {
+                        let a = try!(std::str::from_utf8(try!(r.read_string())));
+                        let b = try!(r.read_u32());
+                        let c = try!(std::str::from_utf8(try!(r.read_string())));
+                        let d = try!(r.read_u32());
+                        ChannelType::DirectTcpip {
+                            host_to_connect:a,
+                            port_to_connect:b,
+                            originator_address:c,
+                            originator_port:d
+                        }
+                    }
+                    t => {
+                        debug!("unknown channel type: {:?}", t);
+                        push_packet!(enc.write, {
+                            enc.write.push(msg::CHANNEL_OPEN_FAILURE);
+                            enc.write.push_u32_be(sender);
+                            enc.write.push_u32_be(3); // SSH_OPEN_UNKNOWN_CHANNEL_TYPE
+                            enc.write.extend_ssh_string(b"Unknown channel type");
+                            enc.write.extend_ssh_string(b"en");
+                        });
+                        return Ok(())
+                    }
+                }
+            } else {
+                unreachable!()
+            };
+
+        server.new_channel(sender_channel, typ, self);
+        let channel = ChannelParameters {
+            recipient_channel: sender,
+            sender_channel: sender_channel, /* "sender" is the local end, i.e. we're the sender, the remote is the recipient. */
+            recipient_window_size: window,
+            sender_window_size: self.config.window_size,
+            recipient_maximum_packet_size: maxpacket,
+            sender_maximum_packet_size: self.config.maximum_packet_size,
+            confirmed: true,
+            wants_reply: false
+        };
+        debug!("waiting channel open: {:?}", channel);
+        // Write the response immediately, so that we're ready when the stream becomes writable.
+        if let Some(ref mut enc) = self.encrypted {
+            server_confirm_channel_open(&mut enc.write, &channel, self.config.as_ref());
+            //
+            let sender_channel = channel.sender_channel;
+            enc.channels.insert(sender_channel, channel);
+            enc.state = Some(EncryptedState::Authenticated);
+        }
+        Ok(())
+    }
+
+}
+
+impl Encrypted {
 
     pub fn server_read_auth_request<S: Server>(&mut self,
                                                server: &S,
@@ -372,7 +522,6 @@ impl Encrypted<Arc<Config>> {
             Err(Error::Inconsistent)
         }
     }
-    
 
     fn reject_auth_request(&mut self, auth_request:AuthRequest) {
         debug!("rejecting {:?}", auth_request);
@@ -383,93 +532,6 @@ impl Encrypted<Arc<Config>> {
         });
         debug!("packet pushed");
         self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
-    }
-
-    fn server_handle_channel_open<S: Server>(&mut self,
-                                             server: &mut S,
-                                             buf: &[u8])
-                                             -> Result<(), Error> {
-        
-        // https://tools.ietf.org/html/rfc4254#section-5.1
-        let mut r = buf.reader(1);
-        let typ = try!(r.read_string());
-        let sender = try!(r.read_u32());
-        let window = try!(r.read_u32());
-        let maxpacket = try!(r.read_u32());
-
-        let mut sender_channel: u32 = 1;
-        while self.channels.contains_key(&sender_channel) || sender_channel == 0 {
-            sender_channel = thread_rng().gen()
-        }
-
-        let typ = match typ {
-            b"session" => {
-                ChannelType::Session
-            },
-            b"x11" => {
-                let a = try!(std::str::from_utf8(try!(r.read_string())));
-                let b = try!(r.read_u32());
-                ChannelType::X11 {
-                    originator_address: a,
-                    originator_port: b
-                }
-            },
-            b"forwarded_tcpip" => {
-                let a = try!(std::str::from_utf8(try!(r.read_string())));
-                let b = try!(r.read_u32());
-                let c = try!(std::str::from_utf8(try!(r.read_string())));
-                let d = try!(r.read_u32());
-                ChannelType::ForwardedTcpip {
-                    connected_address:a,
-                    connected_port:b,
-                    originator_address:c,
-                    originator_port:d
-                }
-            },
-            b"direct-tcpip" => {
-                let a = try!(std::str::from_utf8(try!(r.read_string())));
-                let b = try!(r.read_u32());
-                let c = try!(std::str::from_utf8(try!(r.read_string())));
-                let d = try!(r.read_u32());
-                ChannelType::DirectTcpip {
-                    host_to_connect:a,
-                    port_to_connect:b,
-                    originator_address:c,
-                    originator_port:d
-                }
-            }
-            t => {
-                debug!("unknown channel type: {:?}", t);
-                push_packet!(self.write, {
-                    self.write.push(msg::CHANNEL_OPEN_FAILURE);
-                    self.write.push_u32_be(sender);
-                    self.write.push_u32_be(3); // SSH_OPEN_UNKNOWN_CHANNEL_TYPE
-                    self.write.extend_ssh_string(b"Unknown channel type");
-                    self.write.extend_ssh_string(b"en");
-                });
-                return Ok(())
-            }
-        };
-
-        server.new_channel(sender_channel, typ, ServerSession(self));
-        let channel = ChannelParameters {
-            recipient_channel: sender,
-            sender_channel: sender_channel, /* "sender" is the local end, i.e. we're the sender, the remote is the recipient. */
-            recipient_window_size: window,
-            sender_window_size: self.config.window_size,
-            recipient_maximum_packet_size: maxpacket,
-            sender_maximum_packet_size: self.config.maximum_packet_size,
-            confirmed: true,
-            wants_reply: false
-        };
-        debug!("waiting channel open: {:?}", channel);
-        // Write the response immediately, so that we're ready when the stream becomes writable.
-        server_confirm_channel_open(&mut self.write, &channel, self.config.as_ref());
-        //
-        let sender_channel = channel.sender_channel;
-        self.channels.insert(sender_channel, channel);
-        self.state = Some(EncryptedState::Authenticated);
-        Ok(())
     }
 }
 
@@ -533,3 +595,4 @@ fn server_confirm_channel_open(buffer: &mut CryptoBuf,
         buffer.push_u32_be(config.maximum_packet_size);
     });
 }
+
