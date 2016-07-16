@@ -159,10 +159,9 @@ pub struct Limits {
 }
 
 pub mod server;
-// pub mod client;
+pub mod client;
 
-// const SSH_EXTENDED_DATA_STDERR: u32 = 1;
-
+#[derive(Debug)]
 pub enum ChannelType<'a> {
     Session,
     X11 { originator_address: &'a str, originator_port: u32 },
@@ -298,24 +297,24 @@ pub trait Client {
     fn check_server_key(&self, server_public_key: &key::PublicKey) -> bool {
         false
     }
-/*
-    #[allow(unused_variables)]
-    fn channel_open_confirmation(&self, channel:u32, session: ClientSession) {}
 
     #[allow(unused_variables)]
-    fn channel_open_failure(&self, channel:u32, reason: ChannelOpen, description:&str, language:&str, session: ClientSession) {}
+    fn channel_open_confirmation(&self, channel:u32, session: &mut client::State) {}
 
     #[allow(unused_variables)]
-    fn data(&mut self, channel: Option<u32>, data: &[u8], session: ClientSession) -> Result<(), Error> {
+    fn channel_open_failure(&self, channel:u32, reason: ChannelOpen, description:&str, language:&str, session: &mut client::State) {}
+
+    #[allow(unused_variables)]
+    fn data(&mut self, channel: Option<u32>, data: &[u8], session: &mut client::State) -> Result<(), Error> {
         Ok(())
     }
 
     /// Called when the network window is adjusted, meaning that we can send more bytes.
     #[allow(unused_variables)]
-    fn window_adjusted(&mut self, channel:u32, session: ClientSession) -> Result<(), Error> {
+    fn window_adjusted(&mut self, channel:u32, session: &mut client::State) -> Result<(), Error> {
         Ok(())
     }
-*/
+
 }
 
 enum_from_primitive! {

@@ -61,6 +61,7 @@ pub struct Encrypted {
     pub wants_reply: bool,
     pub write: CryptoBuf,
     pub write_cursor: usize,
+    pub last_rekey_s: f64,
 }
 
 #[derive(Debug)]
@@ -71,11 +72,36 @@ pub struct CommonState<'a, Config> {
     pub kex: Option<Kex>,
     pub cipher: cipher::CipherPair,
     pub config: Arc<Config>,
-    pub last_rekey_s: f64,
     pub wants_reply: bool
 }
 
-
+impl<'a, C> CommonState<'a, C> {
+    pub fn encrypted(&mut self, state: EncryptedState, newkeys: NewKeys) {
+        if let Some(ref mut enc) = self.encrypted {
+            enc.exchange = Some(newkeys.exchange);
+            enc.kex = newkeys.kex;
+            enc.key = newkeys.key;
+            enc.mac = newkeys.names.mac;
+            self.cipher = newkeys.cipher;
+        } else {
+            self.encrypted = Some(Encrypted {
+                exchange: Some(newkeys.exchange),
+                kex: newkeys.kex,
+                key: newkeys.key,
+                mac: newkeys.names.mac,
+                session_id: newkeys.session_id,
+                state: Some(state),
+                rekey: None,
+                channels: HashMap::new(),
+                wants_reply: false,
+                write: CryptoBuf::new(),
+                write_cursor: 0,
+                last_rekey_s: time::precise_time_s(),
+            });
+            self.cipher = newkeys.cipher;
+        }
+    }
+}
 impl Encrypted {
     pub fn adjust_window_size(&mut self, channel:u32, data:&[u8], target: u32) {
         if let Some(ref mut channel) = self.channels.get_mut(&channel) {
@@ -126,6 +152,43 @@ impl Encrypted {
             Err(Error::WrongChannel)
         }
     }
+
+    pub fn flush(&mut self, limits:&Limits, cipher:&mut cipher::CipherPair, write_buffer:&mut SSHBuffer) -> bool {
+        // If there are pending packets (and we've not started to rekey), flush them.
+        {
+            let packets = self.write.as_slice();
+            while self.write_cursor < self.write.len() {
+                if write_buffer.bytes >= limits.rekey_write_limit ||
+                    time::precise_time_s() >= self.last_rekey_s + limits.rekey_time_limit_s {
+
+                        // Resetting those now is incorrect (since
+                        // we're resetting before the rekeying), but
+                        // since the bytes sent during rekeying will
+                        // be counted, the limits are still an upper
+                        // bound on the size that can be sent.
+                        write_buffer.bytes = 0;
+                        self.last_rekey_s = time::precise_time_s();
+                        return true
+                            
+                    } else {
+                        // Read a single packet, selfrypt and send it.
+                        let len = BigEndian::read_u32(&packets[self.write_cursor .. ]) as usize;
+                        debug!("flushing len {:?}", len);
+                        let packet = &packets [(self.write_cursor+4) .. (self.write_cursor+4+len)];
+                        cipher.write(packet, write_buffer);
+                        self.write_cursor += 4+len
+                    }
+            }
+        }
+        if self.write_cursor >= self.write.len() {
+            // If all packets have been written, clear.
+            self.write_cursor = 0;
+            self.write.clear();
+        }
+        false
+    }
+
+
 }
 /*
     /*

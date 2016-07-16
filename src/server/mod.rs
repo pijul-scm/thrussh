@@ -15,7 +15,7 @@
 use std::io::{Write, BufRead};
 use std;
 use std::sync::Arc;
-use byteorder::{BigEndian, ByteOrder};
+use byteorder::{ByteOrder};
 
 use super::*;
 
@@ -28,8 +28,7 @@ use cipher;
 use negociation;
 use key::PubKey;
 use encoding::Reader;
-use std::collections::HashMap;
-use time;
+
 use state::*;
 
 #[derive(Debug)]
@@ -167,72 +166,6 @@ pub struct Connection {
 }
 pub type State = CommonState<'static, Config>;
 
-impl State {
-    pub fn encrypted(&mut self, state: EncryptedState, newkeys: NewKeys) {
-        if let Some(ref mut enc) = self.encrypted {
-            enc.exchange = Some(newkeys.exchange);
-            enc.kex = newkeys.kex;
-            enc.key = newkeys.key;
-            enc.mac = newkeys.names.mac;
-            self.cipher = newkeys.cipher;
-        } else {
-            self.encrypted = Some(Encrypted {
-                exchange: Some(newkeys.exchange),
-                kex: newkeys.kex,
-                key: newkeys.key,
-                mac: newkeys.names.mac,
-                session_id: newkeys.session_id,
-                state: Some(state),
-                rekey: None,
-                channels: HashMap::new(),
-                wants_reply: false,
-                write: CryptoBuf::new(),
-                write_cursor: 0
-            });
-            self.cipher = newkeys.cipher;
-        }
-    }
-
-    pub fn flush(&mut self) -> bool {
-        // If there are pending packets (and we've not started to rekey), flush them.
-        if let Some(ref mut enc) = self.encrypted {
-            {
-                let packets = enc.write.as_slice();
-                while enc.write_cursor < enc.write.len() {
-                    if self.write_buffer.bytes >= self.config.as_ref().limits.rekey_write_limit ||
-                        time::precise_time_s() >= self.last_rekey_s + self.config.as_ref().limits.rekey_time_limit_s {
-
-
-                            // Resetting those now is incorrect (since
-                            // we're resetting before the rekeying), but
-                            // since the bytes sent during rekeying will
-                            // be counted, the limits are still an upper
-                            // bound on the size that can be sent.
-                            self.write_buffer.bytes = 0;
-                            self.last_rekey_s = time::precise_time_s();
-                            return true
-                                
-                        } else {
-                            // Read a single packet, encrypt and send it.
-                            let len = BigEndian::read_u32(&packets[enc.write_cursor .. ]) as usize;
-                            debug!("flushing len {:?}", len);
-                            let packet = &packets [(enc.write_cursor+4) .. (enc.write_cursor+4+len)];
-                            self.cipher.write(packet, &mut self.write_buffer);
-                            enc.write_cursor += 4+len
-                        }
-                }
-            }
-            if enc.write_cursor >= enc.write.len() {
-                // If all packets have been written, clear.
-                enc.write_cursor = 0;
-                enc.write.clear();
-            }
-        }
-        false
-    }
-
-
-}
 
 impl Connection {
 
@@ -252,7 +185,6 @@ impl Connection {
                 cipher: cipher::CLEAR_PAIR,
                 encrypted: None,
                 config: config,
-                last_rekey_s: time::precise_time_s(),
                 wants_reply: false
             },
         };
@@ -342,9 +274,9 @@ impl Connection {
                 }
             }
 
-            if self.state.flush() {
                 
-                if let Some(ref mut enc) = self.state.encrypted {
+            if let Some(ref mut enc) = self.state.encrypted {
+                if enc.flush( &self.state.config.as_ref().limits, &mut self.state.cipher, &mut self.state.write_buffer) {
                     if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
                         let mut kexinit = KexInit::initiate_rekey(exchange, &enc.session_id);
                         kexinit.server_write(&self.state.config.as_ref(),
