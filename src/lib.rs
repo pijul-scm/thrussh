@@ -32,16 +32,16 @@
 //!     client_pubkey: &'p key::PublicKey
 //! }
 //! impl<'p> Server for S<'p> {
-//!     fn auth(&self, _:auth::M, method:&auth::Method<key::PublicKey>) -> auth::Auth {
+//!     fn auth(&self, _:auth::M, method:&auth::Method<key::PublicKey>) -> auth::Answer {
 //!         match *method {
 //!             auth::Method::PublicKey { ref user, ref public_key }
 //!               if *user == "pe" && public_key == self.client_pubkey=> {
 //!                 // If the user and public key match, accept the public key.
-//!                 auth::Auth::Success
+//!                 auth::Answer::Success
 //!             },
 //!             _ =>
 //!                 // Else, reject and provide no other methods.
-//!                 auth::Auth::Reject {
+//!                 auth::Answer::Reject {
 //!                     partial_success:false, remaining_methods:
 //!                     auth::M::empty()
 //!                 }
@@ -77,7 +77,7 @@
 //! let mut server = S{
 //!     client_pubkey: &client_keypair.public_key()
 //! };
-//! let mut server_session = server::Connection::new(server_config.clone());
+//! let mut server_connection = server::Connection::new(server_config.clone());
 //!
 //!
 //! // Initialize the client
@@ -87,11 +87,8 @@
 //! let mut client = C{
 //!     server_pk: &server_keypair.public_key()
 //! };
-//! let mut client_session = client::Connection::new(client_config);
-//! client_session.authenticate(
-//!     auth::Method::PublicKey { user:"pe", public_key: client_keypair }
-//! );
-//!
+//! let mut client_connection = client::Connection::new(client_config);
+//! client_connection.session.set_auth_public_key("pe", client_keypair);
 //!
 //! // Now, run the protocol (it is obviously more useful when the
 //! // instances of Read and Write are networks sockets instead of Vec).
@@ -105,38 +102,38 @@
 //! let mut buffer0 = CryptoBuf::new();
 //! let mut buffer1 = CryptoBuf::new();
 //!
-//! let mut run_protocol = |client_session:&mut client::Connection| {
+//! let mut run_protocol = |client_connection:&mut client::Connection| {
 //!     {
 //!         let mut swrite = &server_write[..];
-//!         client_session.read(&mut client, &mut swrite, &mut buffer0, &mut buffer1).unwrap();
+//!         client_connection.read(&mut client, &mut swrite, &mut buffer0, &mut buffer1).unwrap();
 //!     }
 //!     server_write.clear();
-//!     client_session.write(&mut server_read).unwrap();
+//!     client_connection.write(&mut server_read).unwrap();
 //!     {
 //!         let mut sread = &server_read[..];
-//!         server_session.read(&mut server, &mut sread, &mut buffer0, &mut buffer1).unwrap();
+//!         server_connection.read(&mut server, &mut sread, &mut buffer0, &mut buffer1).unwrap();
 //!     }
 //!     server_read.clear();
-//!     server_session.write(&mut server_write).unwrap();
+//!     server_connection.write(&mut server_write).unwrap();
 //! };
 //!
 //! // Run the protocol until authentication is complete.
-//! while !client_session.is_authenticated() {
-//!     run_protocol(&mut client_session)
+//! while !client_connection.session.is_authenticated() {
+//!     run_protocol(&mut client_connection)
 //! }
 //!
 //! // From the client, ask the server to open a channel (prepare buffers to do so).
-//! let channel = client_session.session.channel_open_session().unwrap();
+//! let channel = client_connection.session.channel_open_session().unwrap();
 //!
 //!
 //! // Then run the protocol again, until our channel is confirmed.
 //! loop {
-//!     if let Some(chan) = client_session.session.channels().and_then(|x| x.get(&channel)) {
+//!     if let Some(chan) = client_connection.session.channels().and_then(|x| x.get(&channel)) {
 //!         if chan.confirmed {
 //!             break
 //!         }
 //!     }
-//!     run_protocol(&mut client_session);
+//!     run_protocol(&mut client_connection);
 //! }
 //!
 //!```
@@ -145,8 +142,6 @@
 extern crate libc;
 extern crate libsodium_sys;
 extern crate rand;
-#[macro_use]
-extern crate enum_primitive;
 
 #[macro_use]
 extern crate bitflags;
@@ -233,8 +228,11 @@ impl From<rustc_serialize::base64::FromBase64Error> for Error {
 }
 
 mod negociation;
-pub mod pty;
+pub use negociation::Preferred;
+mod pty;
+pub use pty::Pty;
 mod msg;
+/// Key generation and use.
 pub mod key;
 mod kex;
 
@@ -318,8 +316,8 @@ impl<'a> Sig<'a> {
 pub trait Server {
     /// Called to check authentication requests.
     #[allow(unused_variables)]
-    fn auth(&self, methods: auth::M, method: &auth::Method<key::PublicKey>) -> auth::Auth {
-        auth::Auth::Reject {
+    fn auth(&self, methods: auth::M, method: &auth::Method<key::PublicKey>) -> auth::Answer {
+        auth::Answer::Reject {
             remaining_methods: methods - method.num(),
             partial_success: false,
         }
@@ -332,10 +330,6 @@ pub trait Server {
     /// Called when a new X11 channel is created.
     #[allow(unused_variables)]
     fn channel_open_x11(&mut self, channel: u32, originator_address:&str, originator_port:u32, session: &mut server::Session) {}
-
-    /// Called when a new channel is created.
-    #[allow(unused_variables)]
-    fn channel_open_forwarded_tcpip(&mut self, channel: u32, connected_address:&str, connected_port:u32, originator_address:&str, originator_port:u32, session: &mut server::Session) {}
 
     /// Called when a new channel is created.
     #[allow(unused_variables)]
@@ -364,7 +358,7 @@ pub trait Server {
 
     /// The client requests a pseudo-terminal with the given specifications.
     #[allow(unused_variables)]
-    fn pty_request(&mut self, channel:u32, term:&str, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, modes:&[(pty::Option, u32)], session: &mut server::Session) -> Result<(), Error> {
+    fn pty_request(&mut self, channel:u32, term:&str, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, modes:&[(Pty, u32)], session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
@@ -414,13 +408,13 @@ pub trait Server {
 
     /// Used for reverse-forwarding ports, see [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
     #[allow(unused_variables)]
-    fn tcpip_forward(&mut self, address:&str, port: u32) -> Result<(), Error> {
+    fn tcpip_forward(&mut self, address:&str, port: u32, session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
     /// Used to stop the reverse-forwarding of a port, see [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
     #[allow(unused_variables)]
-    fn cancel_tcpip_forward(&mut self, address:&str, port: u32) -> Result<(), Error> {
+    fn cancel_tcpip_forward(&mut self, address:&str, port: u32, session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
@@ -453,13 +447,17 @@ pub trait Client {
         Ok(())
     }
 
+    /// Called when a new channel is created.
+    #[allow(unused_variables)]
+    fn channel_open_forwarded_tcpip(&mut self, channel: u32, connected_address:&str, connected_port:u32, originator_address:&str, originator_port:u32, session: &mut client::Session) {}
+
     /// Called when the server sends us data. The `extended_code` parameter is a stream identifier, `None` is usually the standard output, and `Some(1)` is the standard error. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-5.2).
     #[allow(unused_variables)]
     fn data(&mut self, channel:u32, extended_code: Option<u32>, data: &[u8], session: &mut client::Session) -> Result<(), Error> {
         Ok(())
     }
 
-    /// The server informs this client that the client may perform control-S/control-Q flow control. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-6.8).
+    /// The server informs this client of whether the client may perform control-S/control-Q flow control. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-6.8).
     #[allow(unused_variables)]
     fn xon_xoff(&mut self, channel: u32, client_can_do: bool, session: &mut client::Session) -> Result<(), Error> {
         Ok(())
@@ -510,17 +508,18 @@ impl ChannelOpenFailure {
     }
 }
 
+/// The parameters of a channel.
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct ChannelParameters {
-    pub recipient_channel: u32,
-    pub sender_channel: u32,
-    pub recipient_window_size: u32,
-    pub sender_window_size: u32,
-    pub recipient_maximum_packet_size: u32,
-    pub sender_maximum_packet_size: u32,
+pub struct Channel {
+    recipient_channel: u32,
+    sender_channel: u32,
+    recipient_window_size: u32,
+    sender_window_size: u32,
+    recipient_maximum_packet_size: u32,
+    sender_maximum_packet_size: u32,
+    /// Has the other side confirmed the channel?
     pub confirmed: bool,
-    pub wants_reply: bool
+    wants_reply: bool
 }
 
 const KEYTYPE_ED25519: &'static [u8] = b"ssh-ed25519";
@@ -632,107 +631,3 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
         Err(Error::CouldNotReadKey)
     }
 }
-/*
-#[cfg(test)]
-mod test {
-    use super::*;
-    extern crate env_logger;
-    use std::sync::Arc;
-    
-    #[test]
-    fn test_session() {
-
-        let client_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
-        let (server_pk,server_sk) = super::sodium::ed25519::generate_keypair().unwrap();
-
-        struct S<'p> {
-            client_pubkey: &'p key::PublicKey
-        }
-        impl<'p> Server for S<'p> {
-            fn auth(&self, _:auth::M, method:&auth::Method<key::PublicKey>) -> auth::Auth {
-                match *method {
-                    auth::Method::PublicKey { ref user, ref public_key } if *user == "pe" && public_key == self.client_pubkey=> {
-                        auth::Auth::Success
-                    },
-                    _ => auth::Auth::Reject { partial_success:false, remaining_methods: auth::M::empty() }
-                }
-            }
-        }
-
-        struct C<'p> {
-            server_pk: &'p key::PublicKey
-        }
-        impl<'p> Client for C<'p> {
-            fn check_server_key(&self, server_pk:&key::PublicKey) -> bool {
-                self.server_pk == server_pk
-            }
-        }
-        // Initialize the server
-        let server_config = {
-            let mut config:server::Config = Default::default();
-            // Generate keys
-            config.keys.push(
-                key::Algorithm::Ed25519 {
-                    public: server_pk.clone(), secret: server_sk
-                }
-            );
-            Arc::new(config)
-        };
-
-        let mut server = S{
-            client_pubkey: &client_keypair.public_key()
-        };
-        let mut server_session = server::Connection::new(server_config.clone());
-
-        // Initialize the client
-        let client_config = Arc::new(Default::default());
-
-        let server_pk = super::key::PublicKey::Ed25519(server_pk);
-        let mut client = C{
-            server_pk: &server_pk
-        };
-        let mut client_session = client::Connection::new(client_config);
-
-        //
-
-        let mut server_read:Vec<u8> = Vec::new();
-        let mut server_write:Vec<u8> = Vec::new();
-
-        let mut buffer0 = CryptoBuf::new();
-        let mut buffer1 = CryptoBuf::new();
-
-        client_session.authenticate(auth::Method::PublicKey { user:"pe", public_key: client_keypair });
-
-        let mut run_protocol = |client_session:&mut client::Connection| {
-            {
-                let mut swrite = &server_write[..];
-                client_session.read(&mut client, &mut swrite, &mut buffer0, &mut buffer1).unwrap();
-            }
-            server_write.clear();
-            client_session.write(&mut server_read).unwrap();
-
-            {
-                let mut sread = &server_read[..];
-                server_session.read(&mut server, &mut sread, &mut buffer0, &mut buffer1).unwrap();
-            }
-            server_read.clear();
-            server_session.write(&mut server_write).unwrap();
-        };
-        
-        while !client_session.is_authenticated() {
-            run_protocol(&mut client_session)
-        }
-        let channel = client_session.session.channel_open_session().unwrap();
-        client_session.flush();
-
-        loop {
-            if let Some(chan) = client_session.session.channels().and_then(|x| x.get(&channel)) {
-                if chan.confirmed {
-                    break
-                }
-            }
-            run_protocol(&mut client_session);
-        }
-    }
-}
-*/

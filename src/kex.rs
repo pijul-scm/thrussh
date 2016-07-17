@@ -25,6 +25,7 @@ use super::cryptobuf::CryptoBuf;
 use session::Exchange;
 use key;
 
+#[doc(hidden)]
 #[derive(Debug,Clone)]
 pub enum Digest {
     Sha256(sha256::Digest),
@@ -37,6 +38,7 @@ impl Digest {
     }
 }
 
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct Curve25519 {
     local_pubkey: curve25519::GroupElement,
@@ -45,16 +47,21 @@ pub struct Curve25519 {
     shared_secret: Option<curve25519::GroupElement>,
 }
 
+#[doc(hidden)]
 #[derive(Debug)]
 pub enum Algorithm {
     Curve25519(Curve25519), // "curve25519-sha256@libssh.org"
 }
 
-
-pub const CURVE25519: &'static str = "curve25519-sha256@libssh.org";
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub struct Name(&'static str);
+impl AsRef<str> for Name {
+    fn as_ref(&self) -> &str { self.0 }
+}
+pub const CURVE25519: Name = Name("curve25519-sha256@libssh.org");
 
 impl Algorithm {
-    pub fn server_dh(name: &str,
+    pub fn server_dh(name: Name,
                      exchange: &mut Exchange,
                      payload: &[u8])
                      -> Result<Algorithm, Error> {
@@ -102,7 +109,7 @@ impl Algorithm {
             _ => Err(Error::Kex),
         }
     }
-    pub fn client_dh(name: &str,
+    pub fn client_dh(name: Name,
                      client_ephemeral: &mut CryptoBuf,
                      buf: &mut CryptoBuf)
                      -> Result<Algorithm, Error> {

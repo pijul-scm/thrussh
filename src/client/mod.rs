@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use {Error, Limits, Client, ChannelParameters, Sig};
+use {Error, Limits, Client, Channel, Sig};
 use super::key;
 use super::msg;
 use super::auth;
@@ -31,18 +31,23 @@ use sshbuffer::*;
 use std::collections::HashMap;
 use cipher;
 use kex;
-use pty;
 use rand;
 use rand::{Rng};
+use pty::Pty;
 
 mod encrypted;
 
 #[derive(Debug)]
 pub struct Config {
+    /// The client ID string sent at the beginning of the protocol.
     pub client_id: String,
+    /// The bytes and time limits before key re-exchange.
     pub limits: Limits,
+    /// The initial size of a channel (used for flow control).
     pub window_size: u32,
-    pub maxpacket: u32,
+    /// The maximal size of a single packet.
+    pub maximum_packet_size: u32,
+    /// Lists of preferred algorithms.
     pub preferred: negociation::Preferred,
 }
 
@@ -60,12 +65,13 @@ impl std::default::Default for Config {
                 rekey_time_limit_s: 3600.0
             },
             window_size: 200000,
-            maxpacket: 200000,
-            preferred: negociation::PREFERRED,
+            maximum_packet_size: 200000,
+            preferred: Default::default()
         }
     }
 }
 
+/// Client connection.
 #[derive(Debug)]
 pub struct Connection<'a> {
     read_buffer: SSHBuffer,
@@ -168,6 +174,9 @@ impl<'a> Connection<'a> {
         session
     }
 
+    /// Process all packets available in the buffer, and returns
+    /// whether at least one complete packet was read.
+    /// `buffer` and `buffer2` are work spaces mostly used to compute keys. They are cleared before using, hence nothing is expected from them.
     pub fn read<R: BufRead, C: super::Client> (&mut self,
                                                client: &mut C,
                                                stream: &mut R,
@@ -268,51 +277,12 @@ impl<'a> Connection<'a> {
         }
     }
 
-    // Returns whether the connexion is still alive.
+    /// Write all computed packets to the stream. Returns `Ok(())` when there's no such packet.
     pub fn write<W: Write>(&mut self, stream: &mut W) -> Result<(), Error> {
         try!(self.session.0.write_buffer.write_all(stream));
         Ok(())
     }
 
-    pub fn authenticate(&mut self, method: auth::Method<'a, key::Algorithm>) {
-        debug!("authenticate: {:?} {:?}", self.session, method);
-        if let Some(ref mut enc) = self.session.0.encrypted {
-            if let Some(EncryptedState::WaitingAuthRequest(_)) = enc.state {
-                enc.write_auth_request(&method);
-                enc.flush(&self.session.0.config.as_ref().limits, &mut self.session.0.cipher, &mut self.session.0.write_buffer);
-            }
-        };
-        self.session.0.auth_method = Some(method);
-    }
-
-    pub fn is_authenticated(&self) -> bool {
-
-        if let Some(ref enc) = self.session.0.encrypted {
-            if let Some(EncryptedState::Authenticated) = enc.state {
-                return true
-            }
-        }
-        false
-    }
-
-    pub fn needs_auth_method(&self) -> Option<auth::M> {
-        if let Some(ref enc) = self.session.0.encrypted {
-            match enc.state {
-                Some(EncryptedState::WaitingAuthRequest(ref auth_request)) if auth_request.was_rejected => {
-                    Some(auth_request.methods)
-                }
-                Some(EncryptedState::WaitingAuthRequest(ref auth_request)) if self.session.0.auth_method.is_none() => {
-                    Some(auth_request.methods)
-                }
-                _ => None,
-            }
-        } else {
-            None
-        }
-    }
-    pub fn flush(&mut self) {
-        self.session.flush()
-    }
 }
 
 impl<'a> Session<'a> {
@@ -331,7 +301,57 @@ impl<'a> Session<'a> {
         }
     }
 
-    pub fn channels(&self) -> Option<&HashMap<u32, ChannelParameters>> {
+    /// Set the authentication method.
+    pub fn set_auth_public_key(&mut self, user:&'a str, public_key: key::Algorithm) {
+        self.0.auth_method = Some(
+            auth::Method::PublicKey {
+                user:user,
+                public_key: public_key
+            }
+        );
+    }
+
+    /// Set the authentication method.
+    pub fn set_auth_password(&mut self, user:&'a str, password:&'a str) {
+        self.0.auth_method = Some(
+            auth::Method::Password {
+                user:user,
+                password: password
+            }
+        );
+    }
+
+    /// Whether the client is authenticated.
+    pub fn is_authenticated(&self) -> bool {
+        if let Some(ref enc) = self.0.encrypted {
+            if let Some(EncryptedState::Authenticated) = enc.state {
+                return true
+            }
+        }
+        false
+    }
+
+    /// Tests whether we need an authentication method (for instance if the last attempt failed).
+    pub fn needs_auth_method(&self) -> bool {
+        self.0.auth_method.is_none()
+    }
+
+    /// Returns the set of authentication methods that can continue, or None if this is not valid.
+    pub fn valid_auth_methods(&self) -> Option<auth::M> {
+        if let Some(ref enc) = self.0.encrypted {
+            match enc.state {
+                Some(EncryptedState::WaitingAuthRequest(ref auth_request)) => Some(auth_request.methods),
+                _ => None
+            }
+        } else {
+            None
+        }
+    }
+
+
+    
+    /// Set of all channels requested during this connection, and not closed.
+    pub fn channels(&self) -> Option<&HashMap<u32, Channel>> {
         if let Some(ref enc) = self.0.encrypted {
             Some(&enc.channels)
         } else {
@@ -341,6 +361,11 @@ impl<'a> Session<'a> {
 
 
     
+    /// Request a session channel (the most basic type of
+    /// channel). This function returns `Some(..)` immediately if the
+    /// connection is authenticated, but the channel only becomes
+    /// usable when it's confirmed by the server, as indicated by the
+    /// `confirmed` field of the corresponding `Channel`.
     pub fn channel_open_session(&mut self) -> Option<u32> {
         let result = if let Some(ref mut enc) = self.0.encrypted {
             match enc.state {
@@ -356,9 +381,9 @@ impl<'a> Session<'a> {
                         enc.write.extend_ssh_string(b"session");
                         enc.write.push_u32_be(sender_channel); // sender channel id.
                         enc.write.push_u32_be(self.0.config.as_ref().window_size); // window.
-                        enc.write.push_u32_be(self.0.config.as_ref().maxpacket); // max packet size.
+                        enc.write.push_u32_be(self.0.config.as_ref().maximum_packet_size); // max packet size.
                     });
-                    enc.new_channel(sender_channel, self.0.config.window_size, self.0.config.maxpacket);
+                    enc.new_channel(sender_channel, self.0.config.window_size, self.0.config.maximum_packet_size);
                     Some(sender_channel)
                 }
                 _ => None
@@ -371,7 +396,7 @@ impl<'a> Session<'a> {
     }
 
 
-
+    /// Request an X11 channel, on which the X11 protocol may be tunneled.
     pub fn channel_open_x11(&mut self, originator_address:&str, originator_port:u32) -> Option<u32> {
         let result = if let Some(ref mut enc) = self.0.encrypted {
             match enc.state {
@@ -387,45 +412,12 @@ impl<'a> Session<'a> {
                         enc.write.extend_ssh_string(b"x11");
                         enc.write.push_u32_be(sender_channel); // sender channel id.
                         enc.write.push_u32_be(self.0.config.as_ref().window_size); // window.
-                        enc.write.push_u32_be(self.0.config.as_ref().maxpacket); // max packet size.
+                        enc.write.push_u32_be(self.0.config.as_ref().maximum_packet_size); // max packet size.
                         //
                         enc.write.extend_ssh_string(originator_address.as_bytes());
                         enc.write.push_u32_be(originator_port); // sender channel id.
                     });
-                    enc.new_channel(sender_channel, self.0.config.window_size, self.0.config.maxpacket);
-                    Some(sender_channel)
-                }
-                _ => None
-            }
-        } else {
-            None
-        };
-        self.flush();
-        result
-    }
-    pub fn channel_open_forwarded_tcpip(&mut self, connected_address:&str, connected_port:u32, originator_address:&str, originator_port:u32) -> Option<u32> {
-        let result = if let Some(ref mut enc) = self.0.encrypted {
-            match enc.state {
-                Some(EncryptedState::Authenticated) => {
-                    debug!("sending open request");
-
-                    let mut sender_channel = 0;
-                    while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
-                        sender_channel = rand::thread_rng().gen()
-                    }
-                    push_packet!(enc.write, {
-                        enc.write.push(msg::CHANNEL_OPEN);
-                        enc.write.extend_ssh_string(b"forwarded-tcpip");
-                        enc.write.push_u32_be(sender_channel); // sender channel id.
-                        enc.write.push_u32_be(self.0.config.as_ref().window_size); // window.
-                        enc.write.push_u32_be(self.0.config.as_ref().maxpacket); // max packet size.
-                        //
-                        enc.write.extend_ssh_string(connected_address.as_bytes());
-                        enc.write.push_u32_be(connected_port); // sender channel id.
-                        enc.write.extend_ssh_string(originator_address.as_bytes());
-                        enc.write.push_u32_be(originator_port); // sender channel id.
-                    });
-                    enc.new_channel(sender_channel, self.0.config.window_size, self.0.config.maxpacket);
+                    enc.new_channel(sender_channel, self.0.config.window_size, self.0.config.maximum_packet_size);
                     Some(sender_channel)
                 }
                 _ => None
@@ -437,6 +429,7 @@ impl<'a> Session<'a> {
         result
     }
 
+    /// Open a TCP/IP forwarding channel. This is usually done when a connection comes to a locally forwarded TCP/IP port. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-7). The TCP/IP packets can then be tunneled through the channel using `.data()`.
     pub fn channel_open_direct_tcpip(&mut self, host_to_connect:&str, port_to_connect:u32, originator_address:&str, originator_port:u32) -> Option<u32> {
         let result = if let Some(ref mut enc) = self.0.encrypted {
             match enc.state {
@@ -452,14 +445,14 @@ impl<'a> Session<'a> {
                         enc.write.extend_ssh_string(b"direct-tcpip");
                         enc.write.push_u32_be(sender_channel); // sender channel id.
                         enc.write.push_u32_be(self.0.config.as_ref().window_size); // window.
-                        enc.write.push_u32_be(self.0.config.as_ref().maxpacket); // max packet size.
+                        enc.write.push_u32_be(self.0.config.as_ref().maximum_packet_size); // max packet size.
                         //
                         enc.write.extend_ssh_string(host_to_connect.as_bytes());
                         enc.write.push_u32_be(port_to_connect); // sender channel id.
                         enc.write.extend_ssh_string(originator_address.as_bytes());
                         enc.write.push_u32_be(originator_port); // sender channel id.
                     });
-                    enc.new_channel(sender_channel, self.0.config.window_size, self.0.config.maxpacket);
+                    enc.new_channel(sender_channel, self.0.config.window_size, self.0.config.maximum_packet_size);
                     Some(sender_channel)
                 }
                 _ => None
@@ -472,7 +465,7 @@ impl<'a> Session<'a> {
     }
 
 
-
+    /// Send data or "extended data" to the given channel. Extended data can be used to multiplex different data streams into a single channel.
     pub fn data(&mut self, channel: u32, extended: Option<u32>, data: &[u8]) -> Result<usize, Error> {
         let result = if let Some(ref mut enc) = self.0.encrypted {
             try!(enc.data(channel, extended, data))
@@ -483,7 +476,8 @@ impl<'a> Session<'a> {
         Ok(result)
     }
 
-    pub fn request_pty(&mut self, channel:u32, term:&str, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, terminal_modes:&[(pty::Option, u32)]) {
+    /// Request a pseudo-terminal with the given characteristics.
+    pub fn request_pty(&mut self, channel:u32, want_reply:bool, term:&str, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, terminal_modes:&[(Pty, u32)]) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write,{
@@ -491,8 +485,7 @@ impl<'a> Session<'a> {
 
                     enc.write.push_u32_be(channel.recipient_channel);
                     enc.write.extend_ssh_string(b"pty-req");
-                    // enc.write.push(if want_reply { 1 } else { 0 });
-                    enc.write.push(0);
+                    enc.write.push(if want_reply { 1 } else { 0 });
 
                     enc.write.extend_ssh_string(term.as_bytes());
                     enc.write.push_u32_be(col_width);
@@ -514,7 +507,8 @@ impl<'a> Session<'a> {
         self.flush();
     }
 
-    pub fn request_x11(&mut self, channel:u32, single_connection: bool, x11_authentication_protocol: &str, x11_authentication_cookie: &str, x11_screen_number: u32) {
+    /// Request X11 forwarding through an already opened X11 channel. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-6.3.1) for security issues related to cookies.
+    pub fn request_x11(&mut self, channel:u32, want_reply:bool, single_connection: bool, x11_authentication_protocol: &str, x11_authentication_cookie: &str, x11_screen_number: u32) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
@@ -522,8 +516,7 @@ impl<'a> Session<'a> {
 
                     enc.write.push_u32_be(channel.recipient_channel);
                     enc.write.extend_ssh_string(b"x11-req");
-                    // enc.write.push(if self.want_reply { 1 } else { 0 });
-                    enc.write.push(0);
+                    enc.write.push(if want_reply { 1 } else { 0 });
                     enc.write.push(if single_connection { 1 } else { 0 });
                     enc.write.extend_ssh_string(x11_authentication_protocol.as_bytes());
                     enc.write.extend_ssh_string(x11_authentication_cookie.as_bytes());
@@ -534,7 +527,8 @@ impl<'a> Session<'a> {
         self.flush();
     }
 
-    pub fn set_env(&mut self, channel:u32, variable_name:&str, variable_value:&str) {
+    /// Set a remote environment variable.
+    pub fn set_env(&mut self, channel:u32, want_reply:bool, variable_name:&str, variable_value:&str) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
@@ -542,8 +536,7 @@ impl<'a> Session<'a> {
 
                     enc.write.push_u32_be(channel.recipient_channel);
                     enc.write.extend_ssh_string(b"env");
-                    // enc.write.push(if self.want_reply { 1 } else { 0 });
-                    enc.write.push(0);
+                    enc.write.push(if want_reply { 1 } else { 0 });
                     enc.write.extend_ssh_string(variable_name.as_bytes());
                     enc.write.extend_ssh_string(variable_value.as_bytes());
                 });
@@ -553,7 +546,8 @@ impl<'a> Session<'a> {
     }
 
 
-    pub fn request_shell(&mut self, channel:u32) {
+    /// Request a remote shell.
+    pub fn request_shell(&mut self, want_reply:bool, channel:u32) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
@@ -561,14 +555,15 @@ impl<'a> Session<'a> {
 
                     enc.write.push_u32_be(channel.recipient_channel);
                     enc.write.extend_ssh_string(b"shell");
-                    // enc.write.push(if self.want_reply { 1 } else { 0 });
-                    enc.write.push(0);
+                    enc.write.push(if want_reply { 1 } else { 0 });
                 });
             }
         }
         self.flush();
     }
-    pub fn exec(&mut self, channel:u32, command:&str) {
+
+    /// Execute a remote program (will be passed to a shell). This can be used to implement scp (by calling a remote scp and tunneling to its standard input).
+    pub fn exec(&mut self, channel:u32, want_reply:bool, command:&str) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
@@ -576,8 +571,7 @@ impl<'a> Session<'a> {
 
                     enc.write.push_u32_be(channel.recipient_channel);
                     enc.write.extend_ssh_string(b"exec");
-                    // enc.write.push(if self.want_reply { 1 } else { 0 });
-                    enc.write.push(0);
+                    enc.write.push(if want_reply { 1 } else { 0 });
                     enc.write.extend_ssh_string(command.as_bytes());
                 });
             }
@@ -585,6 +579,7 @@ impl<'a> Session<'a> {
         self.flush();
     }
 
+    /// Signal a remote process.
     pub fn signal(&mut self, channel:u32, signal:Sig) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
@@ -601,7 +596,8 @@ impl<'a> Session<'a> {
         self.flush();
     }
 
-    pub fn request_subsystem(&mut self, channel:u32, name:&str) {
+    /// Request the start of a subsystem with the given name.
+    pub fn request_subsystem(&mut self, want_reply:bool, channel:u32, name:&str) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
@@ -609,8 +605,7 @@ impl<'a> Session<'a> {
 
                     enc.write.push_u32_be(channel.recipient_channel);
                     enc.write.extend_ssh_string(b"subsystem");
-                    // enc.write.push(if self.want_reply { 1 } else { 0 });
-                    enc.write.push(0);
+                    enc.write.push(if want_reply { 1 } else { 0 });
                     enc.write.extend_ssh_string(name.as_bytes());
                 });
             }
@@ -618,6 +613,7 @@ impl<'a> Session<'a> {
         self.flush();
     }
 
+    /// Inform the server that our window size has changed.
     pub fn window_change(&mut self, channel:u32, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
@@ -637,13 +633,13 @@ impl<'a> Session<'a> {
         self.flush();
     }
     
-    pub fn tcpip_forward(&mut self, address:&str, port:u32) {
+    /// Request the forwarding of a remote port to the client. The server will then open forwarding channels (which cause the client to call `.channel_open_forwarded_tcpip()`).
+    pub fn tcpip_forward(&mut self, want_reply: bool, address:&str, port:u32) {
         if let Some(ref mut enc) = self.0.encrypted {
             push_packet!(enc.write, {
                 enc.write.push(msg::GLOBAL_REQUEST);
                 enc.write.extend_ssh_string(b"tcpip-forward");
-                // enc.write.push(if self.want_reply { 1 } else { 0 });
-                enc.write.push(0);
+                enc.write.push(if want_reply { 1 } else { 0 });
                 enc.write.extend_ssh_string(address.as_bytes());
                 enc.write.push_u32_be(port);
             });
@@ -651,13 +647,13 @@ impl<'a> Session<'a> {
         self.flush();
     }
 
-    pub fn cancel_tcpip_forward(&mut self, address:&str, port:u32) {
+    /// Cancel a previous forwarding request.
+    pub fn cancel_tcpip_forward(&mut self, want_reply: bool, address:&str, port:u32) {
         if let Some(ref mut enc) = self.0.encrypted {
             push_packet!(enc.write, {
                 enc.write.push(msg::GLOBAL_REQUEST);
                 enc.write.extend_ssh_string(b"cancel-tcpip-forward");
-                // enc.write.push(if self.want_reply { 1 } else { 0 });
-                enc.write.push(0);
+                enc.write.push(if want_reply { 1 } else { 0 });
                 enc.write.extend_ssh_string(address.as_bytes());
                 enc.write.push_u32_be(port);
             });

@@ -16,6 +16,8 @@
 use super::encoding;
 use cryptobuf::CryptoBuf;
 
+
+/// Set of methods, represented by bit flags.
 bitflags! {
     pub flags M: u32 {
         const NONE = 1,
@@ -98,8 +100,9 @@ impl M {
     }
 }
 
+/// Answer to a request
 #[derive(Debug)]
-pub enum Auth {
+pub enum Answer {
     Success,
     Reject {
         remaining_methods: M,
@@ -107,6 +110,7 @@ pub enum Auth {
     },
 }
 
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct AuthRequest {
     pub methods: M,
@@ -115,5 +119,4 @@ pub struct AuthRequest {
     pub public_key_algorithm: CryptoBuf,
     pub public_key_is_ok: bool,
     pub sent_pk_ok: bool,
-    pub was_rejected: bool
 }

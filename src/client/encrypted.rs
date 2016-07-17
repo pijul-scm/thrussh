@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-
-use enum_primitive::FromPrimitive;
-
 use cryptobuf::CryptoBuf;
 use {Sig, Error, Client, ChannelOpenFailure};
 use std;
@@ -31,6 +28,7 @@ use negociation::Select;
 const SSH_CONNECTION:&'static [u8] = b"ssh-connection";
 
 impl<'a> super::Session<'a> {
+    #[doc(hidden)]
     pub fn client_read_encrypted<C: Client>(&mut self,
                                             client: &mut C,
                                             buf: &[u8],
@@ -79,7 +77,6 @@ impl<'a> super::Session<'a> {
                                 public_key_algorithm: CryptoBuf::new(),
                                 public_key_is_ok: false,
                                 sent_pk_ok: false,
-                                was_rejected: false
                             };
 
                             if let Some(ref meth) = self.0.auth_method {
@@ -111,7 +108,7 @@ impl<'a> super::Session<'a> {
                                 auth_request.methods &= m
                             }
                         }
-                        auth_request.was_rejected = true;
+                        self.0.auth_method = None;
                         enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
 
                     } else if buf[0] == msg::USERAUTH_PK_OK {
@@ -196,6 +193,13 @@ impl<'a> super::Session<'a> {
                     let channel_num = try!(r.read_u32());
                     let req = try!(r.read_string());
                     match req {
+                        b"forwarded_tcpip" => {
+                            let a = try!(std::str::from_utf8(try!(r.read_string())));
+                            let b = try!(r.read_u32());
+                            let c = try!(std::str::from_utf8(try!(r.read_string())));
+                            let d = try!(r.read_u32());
+                            client.channel_open_forwarded_tcpip(channel_num, a, b, c, d, self);
+                        },
                         b"xon-xoff" => {
                             try!(r.read_byte()); // should be 0.
                             let client_can_do = try!(r.read_byte());

@@ -12,23 +12,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-pub use super::sodium::ed25519;
+use super::sodium::ed25519;
 use cryptobuf::CryptoBuf;
 use negociation::Named;
 use Error;
 use encoding::Reader;
 
-pub const ED25519: &'static str = "ssh-ed25519";
+#[doc(hidden)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub struct Name(&'static str);
+impl AsRef<str> for Name {
+    fn as_ref(&self) -> &str { self.0 }
+}
+pub const ED25519: Name = Name("ssh-ed25519");
 
+#[doc(hidden)]
 pub trait Verify {
     fn verify_detached(&self, buffer: &[u8], sig: &[u8]) -> bool;
 }
 
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub enum PublicKey {
+    #[doc(hidden)]
     Ed25519(ed25519::PublicKey),
 }
 
+#[doc(hidden)]
 impl PublicKey {
     pub fn parse(algo:&[u8], pubkey:&[u8]) -> Result<Self, Error> {
         match algo {
@@ -55,11 +64,13 @@ impl Verify for PublicKey {
     }
 }
 
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub enum Algorithm {
+    #[doc(hidden)]
     Ed25519 { public:ed25519::PublicKey, secret: ed25519::SecretKey }
 }
 
+#[doc(hidden)]
 pub trait PubKey {
     fn push_to(&self, buffer:&mut CryptoBuf);
 }
@@ -69,8 +80,8 @@ impl PubKey for PublicKey {
         match self {
             &PublicKey::Ed25519(ref public) => {
 
-                buffer.push_u32_be((ED25519.len() + ed25519::PUBLICKEYBYTES + 8) as u32);
-                buffer.extend_ssh_string(ED25519.as_bytes());
+                buffer.push_u32_be((ED25519.0.len() + ed25519::PUBLICKEYBYTES + 8) as u32);
+                buffer.extend_ssh_string(ED25519.0.as_bytes());
                 buffer.extend_ssh_string(public.as_bytes());
             }
         }
@@ -82,8 +93,8 @@ impl PubKey for Algorithm {
         match self {
             &Algorithm::Ed25519 { ref public, .. } => {
 
-                buffer.push_u32_be((ED25519.len() + ed25519::PUBLICKEYBYTES + 8) as u32);
-                buffer.extend_ssh_string(ED25519.as_bytes());
+                buffer.push_u32_be((ED25519.0.len() + ed25519::PUBLICKEYBYTES + 8) as u32);
+                buffer.extend_ssh_string(ED25519.0.as_bytes());
                 buffer.extend_ssh_string(public.as_bytes());
             }
         }
@@ -91,10 +102,10 @@ impl PubKey for Algorithm {
 }
 
 
-impl PublicKey {
-    pub fn name(&self) -> &'static str {
+impl Named for PublicKey {
+    fn name(&self) -> &'static str {
         match self {
-            &PublicKey::Ed25519(_) => ED25519
+            &PublicKey::Ed25519(_) => ED25519.0
         }
     }
 }
@@ -102,20 +113,22 @@ impl PublicKey {
 impl Named for Algorithm {
     fn name(&self) -> &'static str {
         match self {
-            &Algorithm::Ed25519 {..} => ED25519
+            &Algorithm::Ed25519 {..} => ED25519.0
         }
     }
 }
 
 impl Algorithm {
 
+    /// Copy the public key of this algorithm.
     pub fn public_key(&self) -> PublicKey {
         match self {
             &Algorithm::Ed25519 { ref public, .. } => PublicKey::Ed25519(public.clone())
         }
     }
     
-    pub fn generate_keypair(t:&str) -> Option<Self> {
+    /// Generate a key pair.
+    pub fn generate_keypair(t:Name) -> Option<Self> {
         match t {
             ED25519 => {
                 if let Some((pk,sk)) = super::sodium::ed25519::generate_keypair() {
@@ -130,7 +143,8 @@ impl Algorithm {
             _ => None
         }
     }
-    
+
+    #[doc(hidden)]
     pub fn add_signature(&self, buffer: &mut CryptoBuf, hash: &[u8]) {
         match self {
             &Algorithm::Ed25519 { ref secret, .. } => {
@@ -138,13 +152,14 @@ impl Algorithm {
                 let mut sign = ed25519::Signature::new_blank();
                 ed25519::sign_detached(&mut sign, hash, secret);
 
-                buffer.push_u32_be((ED25519.len() + ed25519::SIGNATUREBYTES + 8) as u32);
-                buffer.extend_ssh_string(ED25519.as_bytes());
+                buffer.push_u32_be((ED25519.0.len() + ed25519::SIGNATUREBYTES + 8) as u32);
+                buffer.extend_ssh_string(ED25519.0.as_bytes());
                 buffer.extend_ssh_string(sign.as_bytes());
             }
         }
     }
 
+    #[doc(hidden)]
     pub fn add_self_signature(&self, buffer: &mut CryptoBuf) {
         match self {
             &Algorithm::Ed25519 { ref secret, .. } => {
@@ -152,8 +167,8 @@ impl Algorithm {
                 let mut sign = ed25519::Signature::new_blank();
                 ed25519::sign_detached(&mut sign, buffer.as_slice(), secret);
 
-                buffer.push_u32_be((ED25519.len() + ed25519::SIGNATUREBYTES + 8) as u32);
-                buffer.extend_ssh_string(ED25519.as_bytes());
+                buffer.push_u32_be((ED25519.0.len() + ed25519::SIGNATUREBYTES + 8) as u32);
+                buffer.extend_ssh_string(ED25519.0.as_bytes());
                 buffer.extend_ssh_string(sign.as_bytes());
             }
         }

@@ -22,14 +22,10 @@ use negociation::Named;
 pub trait Bytes {
     fn bytes(&self) -> &[u8];
 }
-impl<'b> Bytes for &'b [u8] {
+
+impl<A:AsRef<str>> Bytes for A {
     fn bytes(&self) -> &[u8] {
-        self
-    }
-}
-impl<'b> Bytes for &'b &'b str {
-    fn bytes(&self) -> &[u8] {
-        self.as_bytes()
+        self.as_ref().as_bytes()
     }
 }
 impl<'b> Bytes for &'b key::Algorithm {

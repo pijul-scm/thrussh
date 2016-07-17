@@ -19,36 +19,43 @@ use super::key;
 use super::kex;
 use super::cipher;
 use super::msg;
-// use super::mac;
-// use super::compression;
+// use super::mac; // unimplemented
+// use super::compression; // unimplemented
 use cryptobuf::CryptoBuf;
 use super::encoding::Reader;
 
 #[derive(Debug)]
 pub struct Names {
-    pub kex: &'static str,
-    pub key: &'static str,
+    pub kex: kex::Name,
+    pub key: key::Name,
     pub cipher: &'static str,
     pub mac: &'static str,
     pub ignore_guessed: bool,
 }
 
+/// Lists of preferred algorithms. This is normally hard-coded into implementations.
 #[derive(Debug)]
 pub struct Preferred {
-    pub kex: &'static [&'static str],
-    pub key: &'static [&'static str],
+    pub kex: &'static [kex::Name],
+    pub key: &'static [key::Name],
     pub cipher: &'static [&'static str],
     pub mac: &'static [&'static str],
     pub compression: &'static [&'static str],
 }
 
-pub const PREFERRED: Preferred = Preferred {
+pub const DEFAULT: Preferred = Preferred {
     kex: &[kex::CURVE25519],
     key: &[key::ED25519],
     cipher: &[cipher::CHACHA20POLY1305],
     mac: &["hmac-sha2-256"],
     compression: &["none"],
 };
+
+impl Default for Preferred {
+    fn default() -> Preferred {
+        DEFAULT
+    }
+}
 
 pub trait Named {
     fn name(&self) -> &'static str;
@@ -59,7 +66,7 @@ impl Named for () {
 }
 
 pub trait Select {
-    fn select(a: &'static [&'static str], b: &[u8]) -> Option<(bool, &'static str)>;
+    fn select<S:AsRef<str> + Copy>(a: &[S], b: &[u8]) -> Option<(bool, S)>;
 
     fn read_kex(buffer: &[u8], pref: &Preferred) -> Result<Names, Error> {
         if buffer[0] != msg::KEXINIT {
@@ -113,13 +120,13 @@ pub struct Server;
 pub struct Client;
 
 impl Select for Server {
-    fn select(server_list: &'static [&'static str],
-              client_list: &[u8])
-              -> Option<(bool, &'static str)> {
+    fn select<S:AsRef<str>+Copy>(server_list: &[S],
+                                 client_list: &[u8])
+                                 -> Option<(bool, S)> {
         let mut both_first_choice = true;
         for c in client_list.split(|&x| x == b',') {
-            for s in server_list {
-                if c == s.as_bytes() {
+            for &s in server_list {
+                if c == s.as_ref().as_bytes() {
                     return Some((both_first_choice, s));
                 }
                 both_first_choice = false
@@ -130,13 +137,13 @@ impl Select for Server {
 }
 
 impl Select for Client {
-    fn select(client_list: &'static [&'static str],
-              server_list: &[u8])
-              -> Option<(bool, &'static str)> {
+    fn select<S:AsRef<str>+Copy>(client_list: &[S],
+                            server_list: &[u8])
+                            -> Option<(bool, S)> {
         let mut both_first_choice = true;
-        for c in client_list {
+        for &c in client_list {
             for s in server_list.split(|&x| x == b',') {
-                if s == c.as_bytes() {
+                if s == c.as_ref().as_bytes() {
                     return Some((both_first_choice, c));
                 }
                 both_first_choice = false

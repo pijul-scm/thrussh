@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-use enum_primitive::FromPrimitive;
 use super::*;
 use super::super::*;
 use session::*;
@@ -107,7 +106,7 @@ impl Session {
         }    
     }
 
-    pub fn server_read_authenticated<S: Server>(&mut self,
+    fn server_read_authenticated<S: Server>(&mut self,
                                                 server: &mut S,
                                                 buf: &[u8])
                                                 -> Result<(), Error> {
@@ -189,7 +188,7 @@ impl Session {
                         let row_height = try!(r.read_u32());
                         let pix_width = try!(r.read_u32());
                         let pix_height = try!(r.read_u32());
-                        let mut modes = [(pty::Option::TTY_OP_END,0);130];
+                        let mut modes = [(Pty::TTY_OP_END,0);130];
                         let mut i = 0;
                         {
                             let mode_string = try!(r.read_string());
@@ -199,7 +198,7 @@ impl Session {
                                     break
                                 }
                                 let num = BigEndian::read_u32(&mode_string[5*i+1..]);
-                                modes[i] = (pty::Option::from_u8(code).unwrap(),num);
+                                modes[i] = (Pty::from_u8(code).unwrap(),num);
                                 i += 1
                             }
                         }
@@ -268,7 +267,7 @@ impl Session {
                     b"tcpip-forward" => {
                         let address = try!(std::str::from_utf8(try!(r.read_string())));
                         let port = try!(r.read_u32());
-                        let result = server.tcpip_forward(address, port);
+                        let result = server.tcpip_forward(address, port, self);
                         if self.0.wants_reply {
                             if let Some(ref mut enc) = self.0.encrypted {
                                 if result.is_ok() {
@@ -283,7 +282,7 @@ impl Session {
                     b"cancel-tcpip-forward" => {
                         let address = try!(std::str::from_utf8(try!(r.read_string())));
                         let port = try!(r.read_u32());
-                        let result = server.cancel_tcpip_forward(address, port);
+                        let result = server.cancel_tcpip_forward(address, port, self);
                         if self.0.wants_reply {
                             if let Some(ref mut enc) = self.0.encrypted {
                                 if result.is_ok() {
@@ -339,13 +338,6 @@ impl Session {
                 let b = try!(r.read_u32());
                 server.channel_open_x11(sender_channel, a, b, self);
             },
-            b"forwarded_tcpip" => {
-                let a = try!(std::str::from_utf8(try!(r.read_string())));
-                let b = try!(r.read_u32());
-                let c = try!(std::str::from_utf8(try!(r.read_string())));
-                let d = try!(r.read_u32());
-                server.channel_open_forwarded_tcpip(sender_channel, a, b, c, d, self);
-            },
             b"direct-tcpip" => {
                 let a = try!(std::str::from_utf8(try!(r.read_string())));
                 let b = try!(r.read_u32());
@@ -367,7 +359,7 @@ impl Session {
                 return Ok(())
             }
         }
-        let channel = ChannelParameters {
+        let channel = Channel {
             recipient_channel: sender,
             sender_channel: sender_channel, /* "sender" is the local end, i.e. we're the sender, the remote is the recipient. */
             recipient_window_size: window,
@@ -421,11 +413,11 @@ impl Encrypted {
                     password: password,
                 };
                 match server.auth(auth_request.methods, &method) {
-                    Auth::Success => {
+                    auth::Answer::Success => {
                         server_auth_request_success(&mut self.write);
                         self.state = Some(EncryptedState::Authenticated);
                     },
-                    Auth::Reject { remaining_methods, partial_success } => {
+                    auth::Answer::Reject { remaining_methods, partial_success } => {
                         auth_request.methods = remaining_methods;
                         auth_request.partial_success = partial_success;
                         self.reject_auth_request(auth_request);
@@ -450,7 +442,7 @@ impl Encrypted {
                     };
 
                     match server.auth(auth_request.methods, &method) {
-                        Auth::Success => {
+                        auth::Answer::Success => {
                             let signature = try!(r.read_string());
                             let mut s = signature.reader(0);
                             // let algo_ =
@@ -484,14 +476,14 @@ impl Encrypted {
                     };
 
                     match server.auth(auth_request.methods, &method) {
-                        Auth::Success => {
+                        auth::Answer::Success => {
                             // Public key ?
                             auth_request.public_key.extend(pubkey_key);
                             auth_request.public_key_algorithm.extend(pubkey_algo);
                             server_send_pk_ok(&mut self.write, &mut auth_request);
                             self.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
                         }
-                        Auth::Reject { remaining_methods, partial_success } => {
+                        auth::Answer::Reject { remaining_methods, partial_success } => {
                             auth_request.methods = remaining_methods;
                             auth_request.partial_success = partial_success;
                             self.reject_auth_request(auth_request);
@@ -547,7 +539,6 @@ fn server_accept_service(banner: Option<&str>,
         public_key_algorithm: CryptoBuf::new(),
         sent_pk_ok: false,
         public_key_is_ok: false,
-        was_rejected: false
     }
 }
 
@@ -570,7 +561,7 @@ fn server_send_pk_ok(buffer: &mut CryptoBuf,
 }
 
 fn server_confirm_channel_open(buffer: &mut CryptoBuf,
-                               channel: &ChannelParameters,
+                               channel: &Channel,
                                config: &super::Config) {
 
     push_packet!(buffer, {

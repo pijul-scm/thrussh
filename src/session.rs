@@ -22,7 +22,7 @@ use cipher;
 use msg;
 use key;
 use sodium;
-use super::{read_public_key,Error,ChannelParameters,Client};
+use super::{read_public_key,Error,Channel,Client};
 use cryptobuf::CryptoBuf;
 use std::collections::HashMap;
 use encoding::Reader;
@@ -33,21 +33,6 @@ use cipher::CipherT;
 use time;
 use std::sync::Arc;
 
-/*
-impl<Config> ServerState<Config>  {
-
-    pub fn write<W: std::io::Write>(&mut self, stream: &mut W) -> Result<(), Error> {
-        // Finish pending writes, if any.
-        match *self {
-            ServerState::None { ref mut write_buffer } => { try!(write_buffer.write_all(stream)); },
-            ServerState::Kex { ref mut write_buffer,.. } => { try!(write_buffer.write_all(stream)); },
-            ServerState::Encrypted(ref mut enc) => { try!(enc.write_buffer.write_all(stream)); },
-        }
-        Ok(())
-    }
-}
- */
-
 #[derive(Debug)]
 pub struct Encrypted {
     pub state: Option<EncryptedState>,
@@ -57,7 +42,7 @@ pub struct Encrypted {
     pub mac: &'static str,
     pub session_id: kex::Digest,
     pub rekey: Option<Kex>,
-    pub channels: HashMap<u32, ChannelParameters>,
+    pub channels: HashMap<u32, Channel>,
     pub wants_reply: bool,
     pub write: CryptoBuf,
     pub write_cursor: usize,
@@ -192,7 +177,7 @@ impl Encrypted {
     pub fn new_channel(&mut self, sender_channel:u32, window_size:u32, maxpacket:u32) {
         self.channels.insert(
             sender_channel,
-            ChannelParameters {
+            Channel {
                 recipient_channel: 0,
                 sender_channel: sender_channel,
                 sender_window_size: window_size,
@@ -206,50 +191,6 @@ impl Encrypted {
     }
 
 }
-/*
-    /*
-    pub fn flush(&mut self, limits:&Limits, read_buffer:&mut SSHBuffer) -> bool {
-        // If there are pending packets (and we've not started to rekey), flush them.
-        if self.rekey.is_none() {
-            {
-                let packets = self.write.as_slice();
-                while self.write_cursor < self.write.len() {
-                    if read_buffer.bytes >= limits.rekey_read_limit ||
-                        self.write_buffer.bytes >= limits.rekey_write_limit ||
-                        time::precise_time_s() >= self.last_rekey_s + limits.rekey_time_limit_s {
-
-
-                        // Resetting those now is incorrect (since
-                        // we're resetting before the rekeying), but
-                        // since the bytes sent during rekeying will
-                        // be counted, the limits are still an upper
-                        // bound on the size that can be sent.
-                        read_buffer.bytes = 0;
-                        self.write_buffer.bytes = 0;
-                        self.last_rekey_s = time::precise_time_s();
-                        return true
-
-                    } else {
-                        // Read a single packet, encrypt and send it.
-                        let len = BigEndian::read_u32(&packets[self.write_cursor .. ]) as usize;
-                        debug!("flushing len {:?}", len);
-                        let packet = &packets [(self.write_cursor+4) .. (self.write_cursor+4+len)];
-                        self.cipher.write(packet, &mut self.write_buffer);
-                        self.write_cursor += 4+len
-                    }
-                }
-            }
-            if self.write_cursor >= self.write.len() {
-                self.write_cursor = 0;
-                self.write.clear();
-            }
-        }
-        false
-    }
-    */
-
-}
-*/
 
 #[derive(Debug)]
 pub enum EncryptedState {
