@@ -119,6 +119,7 @@ impl Encrypted {
 
     pub fn data(&mut self, channel: u32, extended: Option<u32>, buf: &[u8]) -> Result<usize, Error> {
         if let Some(channel) = self.channels.get_mut(&channel) {
+            assert!(channel.confirmed);
             debug!("output {:?} {:?}", channel, buf);
             let mut buf = if buf.len() as u32 > channel.recipient_window_size {
                 &buf[0 .. channel.recipient_window_size as usize]

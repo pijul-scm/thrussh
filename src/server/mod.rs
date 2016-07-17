@@ -325,6 +325,7 @@ impl Session {
     pub fn channel_success(&mut self, channel: u32) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
+                assert!(channel.confirmed);
                 if channel.wants_reply {
                     push_packet!(enc.write, {
                         enc.write.push(msg::CHANNEL_SUCCESS);
@@ -338,6 +339,7 @@ impl Session {
     pub fn channel_failure(&mut self, channel: u32) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
+                assert!(channel.confirmed);
                 if channel.wants_reply {
                     push_packet!(enc.write, {
                         enc.write.push(msg::CHANNEL_FAILURE);
@@ -359,6 +361,7 @@ impl Session {
     pub fn xon_xoff_request(&mut self, channel:u32, client_can_do: bool) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
+                assert!(channel.confirmed);
                 push_packet!(enc.write, {
                     enc.write.push(msg::CHANNEL_REQUEST);
 
@@ -374,6 +377,7 @@ impl Session {
     pub fn exit_status_request(&mut self, channel:u32, exit_status:u32) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
+                assert!(channel.confirmed);
                 push_packet!(enc.write, {
                     enc.write.push(msg::CHANNEL_REQUEST);
 
@@ -389,6 +393,7 @@ impl Session {
     pub fn exit_signal_request(&mut self, channel:u32, signal:Sig, core_dumped:bool, error_message:&str, language_tag:&str) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
+                assert!(channel.confirmed);
                 push_packet!(enc.write, {
                     enc.write.push(msg::CHANNEL_REQUEST);
 
