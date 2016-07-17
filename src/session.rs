@@ -65,7 +65,7 @@ pub struct Encrypted {
 }
 
 #[derive(Debug)]
-pub struct CommonState<'a, Config> {
+pub struct CommonSession<'a, Config> {
     pub encrypted: Option<Encrypted>,
     pub auth_method: Option<auth::Method<'a, key::Algorithm>>,
     pub write_buffer: SSHBuffer,
@@ -75,7 +75,7 @@ pub struct CommonState<'a, Config> {
     pub wants_reply: bool
 }
 
-impl<'a, C> CommonState<'a, C> {
+impl<'a, C> CommonSession<'a, C> {
     pub fn encrypted(&mut self, state: EncryptedState, newkeys: NewKeys) {
         if let Some(ref mut enc) = self.encrypted {
             enc.exchange = Some(newkeys.exchange);

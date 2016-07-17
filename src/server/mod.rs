@@ -29,7 +29,7 @@ use negociation;
 use key::PubKey;
 use encoding::Reader;
 
-use state::*;
+use session::*;
 
 #[derive(Debug)]
 pub struct Config {
@@ -160,11 +160,14 @@ impl KexDh {
 // in the session's `write` buffer, and flushed later. The write
 // buffer is also useful to prepare complete packets before we can
 // pass them to the ciphers.
+#[derive(Debug)]
 pub struct Connection {
     read_buffer: SSHBuffer,
-    state: State
+    session: Session
 }
-pub type State = CommonState<'static, Config>;
+
+#[derive(Debug)]
+pub struct Session(CommonSession<'static, Config>);
 
 
 impl Connection {
@@ -178,7 +181,7 @@ impl Connection {
 
         let session = Connection {
             read_buffer: SSHBuffer::new(),
-            state: State {
+            session: Session(CommonSession {
                 write_buffer: write_buffer,
                 kex: None,
                 auth_method: None, // Client only.
@@ -186,7 +189,7 @@ impl Connection {
                 encrypted: None,
                 config: config,
                 wants_reply: false
-            },
+            }),
         };
         session
     }
@@ -198,9 +201,9 @@ impl Connection {
                                        buffer: &mut CryptoBuf,
                                        buffer2: &mut CryptoBuf)
                                        -> Result<ReturnCode, Error> {
-        debug!("read {:?}", self.state);
+        debug!("read {:?}", self.session);
         // Special case for the beginning.
-        if self.state.encrypted.is_none() && self.state.kex.is_none() {
+        if self.session.0.encrypted.is_none() && self.session.0.kex.is_none() {
 
             let mut exchange;
             {
@@ -214,15 +217,15 @@ impl Connection {
                 }
             }
             // Preparing the response
-            exchange.server_id.extend(self.state.config.as_ref().server_id.as_bytes());
+            exchange.server_id.extend(self.session.0.config.as_ref().server_id.as_bytes());
             let mut kexinit = KexInit {
                 exchange: exchange,
                 algo: None,
                 sent: false,
                 session_id: None,
             };
-            kexinit.server_write(self.state.config.as_ref(), &mut self.state.cipher, &mut self.state.write_buffer);
-            self.state.kex = Some(Kex::KexInit(kexinit));
+            kexinit.server_write(self.session.0.config.as_ref(), &mut self.session.0.cipher, &mut self.session.0.write_buffer);
+            self.session.0.kex = Some(Kex::KexInit(kexinit));
             return Ok(ReturnCode::Ok)
 
         }
@@ -230,7 +233,7 @@ impl Connection {
 
 
         // In all other cases:
-        if let Some(buf) = try!(self.state.cipher.read(stream, &mut self.read_buffer)) {
+        if let Some(buf) = try!(self.session.0.cipher.read(stream, &mut self.read_buffer)) {
             debug!("read buf = {:?}", buf);
             // Handle the transport layer.
             if buf[0] == msg::DISCONNECT {
@@ -242,17 +245,21 @@ impl Connection {
             }
 
             // Handle key exchange/re-exchange.
-            match std::mem::replace(&mut self.state.kex, None) {
+            match std::mem::replace(&mut self.session.0.kex, None) {
 
-                Some(Kex::KexInit(kexinit)) => {
-                    let next_kex = try!(kexinit.server_parse(self.state.config.as_ref(), &mut self.state.cipher, buf, &mut self.state.write_buffer));
-                    self.state.kex = Some(next_kex);
-                    return Ok(ReturnCode::Ok)
-                },
+                Some(Kex::KexInit(kexinit)) =>
+                    if kexinit.algo.is_some() || buf[0] == msg::KEXINIT || self.session.0.encrypted.is_none() {
+                        let next_kex = try!(kexinit.server_parse(self.session.0.config.as_ref(), &mut self.session.0.cipher, buf, &mut self.session.0.write_buffer));
+                        self.session.0.kex = Some(next_kex);
+                        return Ok(ReturnCode::Ok)
+                    } else {
+                        // If the other side has not started the key exchange, process its packets.
+                        try!(self.session.server_read_encrypted(server, buf, buffer))
+                    },
 
                 Some(Kex::KexDh(kexdh)) => {
-                    let next_kex = try!(kexdh.parse(self.state.config.as_ref(), buffer, buffer2, &mut self.state.cipher, buf, &mut self.state.write_buffer));
-                    self.state.kex = Some(next_kex);
+                    let next_kex = try!(kexdh.parse(self.session.0.config.as_ref(), buffer, buffer2, &mut self.session.0.cipher, buf, &mut self.session.0.write_buffer));
+                    self.session.0.kex = Some(next_kex);
                     return Ok(ReturnCode::Ok)
                 },
 
@@ -261,31 +268,18 @@ impl Connection {
                         return Err(Error::NewKeys)
                     }
                     // Ok, NEWKEYS received, now encrypted.
-                    self.state.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
+                    self.session.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
                     return Ok(ReturnCode::Ok)
                 },
-
                 Some(kex) => {
-                    self.state.kex = Some(kex);
+                    self.session.0.kex = Some(kex);
                     return Ok(ReturnCode::Ok)
                 }
                 None => {
-                    try!(self.state.server_read_encrypted(server, buf, buffer))
+                    try!(self.session.server_read_encrypted(server, buf, buffer))
                 }
-            }
-
-                
-            if let Some(ref mut enc) = self.state.encrypted {
-                if enc.flush( &self.state.config.as_ref().limits, &mut self.state.cipher, &mut self.state.write_buffer) {
-                    if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
-                        let mut kexinit = KexInit::initiate_rekey(exchange, &enc.session_id);
-                        kexinit.server_write(&self.state.config.as_ref(),
-                                             &mut self.state.cipher,
-                                             &mut self.state.write_buffer);
-                        enc.rekey = Some(Kex::KexInit(kexinit))
-                    }
-                }
-            }
+            }        
+            self.session.flush();
             Ok(ReturnCode::Ok)
         } else {
             Ok(ReturnCode::NotEnoughBytes)
@@ -293,30 +287,43 @@ impl Connection {
     }
 
     pub fn write<W: Write>(&mut self, stream: &mut W) -> Result<(), Error> {
-        try!(self.state.write_buffer.write_all(stream));
+        try!(self.session.0.write_buffer.write_all(stream));
         Ok(())
     }
 
 }
 
-impl State {
-
+impl Session {
+    fn flush(&mut self) {
+        if let Some(ref mut enc) = self.0.encrypted {
+            if enc.flush( &self.0.config.as_ref().limits, &mut self.0.cipher, &mut self.0.write_buffer) {
+                if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
+                    let mut kexinit = KexInit::initiate_rekey(exchange, &enc.session_id);
+                    kexinit.server_write(&self.0.config.as_ref(),
+                                         &mut self.0.cipher,
+                                         &mut self.0.write_buffer);
+                    enc.rekey = Some(Kex::KexInit(kexinit))
+                }
+            }
+        }
+    }
+        
     pub fn request_success(&mut self) {
-        if self.wants_reply {
-            if let Some(ref mut enc) = self.encrypted {
+        if self.0.wants_reply {
+            if let Some(ref mut enc) = self.0.encrypted {
                 push_packet!(enc.write, enc.write.push(msg::REQUEST_SUCCESS))
             }
         }
     }
 
     pub fn request_failure(&mut self) {
-        if let Some(ref mut enc) = self.encrypted {
+        if let Some(ref mut enc) = self.0.encrypted {
             push_packet!(enc.write, enc.write.push(msg::REQUEST_FAILURE))
         }
     }
 
     pub fn channel_success(&mut self, channel: u32) {
-        if let Some(ref mut enc) = self.encrypted {
+        if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 if channel.wants_reply {
                     push_packet!(enc.write, {
@@ -329,7 +336,7 @@ impl State {
     }
 
     pub fn channel_failure(&mut self, channel: u32) {
-        if let Some(ref mut enc) = self.encrypted {
+        if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 if channel.wants_reply {
                     push_packet!(enc.write, {
@@ -342,7 +349,7 @@ impl State {
     }
 
     pub fn data(&mut self, channel: u32, extended: Option<u32>, data: &[u8]) -> Result<usize, Error> {
-        if let Some(ref mut enc) = self.encrypted {
+        if let Some(ref mut enc) = self.0.encrypted {
             enc.data(channel, extended, data)
         } else {
             unreachable!()
@@ -350,7 +357,7 @@ impl State {
     }
 
     pub fn xon_xoff_request(&mut self, channel:u32, client_can_do: bool) {
-        if let Some(ref mut enc) = self.encrypted {
+        if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
                     enc.write.push(msg::CHANNEL_REQUEST);
@@ -365,7 +372,7 @@ impl State {
     }
 
     pub fn exit_status_request(&mut self, channel:u32, exit_status:u32) {
-        if let Some(ref mut enc) = self.encrypted {
+        if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
                     enc.write.push(msg::CHANNEL_REQUEST);
@@ -380,7 +387,7 @@ impl State {
     }
 
     pub fn exit_signal_request(&mut self, channel:u32, signal:Sig, core_dumped:bool, error_message:&str, language_tag:&str) {
-        if let Some(ref mut enc) = self.encrypted {
+        if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
                     enc.write.push(msg::CHANNEL_REQUEST);

@@ -86,7 +86,7 @@ macro_rules! push_packet {
     };
 }
 
-mod state;
+mod session;
 
 #[derive(Debug)]
 pub enum Error {
@@ -235,12 +235,12 @@ pub trait Server {
 
     /// Called when a new channel is created.
     #[allow(unused_variables)]
-    fn new_channel(&mut self, channel: u32, channel_type: ChannelType, session: &mut server::State) {}
+    fn new_channel(&mut self, channel: u32, channel_type: ChannelType, session: &mut server::Session) {}
 
     /// Called when a data packet is received. A response can be
     /// written to the `response` argument.
     #[allow(unused_variables)]
-    fn data(&mut self, channel:u32, data: &[u8], session: &mut server::State) -> Result<(), Error> {
+    fn data(&mut self, channel:u32, data: &[u8], session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
@@ -248,48 +248,48 @@ pub trait Server {
     /// that this packet comes from stderr, other codes are not
     /// defined (see [RFC4254](https://tools.ietf.org/html/rfc4254#section-5.2)).
     #[allow(unused_variables)]
-    fn extended_data(&mut self, channel:u32, code:u32, data: &[u8], session: &mut server::State) -> Result<(), Error> {
+    fn extended_data(&mut self, channel:u32, code:u32, data: &[u8], session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
     /// Called when the network window is adjusted, meaning that we can send more bytes.
     #[allow(unused_variables)]
-    fn window_adjusted(&mut self, channel:u32, session: &mut server::State) -> Result<(), Error> {
+    fn window_adjusted(&mut self, channel:u32, session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
     #[allow(unused_variables)]
-    fn pty_request(&mut self, channel:u32, term:&str, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, modes:&[(pty::Option, u32)], session: &mut server::State) -> Result<(), Error> {
+    fn pty_request(&mut self, channel:u32, term:&str, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, modes:&[(pty::Option, u32)], session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
     #[allow(unused_variables)]
-    fn x11_request(&mut self, channel:u32, single_connection:bool, x11_auth_protocol:&str, x11_auth_cookie:&str, x11_screen_number:u32, session: &mut server::State) -> Result<(), Error> {
+    fn x11_request(&mut self, channel:u32, single_connection:bool, x11_auth_protocol:&str, x11_auth_cookie:&str, x11_screen_number:u32, session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
     #[allow(unused_variables)]
-    fn env_request(&mut self, channel:u32, variable_name:&str, variable_value:&str, session: &mut server::State) -> Result<(), Error> {
+    fn env_request(&mut self, channel:u32, variable_name:&str, variable_value:&str, session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
     #[allow(unused_variables)]
-    fn shell_request(&mut self, channel:u32, session: &mut server::State) -> Result<(), Error> {
+    fn shell_request(&mut self, channel:u32, session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
     #[allow(unused_variables)]
-    fn exec_request(&mut self, channel:u32, data: &[u8], session: &mut server::State) -> Result<(), Error> {
+    fn exec_request(&mut self, channel:u32, data: &[u8], session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
     #[allow(unused_variables)]
-    fn subsystem_request(&mut self, channel:u32, name: &str, session: &mut server::State) -> Result<(), Error> {
+    fn subsystem_request(&mut self, channel:u32, name: &str, session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
     #[allow(unused_variables)]
-    fn window_change_request(&mut self, channel:u32, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, session: &mut server::State) -> Result<(), Error> {
+    fn window_change_request(&mut self, channel:u32, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
@@ -317,34 +317,34 @@ pub trait Client {
     }
 
     #[allow(unused_variables)]
-    fn channel_open_confirmation(&self, channel:u32, session: &mut client::State) {}
+    fn channel_open_confirmation(&self, channel:u32, session: &mut client::Session) {}
 
     #[allow(unused_variables)]
-    fn channel_open_failure(&self, channel:u32, reason: ChannelOpen, description:&str, language:&str, session: &mut client::State) {}
+    fn channel_open_failure(&self, channel:u32, reason: ChannelOpen, description:&str, language:&str, session: &mut client::Session) {}
 
     #[allow(unused_variables)]
-    fn data(&mut self, channel: Option<u32>, data: &[u8], session: &mut client::State) -> Result<(), Error> {
+    fn data(&mut self, channel: Option<u32>, data: &[u8], session: &mut client::Session) -> Result<(), Error> {
         Ok(())
     }
 
     #[allow(unused_variables)]
-    fn xon_xoff(&mut self, channel: u32, client_can_do: bool, session: &mut client::State) -> Result<(), Error> {
+    fn xon_xoff(&mut self, channel: u32, client_can_do: bool, session: &mut client::Session) -> Result<(), Error> {
         Ok(())
     }
 
     #[allow(unused_variables)]
-    fn exit_status(&mut self, channel: u32, exit_status: u32, session: &mut client::State) -> Result<(), Error> {
+    fn exit_status(&mut self, channel: u32, exit_status: u32, session: &mut client::Session) -> Result<(), Error> {
         Ok(())
     }
 
     #[allow(unused_variables)]
-    fn exit_signal(&mut self, channel: u32, signal_name: Sig, core_dumped: bool, error_message:&str, lang_tag:&str, session: &mut client::State) -> Result<(), Error> {
+    fn exit_signal(&mut self, channel: u32, signal_name: Sig, core_dumped: bool, error_message:&str, lang_tag:&str, session: &mut client::Session) -> Result<(), Error> {
         Ok(())
     }
 
     /// Called when the network window is adjusted, meaning that we can send more bytes.
     #[allow(unused_variables)]
-    fn window_adjusted(&mut self, channel:u32, session: &mut client::State) -> Result<(), Error> {
+    fn window_adjusted(&mut self, channel:u32, session: &mut client::Session) -> Result<(), Error> {
         Ok(())
     }
 

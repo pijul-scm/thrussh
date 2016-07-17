@@ -22,7 +22,7 @@ use super::sodium::randombytes;
 use super::sodium::sha256;
 use super::sodium::curve25519;
 use super::cryptobuf::CryptoBuf;
-use state::*;
+use session::Exchange;
 use key;
 
 #[derive(Debug,Clone)]

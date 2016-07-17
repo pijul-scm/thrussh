@@ -19,7 +19,7 @@ use cryptobuf::CryptoBuf;
 use {Sig, Error, Client, ChannelOpen};
 use std;
 use auth;
-use state::*;
+use session::*;
 use msg;
 use encoding::Reader;
 use negociation::Named;
@@ -30,7 +30,7 @@ use negociation::Select;
 
 const SSH_CONNECTION:&'static [u8] = b"ssh-connection";
 
-impl<'a> super::State<'a> {
+impl<'a> super::Session<'a> {
     pub fn client_read_encrypted<C: Client>(&mut self,
                                             client: &mut C,
                                             buf: &[u8],
@@ -40,21 +40,21 @@ impl<'a> super::State<'a> {
         // Either this packet is a KEXINIT, in which case we start a key re-exchange.
         if buf[0] == msg::KEXINIT {
             // Now, if we're encrypted:
-            if let Some(ref mut enc) = self.encrypted {
+            if let Some(ref mut enc) = self.0.encrypted {
 
                 // If we're not currently rekeying, but buf is a rekey request
                 if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
                     let kexinit = KexInit::received_rekey(
                         exchange,
-                        try!(negociation::Client::read_kex(buf, &self.config.as_ref().preferred)),
+                        try!(negociation::Client::read_kex(buf, &self.0.config.as_ref().preferred)),
                         &enc.session_id
                     );
-                    self.kex = Some(Kex::KexDhDone(
+                    self.0.kex = Some(Kex::KexDhDone(
                         try!(kexinit.client_parse(
-                            self.config.as_ref(),
-                            &mut self.cipher,
+                            self.0.config.as_ref(),
+                            &mut self.0.cipher,
                             buf,
-                            &mut self.write_buffer
+                            &mut self.0.write_buffer
                         ))
                     ));
                 }
@@ -62,9 +62,9 @@ impl<'a> super::State<'a> {
             }
         }
         // If we've successfully read a packet.
-        // debug!("state = {:?}, buf = {:?}", self.state, buf);
+        // debug!("state = {:?}, buf = {:?}", self.0.state, buf);
         let mut is_authenticated = false;
-        if let Some(ref mut enc) = self.encrypted {
+        if let Some(ref mut enc) = self.0.encrypted {
 
             let state = std::mem::replace(&mut enc.state, None);
             match state {
@@ -82,7 +82,7 @@ impl<'a> super::State<'a> {
                                 was_rejected: false
                             };
 
-                            if let Some(ref meth) = self.auth_method {
+                            if let Some(ref meth) = self.0.auth_method {
                                 if enc.write_auth_request(meth) {
                                     enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
                                     return Ok(())
@@ -117,7 +117,7 @@ impl<'a> super::State<'a> {
                     } else if buf[0] == msg::USERAUTH_PK_OK {
 
                         auth_request.public_key_is_ok = true;
-                        if let Some(ref auth_method) = self.auth_method {
+                        if let Some(ref auth_method) = self.0.auth_method {
                             enc.client_send_signature(auth_method, buffer);
                         }
                         enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
@@ -143,7 +143,7 @@ impl<'a> super::State<'a> {
                     let window = try!(reader.read_u32());
                     let max_packet = try!(reader.read_u32());
 
-                    if let Some(ref mut enc) = self.encrypted {
+                    if let Some(ref mut enc) = self.0.encrypted {
 
                         if let Some(parameters) = enc.channels.get_mut(&id_send) {
                             
@@ -172,8 +172,8 @@ impl<'a> super::State<'a> {
                     let channel_num = try!(r.read_u32());
                     let data = try!(r.read_string());
                     try!(client.data(None, &data, self));
-                    let target = self.config.window_size;
-                    if let Some(ref mut enc) = self.encrypted {
+                    let target = self.0.config.window_size;
+                    if let Some(ref mut enc) = self.0.encrypted {
                         enc.adjust_window_size(channel_num, data, target);
                     }
                 }
@@ -183,8 +183,8 @@ impl<'a> super::State<'a> {
                     let extended_code = try!(r.read_u32());
                     let data = try!(r.read_string());
                     try!(client.data(Some(extended_code), &data, self));
-                    let target = self.config.window_size;
-                    if let Some(ref mut enc) = self.encrypted {
+                    let target = self.0.config.window_size;
+                    if let Some(ref mut enc) = self.0.encrypted {
                         enc.adjust_window_size(channel_num, data, target);
                     }
                 }
@@ -223,7 +223,7 @@ impl<'a> super::State<'a> {
                     let mut r = buf.reader(1);
                     let channel_num = try!(r.read_u32());
                     let amount = try!(r.read_u32());
-                    if let Some(ref mut enc) = self.encrypted {
+                    if let Some(ref mut enc) = self.0.encrypted {
                         if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
                             channel.recipient_window_size += amount
                         } else {
