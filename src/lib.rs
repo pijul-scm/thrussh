@@ -101,12 +101,14 @@
 //! // instances of Read and Write are networks sockets instead of Vec).
 //!
 //!
+//! // Fake sockets.
 //! let mut server_read:Vec<u8> = Vec::new();
 //! let mut server_write:Vec<u8> = Vec::new();
-
+//!
+//! // The server and client need extra workspace, we allocate these here.
 //! let mut buffer0 = CryptoBuf::new();
 //! let mut buffer1 = CryptoBuf::new();
-
+//!
 //! let mut run_protocol = |client_session:&mut client::Connection| {
 //!     {
 //!         let mut swrite = &server_write[..];
