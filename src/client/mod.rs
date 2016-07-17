@@ -22,7 +22,7 @@ use super::auth;
 use super::cipher::CipherT;
 use super::negociation;
 use std::io::{Write, BufRead};
-use ReturnCode;
+
 use std;
 use cryptobuf::CryptoBuf;
 use negociation::Select;
@@ -168,13 +168,31 @@ impl<'a> Connection<'a> {
         session
     }
 
-    // returns whether a complete packet has been read.
     pub fn read<R: BufRead, C: super::Client> (&mut self,
                                                client: &mut C,
                                                stream: &mut R,
                                                buffer: &mut CryptoBuf,
                                                buffer2: &mut CryptoBuf)
-                                               -> Result<super::ReturnCode, Error> {
+                                               -> Result<bool, Error> {
+
+        let mut at_least_one_was_read = false;
+        loop {
+            match self.read_one(client, stream, buffer, buffer2) {
+                Ok(true) => at_least_one_was_read = true,
+                Ok(false) => return Ok(at_least_one_was_read),
+                Err(Error::IO(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(at_least_one_was_read),
+                Err(e) => return Err(e)
+            }
+        }
+    }
+
+    pub fn read_one<R: BufRead, C: super::Client> (&mut self,
+                                                   client: &mut C,
+                                                   stream: &mut R,
+                                                   buffer: &mut CryptoBuf,
+                                                   buffer2: &mut CryptoBuf)
+                                                   -> Result<bool, Error> {
+
         if self.session.0.encrypted.is_none() && self.session.0.kex.is_none() {
 
             let mut exchange;
@@ -185,7 +203,7 @@ impl<'a> Connection<'a> {
                     exchange.server_id.extend(server_id);
                     debug!("server id, exchange = {:?}", exchange);
                 } else {
-                    return Ok(ReturnCode::WrongPacket);
+                    return Ok(false)
                 }
             }
             // Preparing the response
@@ -198,7 +216,7 @@ impl<'a> Connection<'a> {
             };
             kexinit.client_write(self.session.0.config.as_ref(), &mut self.session.0.cipher, &mut self.session.0.write_buffer);
             self.session.0.kex = Some(Kex::KexInit(kexinit));
-            return Ok(ReturnCode::Ok)
+            return Ok(true)
         }
 
 
@@ -209,10 +227,10 @@ impl<'a> Connection<'a> {
             // Handle the transport layer.
             if buf[0] == msg::DISCONNECT {
                 // transport
-                return Ok(ReturnCode::Disconnect)
+                return Err(Error::Disconnect)
             }
             if buf[0] <= 4 {
-                return Ok(ReturnCode::Ok)
+                return Ok(true)
             }
 
             // Handle key exchange/re-exchange.
@@ -244,9 +262,9 @@ impl<'a> Connection<'a> {
                 }
             }
             self.session.flush();
-            Ok(ReturnCode::Ok)
+            Ok(true)
         } else {
-            Ok(ReturnCode::NotEnoughBytes)
+            Ok(false)
         }
     }
 

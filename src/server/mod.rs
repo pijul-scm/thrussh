@@ -193,14 +193,30 @@ impl Connection {
         };
         session
     }
+    pub fn read<R: BufRead, S: super::Server> (&mut self,
+                                               server: &mut S,
+                                               stream: &mut R,
+                                               buffer: &mut CryptoBuf,
+                                               buffer2: &mut CryptoBuf)
+                                               -> Result<bool, Error> {
+        let mut at_least_one_was_read = false;
+        loop {
+            match self.read_one(server, stream, buffer, buffer2) {
+                Ok(true) => at_least_one_was_read = true,
+                Ok(false) => return Ok(at_least_one_was_read),
+                Err(Error::IO(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(at_least_one_was_read),
+                Err(e) => return Err(e)
+            }
+        }
+    }
 
     // returns whether a complete packet has been read.
-    pub fn read<R: BufRead, S: Server>(&mut self,
-                                       server: &mut S,
-                                       stream: &mut R,
-                                       buffer: &mut CryptoBuf,
-                                       buffer2: &mut CryptoBuf)
-                                       -> Result<ReturnCode, Error> {
+    pub fn read_one<R: BufRead, S: Server>(&mut self,
+                                           server: &mut S,
+                                           stream: &mut R,
+                                           buffer: &mut CryptoBuf,
+                                           buffer2: &mut CryptoBuf)
+                                           -> Result<bool, Error> {
         debug!("read {:?}", self.session);
         // Special case for the beginning.
         if self.session.0.encrypted.is_none() && self.session.0.kex.is_none() {
@@ -213,7 +229,7 @@ impl Connection {
                     exchange.client_id.extend(client_id);
                     debug!("client id, exchange = {:?}", exchange);
                 } else {
-                    return Ok(ReturnCode::WrongPacket);
+                    return Ok(false)
                 }
             }
             // Preparing the response
@@ -226,7 +242,7 @@ impl Connection {
             };
             kexinit.server_write(self.session.0.config.as_ref(), &mut self.session.0.cipher, &mut self.session.0.write_buffer);
             self.session.0.kex = Some(Kex::KexInit(kexinit));
-            return Ok(ReturnCode::Ok)
+            return Ok(true)
 
         }
 
@@ -238,10 +254,10 @@ impl Connection {
             // Handle the transport layer.
             if buf[0] == msg::DISCONNECT {
                 // transport
-                return Ok(ReturnCode::Disconnect)
+                return Err(Error::Disconnect)
             }
             if buf[0] <= 4 {
-                return Ok(ReturnCode::Ok)
+                return Ok(true)
             }
 
             // Handle key exchange/re-exchange.
@@ -251,7 +267,7 @@ impl Connection {
                     if kexinit.algo.is_some() || buf[0] == msg::KEXINIT || self.session.0.encrypted.is_none() {
                         let next_kex = try!(kexinit.server_parse(self.session.0.config.as_ref(), &mut self.session.0.cipher, buf, &mut self.session.0.write_buffer));
                         self.session.0.kex = Some(next_kex);
-                        return Ok(ReturnCode::Ok)
+                        return Ok(true)
                     } else {
                         // If the other side has not started the key exchange, process its packets.
                         try!(self.session.server_read_encrypted(server, buf, buffer))
@@ -260,7 +276,7 @@ impl Connection {
                 Some(Kex::KexDh(kexdh)) => {
                     let next_kex = try!(kexdh.parse(self.session.0.config.as_ref(), buffer, buffer2, &mut self.session.0.cipher, buf, &mut self.session.0.write_buffer));
                     self.session.0.kex = Some(next_kex);
-                    return Ok(ReturnCode::Ok)
+                    return Ok(true)
                 },
 
                 Some(Kex::NewKeys(newkeys)) => {
@@ -269,20 +285,20 @@ impl Connection {
                     }
                     // Ok, NEWKEYS received, now encrypted.
                     self.session.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
-                    return Ok(ReturnCode::Ok)
+                    return Ok(true)
                 },
                 Some(kex) => {
                     self.session.0.kex = Some(kex);
-                    return Ok(ReturnCode::Ok)
+                    return Ok(true)
                 }
                 None => {
                     try!(self.session.server_read_encrypted(server, buf, buffer))
                 }
             }        
             self.session.flush();
-            Ok(ReturnCode::Ok)
+            Ok(true)
         } else {
-            Ok(ReturnCode::NotEnoughBytes)
+            Ok(false)
         }
     }
 

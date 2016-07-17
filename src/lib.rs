@@ -108,6 +108,7 @@ pub enum Error {
     UnknownChannelType,
     UnknownSignal,
     IO(std::io::Error),
+    Disconnect
 }
 
 impl From<std::io::Error> for Error {
@@ -142,15 +143,6 @@ mod encoding;
 use encoding::*;
 
 pub mod auth;
-
-
-
-pub enum ReturnCode {
-    Ok,
-    NotEnoughBytes,
-    Disconnect,
-    WrongPacket,
-}
 
 #[derive(Debug,Clone)]
 pub struct Limits {
@@ -375,6 +367,7 @@ pub struct ChannelParameters {
 
 const KEYTYPE_ED25519: &'static [u8] = b"ssh-ed25519";
 
+/// Load a public key from a file. Only ed25519 keys are currently supported.
 pub fn load_public_key<P: AsRef<Path>>(p: P) -> Result<key::PublicKey, Error> {
 
     let mut pubkey = String::new();
@@ -392,7 +385,7 @@ pub fn load_public_key<P: AsRef<Path>>(p: P) -> Result<key::PublicKey, Error> {
     }
 }
 
-pub fn read_public_key(p: &[u8]) -> Result<key::PublicKey, Error> {
+fn read_public_key(p: &[u8]) -> Result<key::PublicKey, Error> {
     let mut pos = p.reader(0);
     if try!(pos.read_string()) == b"ssh-ed25519" {
         if let Ok(pubkey) = pos.read_string() {
@@ -402,6 +395,7 @@ pub fn read_public_key(p: &[u8]) -> Result<key::PublicKey, Error> {
     Err(Error::CouldNotReadKey)
 }
 
+/// Load a secret key from a file. Only ed25519 keys are currently supported.
 pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
 
     let file = try!(File::open(p.as_ref()));
@@ -513,7 +507,7 @@ mod test {
             let (pk,sk) = super::sodium::ed25519::generate_keypair().unwrap();
             config.keys.push(
                 key::Algorithm::Ed25519 {
-                    public: pk, secret: sk
+                    public: pk.clone(), secret: sk
                 }
             );
             Arc::new(config)
@@ -542,18 +536,16 @@ mod test {
         let mut run_loop = |client_session:&mut client::Connection| {
             {
                 let mut swrite = &server_write[..];
-                while swrite.len() > 0 {
-                    client_session.read(&mut client, &mut swrite, &mut c_buffer0, &mut c_buffer1).unwrap();
-                }
+                debug!("client read");
+                client_session.read(&mut client, &mut swrite, &mut c_buffer0, &mut c_buffer1).unwrap();
             }
             server_write.clear();
             client_session.write(&mut server_read).unwrap();
 
             {
                 let mut sread = &server_read[..];
-                while sread.len() > 0 {
-                    server_session.read(&mut server, &mut sread, &mut s_buffer0, &mut s_buffer1).unwrap();
-                }
+                debug!("server read");
+                server_session.read(&mut server, &mut sread, &mut s_buffer0, &mut s_buffer1).unwrap();
             }
             server_read.clear();
             server_session.write(&mut server_write).unwrap();
@@ -563,18 +555,18 @@ mod test {
             debug!("client_session: {:?}", client_session);
             run_loop(&mut client_session)
         }
-
-        let channel = client_session.state.channel_open(ChannelType::Session).unwrap();
+        /*
+        let channel = client_session.session.channel_open(ChannelType::Session).unwrap();
         client_session.flush();
 
         loop {
-            if let Some(chan) = client_session.state.channels().and_then(|x| x.get(&channel)) {
+            if let Some(chan) = client_session.session.channels().and_then(|x| x.get(&channel)) {
                 if chan.confirmed {
                     break
                 }
             }
             run_loop(&mut client_session);
         }
-        
+        */
     }
 }

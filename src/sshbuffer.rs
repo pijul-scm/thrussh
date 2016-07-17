@@ -49,10 +49,10 @@ impl SSHBuffer {
                 i += 1
             }
             if buf.len() <= 8 {
-                // Not enough bytes. Don't consume, wait until we have more bytes. The buffer is larger than 255 anyway.
+                // Not enough bytes. Don't consume, wait until we have more bytes.
                 return Ok(None);
             } else if i >= buf.len() -1 {
-                return Ok(None);
+                return Err(Error::Version);
             }
             if &buf[0..8] == b"SSH-2.0-" {
                 self.buffer.clear();
