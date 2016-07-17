@@ -21,12 +21,8 @@
 //! Here is an example, using `Vec`s as instances of `Read` and `Write`, instead of network sockets.
 //!
 //!```
-//! use thrussh::key;
-//! use thrussh::auth;
-//! use thrussh::server;
-//! use thrussh::client;
 //! use std::sync::Arc;
-//! use thrussh::{Client,Server,CryptoBuf};
+//! use thrussh::{key, auth, server, client, Server, Client, CryptoBuf};
 //! let client_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
 //! let server_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
 //!
@@ -440,6 +436,7 @@ pub trait Client {
     /// Called to check the server's public key. This is a very important
     /// step to help prevent man-in-the-middle attacks. The default
     /// implementation rejects all keys.
+    #[allow(unused_variables)]
     fn check_server_key(&self, server_public_key: &key::PublicKey) -> bool {
         false
     }

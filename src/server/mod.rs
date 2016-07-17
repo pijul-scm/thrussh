@@ -201,7 +201,7 @@ impl Connection {
                                                -> Result<bool, Error> {
         let mut at_least_one_was_read = false;
         loop {
-            match self.read_one(server, stream, buffer, buffer2) {
+            match self.read_one_packet(server, stream, buffer, buffer2) {
                 Ok(true) => at_least_one_was_read = true,
                 Ok(false) => return Ok(at_least_one_was_read),
                 Err(Error::IO(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(at_least_one_was_read),
@@ -211,12 +211,12 @@ impl Connection {
     }
 
     // returns whether a complete packet has been read.
-    pub fn read_one<R: BufRead, S: Server>(&mut self,
-                                           server: &mut S,
-                                           stream: &mut R,
-                                           buffer: &mut CryptoBuf,
-                                           buffer2: &mut CryptoBuf)
-                                           -> Result<bool, Error> {
+    fn read_one_packet<R: BufRead, S: Server>(&mut self,
+                                              server: &mut S,
+                                              stream: &mut R,
+                                              buffer: &mut CryptoBuf,
+                                              buffer2: &mut CryptoBuf)
+                                              -> Result<bool, Error> {
         debug!("read {:?}", self.session);
         // Special case for the beginning.
         if self.session.0.encrypted.is_none() && self.session.0.kex.is_none() {
