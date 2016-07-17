@@ -16,7 +16,7 @@
 use enum_primitive::FromPrimitive;
 
 use cryptobuf::CryptoBuf;
-use {Sig, Error, Client, ChannelOpen};
+use {Sig, Error, Client, ChannelOpenFailure};
 use std;
 use auth;
 use session::*;
@@ -157,21 +157,24 @@ impl<'a> super::Session<'a> {
                             return Err(Error::Inconsistent)
                         }
                     }
-                    client.channel_open_confirmation(id_send, self);
+                    try!(client.channel_open_confirmation(id_send, self));
                 }
                 msg::CHANNEL_OPEN_FAILURE => {
                     let mut r = buf.reader(1);
                     let channel_num = try!(r.read_u32());
-                    let reason_code = ChannelOpen::from_u32(try!(r.read_u32())).unwrap();
+                    let reason_code = ChannelOpenFailure::from_u32(try!(r.read_u32())).unwrap();
                     let descr = try!(std::str::from_utf8(try!(r.read_string())));
                     let language = try!(std::str::from_utf8(try!(r.read_string())));
-                    client.channel_open_failure(channel_num, reason_code, descr, language, self);
+                    if let Some(ref mut enc) = self.0.encrypted {
+                        enc.channels.remove(&channel_num);
+                    }
+                    try!(client.channel_open_failure(channel_num, reason_code, descr, language, self));
                 }
                 msg::CHANNEL_DATA => {
                     let mut r = buf.reader(1);
                     let channel_num = try!(r.read_u32());
                     let data = try!(r.read_string());
-                    try!(client.data(None, &data, self));
+                    try!(client.data(channel_num, None, &data, self));
                     let target = self.0.config.window_size;
                     if let Some(ref mut enc) = self.0.encrypted {
                         enc.adjust_window_size(channel_num, data, target);
@@ -182,7 +185,7 @@ impl<'a> super::Session<'a> {
                     let channel_num = try!(r.read_u32());
                     let extended_code = try!(r.read_u32());
                     let data = try!(r.read_string());
-                    try!(client.data(Some(extended_code), &data, self));
+                    try!(client.data(channel_num, Some(extended_code), &data, self));
                     let target = self.0.config.window_size;
                     if let Some(ref mut enc) = self.0.encrypted {
                         enc.adjust_window_size(channel_num, data, target);
@@ -205,14 +208,11 @@ impl<'a> super::Session<'a> {
                         },
                         b"exit-signal" => {
                             try!(r.read_byte()); // should be 0.
-                            if let Some(signal_name) = Sig::from_name(try!(r.read_string())) {
-                                let core_dumped = try!(r.read_byte());
-                                let error_message = try!(std::str::from_utf8(try!(r.read_string())));
-                                let lang_tag = try!(std::str::from_utf8(try!(r.read_string())));
-                                try!(client.exit_signal(channel_num, signal_name, core_dumped!=0, error_message, lang_tag, self));
-                            } else {
-                                return Err(Error::UnknownSignal)
-                            }
+                            let signal_name = try!(Sig::from_name(try!(r.read_string())));
+                            let core_dumped = try!(r.read_byte());
+                            let error_message = try!(std::str::from_utf8(try!(r.read_string())));
+                            let lang_tag = try!(std::str::from_utf8(try!(r.read_string())));
+                            try!(client.exit_signal(channel_num, signal_name, core_dumped!=0, error_message, lang_tag, self));
                         },
                         _ => {
                             unimplemented!()
@@ -254,13 +254,13 @@ impl Encrypted {
                     self.write.extend_ssh_string(password.as_bytes());
                     true
                 }
-                auth::Method::PublicKey { ref user, ref pubkey } => {
+                auth::Method::PublicKey { ref user, ref public_key } => {
                     self.write.extend_ssh_string(user.as_bytes());
                     self.write.extend_ssh_string(SSH_CONNECTION);
                     self.write.extend_ssh_string(b"publickey");
                     self.write.push(0); // This is a probe
-                    self.write.extend_ssh_string(pubkey.name().as_bytes());
-                    pubkey.push_to(&mut self.write);
+                    self.write.extend_ssh_string(public_key.name().as_bytes());
+                    public_key.push_to(&mut self.write);
                     true
                 }
                 _ => false
@@ -273,7 +273,7 @@ impl Encrypted {
                                  buffer: &mut CryptoBuf) {
         debug!("sending signature {:?}", method);
         match method {
-            &auth::Method::PublicKey { ref user, ref pubkey } => {
+            &auth::Method::PublicKey { ref user, ref public_key } => {
 
                 buffer.clear();
                 buffer.extend_ssh_string(self.session_id.as_bytes());
@@ -283,10 +283,10 @@ impl Encrypted {
                 buffer.extend_ssh_string(SSH_CONNECTION);
                 buffer.extend_ssh_string(b"publickey");
                 buffer.push(1);
-                buffer.extend_ssh_string(pubkey.name().as_bytes());
-                pubkey.push_to(buffer);
+                buffer.extend_ssh_string(public_key.name().as_bytes());
+                public_key.push_to(buffer);
                 // Extend with self-signature.
-                pubkey.add_self_signature(buffer);
+                public_key.add_self_signature(buffer);
                 debug!("packet : {:?}", &buffer.as_slice()[i0..]);
                 push_packet!(self.write, {
                     self.write.extend(&buffer.as_slice()[i0..]);

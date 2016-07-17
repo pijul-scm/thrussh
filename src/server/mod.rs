@@ -366,6 +366,18 @@ impl Session {
         }
     }
 
+    pub fn channel_open_failure(&mut self, channel: u32, reason: ChannelOpenFailure, description:&str, language:&str) {
+        if let Some(ref mut enc) = self.0.encrypted {
+            push_packet!(enc.write, {
+                enc.write.push(msg::CHANNEL_OPEN_FAILURE);
+                enc.write.push_u32_be(channel);
+                enc.write.push_u32_be(reason as u32);
+                enc.write.extend_ssh_string(description.as_bytes());
+                enc.write.extend_ssh_string(language.as_bytes());
+            })
+        }
+    }
+
     pub fn data(&mut self, channel: u32, extended: Option<u32>, data: &[u8]) -> Result<usize, Error> {
         if let Some(ref mut enc) = self.0.encrypted {
             enc.data(channel, extended, data)

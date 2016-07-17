@@ -16,6 +16,9 @@ use std;
 
 use super::sodium;
 use super::libc::{malloc, free, c_void};
+
+/// A buffer which zeroes its memory on `.clear()`, `.truncate()` and
+/// reallocations, to avoid copying secrets around.
 #[derive(Debug)]
 pub struct CryptoBuf {
     p: *mut u8,

@@ -189,6 +189,21 @@ impl Encrypted {
         false
     }
 
+    pub fn new_channel(&mut self, sender_channel:u32, window_size:u32, maxpacket:u32) {
+        self.channels.insert(
+            sender_channel,
+            ChannelParameters {
+                recipient_channel: 0,
+                sender_channel: sender_channel,
+                sender_window_size: window_size,
+                recipient_window_size: 0,
+                sender_maximum_packet_size: maxpacket,
+                recipient_maximum_packet_size: 0,
+                confirmed: false,
+                wants_reply: false
+            }
+        );
+    }
 
 }
 /*

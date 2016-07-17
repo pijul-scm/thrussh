@@ -235,6 +235,11 @@ impl Session {
                         let pix_height = try!(r.read_u32());
                         try!(server.window_change_request(channel_num, col_width, row_height, pix_width, pix_height, self));
                     }
+                    b"signal" => {
+                        try!(r.read_byte()); // should be 0.
+                        let signal_name = try!(Sig::from_name(try!(r.read_string())));
+                        try!(server.signal(channel_num, signal_name, self));
+                    },
                     x => {
                         debug!("{:?}, line {:?} req_type = {:?}", file!(), line!(), std::str::from_utf8(x));
                         if let Some(ref mut enc) = self.0.encrypted {
@@ -320,65 +325,48 @@ impl Session {
         let maxpacket = try!(r.read_u32());
 
         let mut sender_channel: u32 = 1;
-        let typ =
-            if let Some(ref mut enc) = self.0.encrypted {
-                while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
-                    sender_channel = thread_rng().gen()
+        if let Some(ref mut enc) = self.0.encrypted {
+            while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
+                sender_channel = thread_rng().gen()
+            }
+        }
+        match typ {
+            b"session" => {
+                server.channel_open_session(sender_channel, self);
+            },
+            b"x11" => {
+                let a = try!(std::str::from_utf8(try!(r.read_string())));
+                let b = try!(r.read_u32());
+                server.channel_open_x11(sender_channel, a, b, self);
+            },
+            b"forwarded_tcpip" => {
+                let a = try!(std::str::from_utf8(try!(r.read_string())));
+                let b = try!(r.read_u32());
+                let c = try!(std::str::from_utf8(try!(r.read_string())));
+                let d = try!(r.read_u32());
+                server.channel_open_forwarded_tcpip(sender_channel, a, b, c, d, self);
+            },
+            b"direct-tcpip" => {
+                let a = try!(std::str::from_utf8(try!(r.read_string())));
+                let b = try!(r.read_u32());
+                let c = try!(std::str::from_utf8(try!(r.read_string())));
+                let d = try!(r.read_u32());
+                server.channel_open_direct_tcpip(sender_channel, a, b, c, d, self);
+            }
+            t => {
+                debug!("unknown channel type: {:?}", t);
+                if let Some(ref mut enc) = self.0.encrypted {
+                    push_packet!(enc.write, {
+                        enc.write.push(msg::CHANNEL_OPEN_FAILURE);
+                        enc.write.push_u32_be(sender);
+                        enc.write.push_u32_be(3); // SSH_OPEN_UNKNOWN_CHANNEL_TYPE
+                        enc.write.extend_ssh_string(b"Unknown channel type");
+                        enc.write.extend_ssh_string(b"en");
+                    });
                 }
-
-                match typ {
-                    b"session" => {
-                        ChannelType::Session
-                    },
-                    b"x11" => {
-                        let a = try!(std::str::from_utf8(try!(r.read_string())));
-                        let b = try!(r.read_u32());
-                        ChannelType::X11 {
-                            originator_address: a,
-                            originator_port: b
-                        }
-                    },
-                    b"forwarded_tcpip" => {
-                        let a = try!(std::str::from_utf8(try!(r.read_string())));
-                        let b = try!(r.read_u32());
-                        let c = try!(std::str::from_utf8(try!(r.read_string())));
-                        let d = try!(r.read_u32());
-                        ChannelType::ForwardedTcpip {
-                            connected_address:a,
-                            connected_port:b,
-                            originator_address:c,
-                            originator_port:d
-                        }
-                    },
-                    b"direct-tcpip" => {
-                        let a = try!(std::str::from_utf8(try!(r.read_string())));
-                        let b = try!(r.read_u32());
-                        let c = try!(std::str::from_utf8(try!(r.read_string())));
-                        let d = try!(r.read_u32());
-                        ChannelType::DirectTcpip {
-                            host_to_connect:a,
-                            port_to_connect:b,
-                            originator_address:c,
-                            originator_port:d
-                        }
-                    }
-                    t => {
-                        debug!("unknown channel type: {:?}", t);
-                        push_packet!(enc.write, {
-                            enc.write.push(msg::CHANNEL_OPEN_FAILURE);
-                            enc.write.push_u32_be(sender);
-                            enc.write.push_u32_be(3); // SSH_OPEN_UNKNOWN_CHANNEL_TYPE
-                            enc.write.extend_ssh_string(b"Unknown channel type");
-                            enc.write.extend_ssh_string(b"en");
-                        });
-                        return Ok(())
-                    }
-                }
-            } else {
-                unreachable!()
-            };
-
-        server.new_channel(sender_channel, typ, self);
+                return Ok(())
+            }
+        }
         let channel = ChannelParameters {
             recipient_channel: sender,
             sender_channel: sender_channel, /* "sender" is the local end, i.e. we're the sender, the remote is the recipient. */
@@ -458,7 +446,7 @@ impl Encrypted {
                     // Check that the user is still authorized (the client may have changed user since we accepted).
                     let method = Method::PublicKey {
                         user: name,
-                        pubkey: pubkey.clone()
+                        public_key: pubkey.clone()
                     };
 
                     match server.auth(auth_request.methods, &method) {
@@ -492,7 +480,7 @@ impl Encrypted {
 
                     let method = Method::PublicKey {
                         user: name,
-                        pubkey: pubkey
+                        public_key: pubkey
                     };
 
                     match server.auth(auth_request.methods, &method) {

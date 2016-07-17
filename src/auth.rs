@@ -58,7 +58,7 @@ pub enum Method<'a, K> {
     },
     PublicKey {
         user: &'a str,
-        pubkey: K
+        public_key: K
     },
     Hostbased,
 }

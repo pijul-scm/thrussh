@@ -16,25 +16,132 @@
 //! Server and client SSH library. See the two example crates
 //! [thrussh_client](https://crates.io/crates/thrussh_server) and
 //! [thrussh_client](https://crates.io/crates/thrussh_client) on
-//! crates.io.
+//! crates.io. More information [here](https://pijul.org/thrussh).
 //!
-//! The source code for this crates and the examples is available
-//! online, just follow [the instructions](https://pijul.org/thrussh).
+//! Here is an example, using `Vec`s as instances of `Read` and `Write`, instead of network sockets.
 //!
-//! This library will never do much more than handling the SSH
-//! protocol.  In particular, it does not run a main loop, does not
-//! call external processes, and does not do its own crypto.
+//!```
+//! use thrussh::key;
+//! use thrussh::auth;
+//! use thrussh::server;
+//! use thrussh::client;
+//! use std::sync::Arc;
+//! use thrussh::{Client,Server,CryptoBuf};
+//! let client_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
+//! let server_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
 //!
-//! If you want to implement an SSH server, create a type that
-//! implements the `Server` trait, create a `server::Config`, and then for each
-//! new connection, create a server session using `let s =
-//! ServerSession::new()`. Then, every time new packets are available,
-//! read as many packets as possible using `ServerSession::read(..)`,
-//! and then write the answer using `ServerSession::write(..)`.
+//! // Server instance
 //!
-//! Clients work almost in the same way, except if you want to provide
-//! a command line interface, which needs its own event loop. See the
-//! [thrussh_client](https://pijul.org) crate for an example.
+//! struct S<'p> {
+//!     client_pubkey: &'p key::PublicKey
+//! }
+//! impl<'p> Server for S<'p> {
+//!     fn auth(&self, _:auth::M, method:&auth::Method<key::PublicKey>) -> auth::Auth {
+//!         match *method {
+//!             auth::Method::PublicKey { ref user, ref public_key }
+//!               if *user == "pe" && public_key == self.client_pubkey=> {
+//!                 // If the user and public key match, accept the public key.
+//!                 auth::Auth::Success
+//!             },
+//!             _ =>
+//!                 // Else, reject and provide no other methods.
+//!                 auth::Auth::Reject {
+//!                     partial_success:false, remaining_methods:
+//!                     auth::M::empty()
+//!                 }
+//!         }
+//!     }
+//! }
+//!
+//! // Client instance
+//!
+//! struct C<'p> {
+//!     server_pk: &'p key::PublicKey
+//! }
+//! impl<'p> Client for C<'p> {
+//!     fn check_server_key(&self, server_pk:&key::PublicKey) -> bool {
+//!
+//!         // This is an important part of the protocol: check the
+//!         // server's public key against the known one, to help prevent
+//!         // man-in-the-middle attacks.
+//!
+//!         self.server_pk == server_pk
+//!     }
+//! }
+//!
+//! 
+//! // Initialize the server
+//! 
+//! let server_config = {
+//!     let mut config:server::Config = Default::default();
+//!     config.keys.push(server_keypair.clone());
+//!     Arc::new(config)
+//! };
+
+//! let mut server = S{
+//!     client_pubkey: &client_keypair.public_key()
+//! };
+//! let mut server_session = server::Connection::new(server_config.clone());
+//!
+//!
+//! // Initialize the client
+//! 
+//! let client_config = Arc::new(Default::default());
+
+//! let mut client = C{
+//!     server_pk: &server_keypair.public_key()
+//! };
+//! let mut client_session = client::Connection::new(client_config);
+//! client_session.authenticate(
+//!     auth::Method::PublicKey { user:"pe", public_key: client_keypair }
+//! );
+//!
+//!
+//! // Now, run the protocol (it is obviously more useful when the
+//! // instances of Read and Write are networks sockets instead of Vec).
+//!
+//!
+//! let mut server_read:Vec<u8> = Vec::new();
+//! let mut server_write:Vec<u8> = Vec::new();
+
+//! let mut buffer0 = CryptoBuf::new();
+//! let mut buffer1 = CryptoBuf::new();
+
+//! let mut run_protocol = |client_session:&mut client::Connection| {
+//!     {
+//!         let mut swrite = &server_write[..];
+//!         client_session.read(&mut client, &mut swrite, &mut buffer0, &mut buffer1).unwrap();
+//!     }
+//!     server_write.clear();
+//!     client_session.write(&mut server_read).unwrap();
+//!     {
+//!         let mut sread = &server_read[..];
+//!         server_session.read(&mut server, &mut sread, &mut buffer0, &mut buffer1).unwrap();
+//!     }
+//!     server_read.clear();
+//!     server_session.write(&mut server_write).unwrap();
+//! };
+//!
+//! // Run the protocol until authentication is complete.
+//! while !client_session.is_authenticated() {
+//!     run_protocol(&mut client_session)
+//! }
+//!
+//! // From the client, ask the server to open a channel (prepare buffers to do so).
+//! let channel = client_session.session.channel_open_session().unwrap();
+//!
+//!
+//! // Then run the protocol again, until our channel is confirmed.
+//! loop {
+//!     if let Some(chan) = client_session.session.channels().and_then(|x| x.get(&channel)) {
+//!         if chan.confirmed {
+//!             break
+//!         }
+//!     }
+//!     run_protocol(&mut client_session);
+//! }
+//!
+//!```
 
 
 extern crate libc;
@@ -144,6 +251,7 @@ use encoding::*;
 
 pub mod auth;
 
+/// The number of bytes read/written, and the number of seconds before a key re-exchange is requested.
 #[derive(Debug,Clone)]
 pub struct Limits {
     pub rekey_write_limit: usize,
@@ -154,33 +262,26 @@ pub struct Limits {
 pub mod server;
 pub mod client;
 
-#[derive(Debug)]
-pub enum ChannelType<'a> {
-    Session,
-    X11 { originator_address: &'a str, originator_port: u32 },
-    ForwardedTcpip { connected_address: &'a str, connected_port: u32, originator_address: &'a str, originator_port: u32 },
-    DirectTcpip { host_to_connect: &'a str, port_to_connect: u32, originator_address: &'a str, originator_port: u32 }
-}
-
-
+/// The type of signals that can be sent to a remote process. If you plan to use custom signals, read [the RFC](https://tools.ietf.org/html/rfc4254#section-6.10) to understand the encoding.
 #[derive(Debug, Clone, Copy)]
-pub enum Sig {
-    ABRT = libc::SIGABRT as isize,
-    ALRM = libc::SIGALRM as isize,
-    FPE = libc::SIGFPE as isize,
-    HUP = libc::SIGHUP as isize,
-    ILL = libc::SIGILL as isize,
-    INT = libc::SIGINT as isize,
-    KILL = libc::SIGKILL as isize,
-    PIPE = libc::SIGPIPE as isize,
-    QUIT = libc::SIGQUIT as isize,
-    SEGV = libc::SIGSEGV as isize,
-    TERM = libc::SIGTERM as isize,
-    USR1 = libc::SIGUSR1 as isize,
+pub enum Sig<'a> {
+    ABRT,
+    ALRM,
+    FPE,
+    HUP,
+    ILL,
+    INT,
+    KILL,
+    PIPE,
+    QUIT,
+    SEGV,
+    TERM,
+    USR1,
+    Custom(&'a str)
 }
 
-impl Sig {
-    fn name(&self) -> &'static str {
+impl<'a> Sig<'a> {
+    fn name(&self) -> &'a str {
         match *self {
             Sig::ABRT => "ABRT",
             Sig::ALRM => "ALRM",
@@ -193,24 +294,25 @@ impl Sig {
             Sig::QUIT => "QUIT",
             Sig::SEGV => "SEGV",
             Sig::TERM => "TERM",
-            Sig::USR1 => "USR1"
+            Sig::USR1 => "USR1",
+            Sig::Custom(c) => c
         }
     }
-    fn from_name(name: &[u8]) -> Option<Sig> {
+    fn from_name(name: &'a [u8]) -> Result<Sig, Error> {
         match name {
-            b"ABRT" => Some(Sig::ABRT),
-            b"ALRM" => Some(Sig::ALRM),
-            b"FPE" => Some(Sig::FPE),
-            b"HUP" => Some(Sig::HUP),
-            b"ILL" => Some(Sig::ILL),
-            b"INT" => Some(Sig::INT),
-            b"KILL" => Some(Sig::KILL),
-            b"PIPE" => Some(Sig::PIPE),
-            b"QUIT" => Some(Sig::QUIT),
-            b"SEGV" => Some(Sig::SEGV),
-            b"TERM" => Some(Sig::TERM),
-            b"USR1" => Some(Sig::USR1),
-            _ => None
+            b"ABRT" => Ok(Sig::ABRT),
+            b"ALRM" => Ok(Sig::ALRM),
+            b"FPE" => Ok(Sig::FPE),
+            b"HUP" => Ok(Sig::HUP),
+            b"ILL" => Ok(Sig::ILL),
+            b"INT" => Ok(Sig::INT),
+            b"KILL" => Ok(Sig::KILL),
+            b"PIPE" => Ok(Sig::PIPE),
+            b"QUIT" => Ok(Sig::QUIT),
+            b"SEGV" => Ok(Sig::SEGV),
+            b"TERM" => Ok(Sig::TERM),
+            b"USR1" => Ok(Sig::USR1),
+            x => Ok(Sig::Custom(try!(std::str::from_utf8(x))))
         }
     }
 }
@@ -227,7 +329,19 @@ pub trait Server {
 
     /// Called when a new channel is created.
     #[allow(unused_variables)]
-    fn new_channel(&mut self, channel: u32, channel_type: ChannelType, session: &mut server::Session) {}
+    fn channel_open_session(&mut self, channel: u32, session: &mut server::Session) {}
+
+    /// Called when a new X11 channel is created.
+    #[allow(unused_variables)]
+    fn channel_open_x11(&mut self, channel: u32, originator_address:&str, originator_port:u32, session: &mut server::Session) {}
+
+    /// Called when a new channel is created.
+    #[allow(unused_variables)]
+    fn channel_open_forwarded_tcpip(&mut self, channel: u32, connected_address:&str, connected_port:u32, originator_address:&str, originator_port:u32, session: &mut server::Session) {}
+
+    /// Called when a new channel is created.
+    #[allow(unused_variables)]
+    fn channel_open_direct_tcpip(&mut self, channel: u32, host_to_connect:&str, port_to_connect:u32, originator_address:&str, originator_port:u32, session: &mut server::Session) {}
 
     /// Called when a data packet is received. A response can be
     /// written to the `response` argument.
@@ -250,46 +364,63 @@ pub trait Server {
         Ok(())
     }
 
+    /// The client requests a pseudo-terminal with the given specifications.
     #[allow(unused_variables)]
     fn pty_request(&mut self, channel:u32, term:&str, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, modes:&[(pty::Option, u32)], session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
+    /// The client requests an X11 connection.
     #[allow(unused_variables)]
     fn x11_request(&mut self, channel:u32, single_connection:bool, x11_auth_protocol:&str, x11_auth_cookie:&str, x11_screen_number:u32, session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
+    /// The client wants to set the given environment variable. Check
+    /// these carefully, as it is dangerous to allow any variable
+    /// environment to be set.
     #[allow(unused_variables)]
     fn env_request(&mut self, channel:u32, variable_name:&str, variable_value:&str, session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
+    /// The client requests a shell.
     #[allow(unused_variables)]
     fn shell_request(&mut self, channel:u32, session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
+    /// The client sends a command to execute, to be passed to a shell. Make sure to check the command before doing so.
     #[allow(unused_variables)]
     fn exec_request(&mut self, channel:u32, data: &[u8], session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
+    /// The client asks to start the subsystem with the given name (such as sftp).
     #[allow(unused_variables)]
     fn subsystem_request(&mut self, channel:u32, name: &str, session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
+    /// The client's pseudo-terminal window size has changed.
     #[allow(unused_variables)]
     fn window_change_request(&mut self, channel:u32, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, session: &mut server::Session) -> Result<(), Error> {
         Ok(())
     }
 
+    /// The client is sending a signal (usually to pass to the currently running process).
+    #[allow(unused_variables)]
+    fn signal(&mut self, channel: u32, signal_name: Sig, session: &mut server::Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Used for reverse-forwarding ports, see [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
     #[allow(unused_variables)]
     fn tcpip_forward(&mut self, address:&str, port: u32) -> Result<(), Error> {
         Ok(())
     }
 
+    /// Used to stop the reverse-forwarding of a port, see [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
     #[allow(unused_variables)]
     fn cancel_tcpip_forward(&mut self, address:&str, port: u32) -> Result<(), Error> {
         Ok(())
@@ -300,41 +431,58 @@ pub trait Server {
 
 pub trait Client {
 
+    /// Called when the server sends us an authentication banner. This is usually meant to be shown to the user, see [RFC4252](https://tools.ietf.org/html/rfc4252#section-5.4) for more details.
     #[allow(unused_variables)]
     fn auth_banner(&mut self, banner: &str) {}
 
-    #[allow(unused_variables)]
+    /// Called to check the server's public key. This is a very important
+    /// step to help prevent man-in-the-middle attacks. The default
+    /// implementation rejects all keys.
     fn check_server_key(&self, server_public_key: &key::PublicKey) -> bool {
         false
     }
 
+    /// Called when the server confirmed our request to open a channel. A channel can only be written to after receiving this message (this library panics otherwise).
     #[allow(unused_variables)]
-    fn channel_open_confirmation(&self, channel:u32, session: &mut client::Session) {}
-
-    #[allow(unused_variables)]
-    fn channel_open_failure(&self, channel:u32, reason: ChannelOpen, description:&str, language:&str, session: &mut client::Session) {}
-
-    #[allow(unused_variables)]
-    fn data(&mut self, channel: Option<u32>, data: &[u8], session: &mut client::Session) -> Result<(), Error> {
+    fn channel_open_confirmation(&self, channel:u32, session: &mut client::Session) -> Result<(), Error> {
         Ok(())
     }
 
+    /// Called when the server rejected our request to open a channel.
+    #[allow(unused_variables)]
+    fn channel_open_failure(&self, channel:u32, reason: ChannelOpenFailure, description:&str, language:&str, session: &mut client::Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called when the server sends us data. The `extended_code` parameter is a stream identifier, `None` is usually the standard output, and `Some(1)` is the standard error. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-5.2).
+    #[allow(unused_variables)]
+    fn data(&mut self, channel:u32, extended_code: Option<u32>, data: &[u8], session: &mut client::Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// The server informs this client that the client may perform control-S/control-Q flow control. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-6.8).
     #[allow(unused_variables)]
     fn xon_xoff(&mut self, channel: u32, client_can_do: bool, session: &mut client::Session) -> Result<(), Error> {
         Ok(())
     }
 
+    /// The remote process has exited, with the given exit status.
     #[allow(unused_variables)]
     fn exit_status(&mut self, channel: u32, exit_status: u32, session: &mut client::Session) -> Result<(), Error> {
         Ok(())
     }
 
+    /// The remote process exited upon receiving a signal.
     #[allow(unused_variables)]
     fn exit_signal(&mut self, channel: u32, signal_name: Sig, core_dumped: bool, error_message:&str, lang_tag:&str, session: &mut client::Session) -> Result<(), Error> {
         Ok(())
     }
 
-    /// Called when the network window is adjusted, meaning that we can send more bytes.
+    /// Called when the network window is adjusted, meaning that we
+    /// can send more bytes. This is useful if this client wants to
+    /// send huge amounts of data, for instance if we have called
+    /// `client::Session::data` before, and it returned less than the
+    /// full amount of data.
     #[allow(unused_variables)]
     fn window_adjusted(&mut self, channel:u32, session: &mut client::Session) -> Result<(), Error> {
         Ok(())
@@ -342,16 +490,27 @@ pub trait Client {
 
 }
 
-enum_from_primitive! {
-    #[derive(Debug, Copy, Clone, PartialEq)]
-    pub enum ChannelOpen {
-        AdministrativelyProhibited = 1,
-        ConnectFailed = 2,
-        UnknownChannelType = 3,
-        ResourceShortage = 4,
-        
+/// Reason for not being able to open a channel.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum ChannelOpenFailure {
+    AdministrativelyProhibited = 1,
+    ConnectFailed = 2,
+    UnknownChannelType = 3,
+    ResourceShortage = 4,
+}
+
+impl ChannelOpenFailure {
+    fn from_u32(x:u32) -> Option<ChannelOpenFailure> {
+        match x {
+            1 => Some(ChannelOpenFailure::AdministrativelyProhibited),
+            2 => Some(ChannelOpenFailure::ConnectFailed),
+            3 => Some(ChannelOpenFailure::UnknownChannelType),
+            4 => Some(ChannelOpenFailure::ResourceShortage),
+            _ => None
+        }
     }
 }
+
 #[derive(Debug)]
 #[doc(hidden)]
 pub struct ChannelParameters {
@@ -474,7 +633,7 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
         Err(Error::CouldNotReadKey)
     }
 }
-
+/*
 #[cfg(test)]
 mod test {
     use super::*;
@@ -483,80 +642,88 @@ mod test {
     
     #[test]
     fn test_session() {
-        env_logger::init().unwrap_or(());
 
+        let client_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
+        let (server_pk,server_sk) = super::sodium::ed25519::generate_keypair().unwrap();
 
-        
-        struct S {}
-        impl Server for S {
-            fn auth(&self, _:auth::M, _:&auth::Method<key::PublicKey>) -> auth::Auth {
-                auth::Auth::Success
+        struct S<'p> {
+            client_pubkey: &'p key::PublicKey
+        }
+        impl<'p> Server for S<'p> {
+            fn auth(&self, _:auth::M, method:&auth::Method<key::PublicKey>) -> auth::Auth {
+                match *method {
+                    auth::Method::PublicKey { ref user, ref public_key } if *user == "pe" && public_key == self.client_pubkey=> {
+                        auth::Auth::Success
+                    },
+                    _ => auth::Auth::Reject { partial_success:false, remaining_methods: auth::M::empty() }
+                }
             }
         }
 
-        struct C {}
-        impl Client for C {
-            fn check_server_key(&self, _:&key::PublicKey) -> bool {
-                true
+        struct C<'p> {
+            server_pk: &'p key::PublicKey
+        }
+        impl<'p> Client for C<'p> {
+            fn check_server_key(&self, server_pk:&key::PublicKey) -> bool {
+                self.server_pk == server_pk
             }
         }
         // Initialize the server
         let server_config = {
             let mut config:server::Config = Default::default();
             // Generate keys
-            let (pk,sk) = super::sodium::ed25519::generate_keypair().unwrap();
             config.keys.push(
                 key::Algorithm::Ed25519 {
-                    public: pk.clone(), secret: sk
+                    public: server_pk.clone(), secret: server_sk
                 }
             );
             Arc::new(config)
         };
+
+        let mut server = S{
+            client_pubkey: &client_keypair.public_key()
+        };
+        let mut server_session = server::Connection::new(server_config.clone());
+
+        // Initialize the client
         let client_config = Arc::new(Default::default());
+
+        let server_pk = super::key::PublicKey::Ed25519(server_pk);
+        let mut client = C{
+            server_pk: &server_pk
+        };
+        let mut client_session = client::Connection::new(client_config);
+
+        //
 
         let mut server_read:Vec<u8> = Vec::new();
         let mut server_write:Vec<u8> = Vec::new();
-        
-        let mut server = S{};
-        let mut server_session = server::Connection::new(server_config.clone());
 
-        let mut client = C{};
-        let mut client_session = client::Connection::new(client_config);
+        let mut buffer0 = CryptoBuf::new();
+        let mut buffer1 = CryptoBuf::new();
 
-        let mut s_buffer0 = CryptoBuf::new();
-        let mut s_buffer1 = CryptoBuf::new();
-        let mut c_buffer0 = CryptoBuf::new();
-        let mut c_buffer1 = CryptoBuf::new();
+        client_session.authenticate(auth::Method::PublicKey { user:"pe", public_key: client_keypair });
 
-
-        let client_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
-        client_session.authenticate(auth::Method::PublicKey { user:"pe",
-                                                              pubkey: client_keypair });
-
-        let mut run_loop = |client_session:&mut client::Connection| {
+        let mut run_protocol = |client_session:&mut client::Connection| {
             {
                 let mut swrite = &server_write[..];
-                debug!("client read");
-                client_session.read(&mut client, &mut swrite, &mut c_buffer0, &mut c_buffer1).unwrap();
+                client_session.read(&mut client, &mut swrite, &mut buffer0, &mut buffer1).unwrap();
             }
             server_write.clear();
             client_session.write(&mut server_read).unwrap();
 
             {
                 let mut sread = &server_read[..];
-                debug!("server read");
-                server_session.read(&mut server, &mut sread, &mut s_buffer0, &mut s_buffer1).unwrap();
+                server_session.read(&mut server, &mut sread, &mut buffer0, &mut buffer1).unwrap();
             }
             server_read.clear();
             server_session.write(&mut server_write).unwrap();
         };
         
         while !client_session.is_authenticated() {
-            debug!("client_session: {:?}", client_session);
-            run_loop(&mut client_session)
+            run_protocol(&mut client_session)
         }
-        /*
-        let channel = client_session.session.channel_open(ChannelType::Session).unwrap();
+        let channel = client_session.session.channel_open_session().unwrap();
         client_session.flush();
 
         loop {
@@ -565,8 +732,8 @@ mod test {
                     break
                 }
             }
-            run_loop(&mut client_session);
+            run_protocol(&mut client_session);
         }
-        */
     }
 }
+*/

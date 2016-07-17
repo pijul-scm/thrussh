@@ -109,6 +109,12 @@ impl Named for Algorithm {
 
 impl Algorithm {
 
+    pub fn public_key(&self) -> PublicKey {
+        match self {
+            &Algorithm::Ed25519 { ref public, .. } => PublicKey::Ed25519(public.clone())
+        }
+    }
+    
     pub fn generate_keypair(t:&str) -> Option<Self> {
         match t {
             ED25519 => {
