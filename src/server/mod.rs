@@ -38,7 +38,7 @@ pub struct Config {
     /// The server ID string sent at the beginning of the protocol.
     pub server_id: String,
     /// Authentication methods proposed to the client.
-    pub methods: auth::M,
+    pub methods: auth::MethodSet,
     /// The authentication banner, usually a warning message shown to the client.
     pub auth_banner: Option<&'static str>,
     /// The server's keys. The first key pair in the client's preference order will be chosen.
@@ -59,7 +59,7 @@ impl Default for Config {
             server_id: format!("SSH-2.0-{}_{}",
                                "Thrussh", // env!("CARGO_PKG_NAME"),
                                env!("CARGO_PKG_VERSION")),
-            methods: auth::M::all(),
+            methods: auth::MethodSet::all(),
             auth_banner: None,
             keys: Vec::new(),
             window_size: 100,

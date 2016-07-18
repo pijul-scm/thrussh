@@ -71,7 +71,7 @@ impl<'a> super::Session<'a> {
                         let mut r = buf.reader(1);
                         if try!(r.read_string()) == b"ssh-userauth" {
                             let auth_request = auth::AuthRequest {
-                                methods: auth::M::all(),
+                                methods: auth::MethodSet::all(),
                                 partial_success: false,
                                 public_key: CryptoBuf::new(),
                                 public_key_algorithm: CryptoBuf::new(),
@@ -104,7 +104,7 @@ impl<'a> super::Session<'a> {
                         let mut r = buf.reader(1);
                         let remaining_methods = try!(r.read_string());
                         for method in remaining_methods.split(|&c| c == b',') {
-                            if let Some(m) = auth::M::from_bytes(method) {
+                            if let Some(m) = auth::MethodSet::from_bytes(method) {
                                 auth_request.methods &= m
                             }
                         }

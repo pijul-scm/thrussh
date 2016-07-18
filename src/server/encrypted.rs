@@ -515,7 +515,7 @@ impl Encrypted {
 
 
 fn server_accept_service(banner: Option<&str>,
-                         methods: auth::M,
+                         methods: auth::MethodSet,
                          buffer: &mut CryptoBuf)
                          -> AuthRequest {
 

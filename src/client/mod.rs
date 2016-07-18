@@ -367,7 +367,7 @@ impl<'a> Session<'a> {
     }
 
     /// Returns the set of authentication methods that can continue, or None if this is not valid.
-    pub fn valid_auth_methods(&self) -> Option<auth::M> {
+    pub fn valid_auth_methods(&self) -> Option<auth::MethodSet> {
         if let Some(ref enc) = self.0.encrypted {
             match enc.state {
                 Some(EncryptedState::WaitingAuthRequest(ref auth_request)) => Some(auth_request.methods),

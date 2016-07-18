@@ -32,7 +32,7 @@
 //!     client_pubkey: &'p key::PublicKey
 //! }
 //! impl<'p> Server for S<'p> {
-//!     fn auth(&self, _:auth::M, method:&auth::Method<key::PublicKey>) -> auth::Answer {
+//!     fn auth(&self, m:auth::MethodSet, method:&auth::Method<key::PublicKey>) -> auth::Answer {
 //!         match *method {
 //!             auth::Method::PublicKey { ref user, ref public_key }
 //!               if *user == "pe" && public_key == self.client_pubkey=> {
@@ -42,8 +42,8 @@
 //!             _ =>
 //!                 // Else, reject and provide no other methods.
 //!                 auth::Answer::Reject {
-//!                     partial_success:false, remaining_methods:
-//!                     auth::M::empty()
+//!                     partial_success:false,
+//!                     remaining_methods: m - method.num()
 //!                 }
 //!         }
 //!     }
@@ -336,7 +336,7 @@ impl<'a> Sig<'a> {
 pub trait Server {
     /// Called to check authentication requests.
     #[allow(unused_variables)]
-    fn auth(&self, methods: auth::M, method: &auth::Method<key::PublicKey>) -> auth::Answer {
+    fn auth(&self, methods: auth::MethodSet, method: &auth::Method<key::PublicKey>) -> auth::Answer {
         auth::Answer::Reject {
             remaining_methods: methods - method.num(),
             partial_success: false,

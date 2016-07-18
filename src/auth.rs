@@ -16,10 +16,9 @@
 use super::encoding;
 use cryptobuf::CryptoBuf;
 
-
 /// Set of methods, represented by bit flags.
 bitflags! {
-    pub flags M: u32 {
+    pub flags MethodSet: u32 {
         const NONE = 1,
         const PASSWORD = 2,
         const PUBLICKEY = 4,
@@ -39,9 +38,9 @@ macro_rules! iter {
 }
 
 
-impl Iterator for M {
-    type Item = M;
-    fn next(&mut self) -> Option<M> {
+impl Iterator for MethodSet {
+    type Item = MethodSet;
+    fn next(&mut self) -> Option<MethodSet> {
         iter!(self, NONE);
         iter!(self, PASSWORD);
         iter!(self, PUBLICKEY);
@@ -49,7 +48,6 @@ impl Iterator for M {
         None
     }
 }
-
 
 #[derive(Debug)]
 pub enum Method<'a, K> {
@@ -66,7 +64,7 @@ pub enum Method<'a, K> {
 }
 
 impl<'a,K> Method<'a,K> {
-    pub fn num(&self) -> M {
+    pub fn num(&self) -> MethodSet {
         match *self {
             Method::None => NONE,
             Method::Password { .. } => PASSWORD,
@@ -76,20 +74,20 @@ impl<'a,K> Method<'a,K> {
     }
 }
 
-impl encoding::Bytes for M {
+impl encoding::Bytes for MethodSet {
     fn bytes(&self) -> &'static [u8] {
         match *self {
             NONE => b"none",
             PASSWORD => b"password",
             PUBLICKEY => b"publickey",
             HOSTBASED => b"hostbased",
-            _ => unreachable!(),
+            _ => b""
         }
     }
 }
 
-impl M {
-    pub fn from_bytes(b:&[u8]) -> Option<M> {
+impl MethodSet {
+    pub fn from_bytes(b:&[u8]) -> Option<MethodSet> {
         match b {
             b"none" => Some(NONE),
             b"password" => Some(PASSWORD),
@@ -105,7 +103,7 @@ impl M {
 pub enum Answer {
     Success,
     Reject {
-        remaining_methods: M,
+        remaining_methods: MethodSet,
         partial_success: bool,
     },
 }
@@ -113,7 +111,7 @@ pub enum Answer {
 #[doc(hidden)]
 #[derive(Debug)]
 pub struct AuthRequest {
-    pub methods: M,
+    pub methods: MethodSet,
     pub partial_success: bool,
     pub public_key: CryptoBuf,
     pub public_key_algorithm: CryptoBuf,
