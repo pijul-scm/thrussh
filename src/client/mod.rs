@@ -191,7 +191,12 @@ impl<'a> Connection<'a> {
             match self.read_one_packet(client, stream, buffer, buffer2) {
                 Ok(true) => at_least_one_was_read = true,
                 Ok(false) => return Ok(at_least_one_was_read),
-                Err(Error::IO(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(at_least_one_was_read),
+                Err(Error::IO(e)) => {
+                    match e.kind() {
+                        std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::WouldBlock => return Ok(at_least_one_was_read),
+                        _ => return Err(Error::IO(e))
+                    }
+                },
                 Err(e) => return Err(e)
             }
         }
@@ -256,7 +261,6 @@ impl<'a> Connection<'a> {
                                 return Ok(true)
                             },
                             Err(e) => {
-                                self.session.disconnect(Disconnect::KeyExchangeFailed, "Key exchange failed", "en");
                                 return Err(e)
                             }
                         }
@@ -271,14 +275,12 @@ impl<'a> Connection<'a> {
                             return Ok(true)
                         },
                         Err(e) => {
-                            self.session.disconnect(Disconnect::KeyExchangeFailed, "Key exchange failed", "en");
                             return Err(e)
                         }
                     }
                 },
                 Some(Kex::NewKeys(newkeys)) => {
                     if buf[0] != msg::NEWKEYS {
-                        self.session.disconnect(Disconnect::KeyExchangeFailed, "Key exchange failed", "en");
                         return Err(Error::NewKeys)
                     }
                     self.session.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
