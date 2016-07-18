@@ -198,7 +198,8 @@ impl Connection {
                 cipher: cipher::CLEAR_PAIR,
                 encrypted: None,
                 config: config,
-                wants_reply: false
+                wants_reply: false,
+                disconnected: false
             }),
         };
         session
@@ -278,22 +279,40 @@ impl Connection {
 
                 Some(Kex::KexInit(kexinit)) =>
                     if kexinit.algo.is_some() || buf[0] == msg::KEXINIT || self.session.0.encrypted.is_none() {
-                        let next_kex = try!(kexinit.server_parse(self.session.0.config.as_ref(), &mut self.session.0.cipher, buf, &mut self.session.0.write_buffer));
-                        self.session.0.kex = Some(next_kex);
-                        return Ok(true)
+                        let next_kex = kexinit.server_parse(self.session.0.config.as_ref(), &mut self.session.0.cipher, buf, &mut self.session.0.write_buffer);
+                        match next_kex {
+                            Ok(next_kex) => {
+                                self.session.0.kex = Some(next_kex);
+                                return Ok(true)
+                            },
+                            Err(e) => {
+                                self.session.disconnect(Disconnect::KeyExchangeFailed, "Key exchange failed", "en");
+                                return Err(e)
+                            }
+                        }
                     } else {
                         // If the other side has not started the key exchange, process its packets.
                         try!(self.session.server_read_encrypted(server, buf, buffer))
                     },
 
                 Some(Kex::KexDh(kexdh)) => {
-                    let next_kex = try!(kexdh.parse(self.session.0.config.as_ref(), buffer, buffer2, &mut self.session.0.cipher, buf, &mut self.session.0.write_buffer));
-                    self.session.0.kex = Some(next_kex);
+                    let next_kex = kexdh.parse(self.session.0.config.as_ref(), buffer, buffer2, &mut self.session.0.cipher, buf, &mut self.session.0.write_buffer);
+                    match next_kex {
+                        Ok(next_kex) => {
+                            self.session.0.kex = Some(next_kex);
+                            return Ok(true)
+                        },
+                        Err(e) => {
+                            self.session.disconnect(Disconnect::KeyExchangeFailed, "Key exchange failed", "en");
+                            return Err(e)
+                        }
+                    }
                     return Ok(true)
                 },
 
                 Some(Kex::NewKeys(newkeys)) => {
                     if buf[0] != msg::NEWKEYS {
+                        self.session.disconnect(Disconnect::KeyExchangeFailed, "Key exchange failed", "en");
                         return Err(Error::NewKeys)
                     }
                     // Ok, NEWKEYS received, now encrypted.
@@ -315,10 +334,9 @@ impl Connection {
         }
     }
 
-    /// Write all computed packets to the stream. Returns `Ok(())` when there's no such packet.
-    pub fn write<W: Write>(&mut self, stream: &mut W) -> Result<(), Error> {
-        try!(self.session.0.write_buffer.write_all(stream));
-        Ok(())
+    /// Write all computed packets to the stream. Returns whether all packets have been sent.
+    pub fn write<W: Write>(&mut self, stream: &mut W) -> Result<bool, Error> {
+        self.session.0.write_buffer.write_all(stream)
     }
 
 }
@@ -336,6 +354,11 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Sends a disconnect message.
+    pub fn disconnect(&mut self, reason:Disconnect, description:&str, language_tag:&str) {
+        self.0.disconnect(reason, description, language_tag);
     }
 
     /// Send a "success" reply to a /global/ request (requests without a channel number, such as TCP/IP forwarding or cancelling). Always call this function if the request was successful (it checks whether the client expects an answer).

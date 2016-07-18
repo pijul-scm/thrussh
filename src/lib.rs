@@ -258,6 +258,26 @@ pub struct Limits {
 pub mod server;
 pub mod client;
 
+
+/// A reason for disconnection.
+pub enum Disconnect {
+    HostNotAllowedToConnect = 1,
+    ProtocolError = 2,
+    KeyExchangeFailed = 3,
+    Reserved = 4,
+    MacError = 5,
+    CompressionError = 6,
+    ServiceNotAvailable = 7,
+    ProtocolVersionNotSupported = 8,
+    HostKeyNotVerifiable = 9,
+    ConnectionLost = 10,
+    ByApplication = 11,
+    TooManyConnectionss = 12,
+    AuthCancelledByUser = 13,
+    NoMoreAuthMethodsAvailable = 14,
+    IllegalUserName = 15,
+}
+
 /// The type of signals that can be sent to a remote process. If you plan to use custom signals, read [the RFC](https://tools.ietf.org/html/rfc4254#section-6.10) to understand the encoding.
 #[derive(Debug, Clone, Copy)]
 pub enum Sig<'a> {

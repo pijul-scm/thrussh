@@ -73,7 +73,7 @@ impl SSHBuffer {
         self.buffer.push(b'\n');
     }
 
-    // Returns true iff the write buffer has been completely written.
+    /// Returns true iff the write buffer has been completely written.
     pub fn write_all<W: std::io::Write>(&mut self, stream: &mut W) -> Result<bool, Error> {
         debug!("write_all, self = {:?}", self.buffer.as_slice());
         while self.len < self.buffer.len() {

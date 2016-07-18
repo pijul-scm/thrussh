@@ -22,7 +22,7 @@ use cipher;
 use msg;
 use key;
 use sodium;
-use super::{read_public_key,Error,Channel,Client};
+use {read_public_key,Error,Channel,Client, Disconnect};
 use cryptobuf::CryptoBuf;
 use std::collections::HashMap;
 use encoding::Reader;
@@ -57,7 +57,8 @@ pub struct CommonSession<'a, Config> {
     pub kex: Option<Kex>,
     pub cipher: cipher::CipherPair,
     pub config: Arc<Config>,
-    pub wants_reply: bool
+    pub wants_reply: bool,
+    pub disconnected: bool
 }
 
 impl<'a, C> CommonSession<'a, C> {
@@ -86,7 +87,26 @@ impl<'a, C> CommonSession<'a, C> {
             self.cipher = newkeys.cipher;
         }
     }
+
+    pub fn disconnect(&mut self, reason:Disconnect, description:&str, language_tag:&str) {
+        self.disconnected = true;
+        if let Some(ref mut enc) = self.encrypted {
+            let i0 = enc.write.len();
+            enc.write.push(msg::DISCONNECT);
+            enc.write.push_u32_be(reason as u32);
+            enc.write.extend_ssh_string(description.as_bytes());
+            enc.write.extend_ssh_string(language_tag.as_bytes());
+            {
+                let buf = enc.write.as_slice();
+                self.cipher.write(&buf[i0..], &mut self.write_buffer);
+            }
+            enc.write.truncate(i0)
+        } else {
+            cipher::Clear.disconnect(reason, description, language_tag, &mut self.write_buffer)
+        }
+    }
 }
+
 impl Encrypted {
     pub fn adjust_window_size(&mut self, channel:u32, data:&[u8], target: u32) {
         if let Some(ref mut channel) = self.channels.get_mut(&channel) {

@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-use super::Error;
+use {Error, Disconnect};
 use std::io::{Read, BufRead};
 use std;
 use cryptobuf::CryptoBuf;
 use sshbuffer::{SSHBuffer};
 use rand::{thread_rng, Rng};
 pub mod chacha20poly1305;
+use msg;
 
 #[derive(Debug)]
 pub enum Cipher {
@@ -124,6 +125,38 @@ impl CipherT for Clear {
         buffer.buffer.push_u32_be(packet_len as u32);
         buffer.buffer.push(padding_len as u8);
         buffer.buffer.extend(packet);
+        thread_rng().fill_bytes( buffer.buffer.reserve(padding_len) );
+        debug!("write: {:?}", buffer.buffer.as_slice());
+        buffer.seqn += 1;
+    }
+}
+
+impl Clear {
+    pub fn disconnect(&self, reason:Disconnect, description:&str, language_tag:&str, buffer: &mut SSHBuffer) {
+
+        let payload_len = 13 + description.len() + language_tag.len();
+        
+        // Unencrypted packets should be of lengths multiple of 8.
+        let block_size = 8;
+        let padding_len = block_size - ((5 + payload_len) % block_size);
+        let padding_len =
+            if padding_len < 4 {
+                padding_len + block_size
+            } else {
+                padding_len
+            };
+
+        let packet_len = payload_len + 1 + padding_len;
+        buffer.buffer.push_u32_be(packet_len as u32);
+        buffer.buffer.push(padding_len as u8);
+
+
+        buffer.buffer.push(msg::DISCONNECT);
+        buffer.buffer.push_u32_be(reason as u32);
+        buffer.buffer.extend_ssh_string(description.as_bytes());
+        buffer.buffer.extend_ssh_string(language_tag.as_bytes());
+
+
         thread_rng().fill_bytes( buffer.buffer.reserve(padding_len) );
         debug!("write: {:?}", buffer.buffer.as_slice());
         buffer.seqn += 1;

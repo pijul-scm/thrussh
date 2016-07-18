@@ -14,21 +14,20 @@
 //
 
 use std::sync::Arc;
-
-use {Error, Limits, Client, Channel, Sig};
-use super::key;
-use super::msg;
-use super::auth;
-use super::cipher::CipherT;
-use super::negociation;
 use std::io::{Write, BufRead};
-
 use std;
+use std::collections::HashMap;
+
+use {Disconnect, Error, Limits, Client, Channel, Sig};
+use key;
+use msg;
+use auth;
+use cipher::CipherT;
+use negociation;
 use cryptobuf::CryptoBuf;
 use negociation::Select;
 use session::*;
 use sshbuffer::*;
-use std::collections::HashMap;
 use cipher;
 use kex;
 use rand;
@@ -168,7 +167,8 @@ impl<'a> Connection<'a> {
                 cipher: cipher::CLEAR_PAIR,
                 encrypted: None,
                 config: config,
-                wants_reply: false
+                wants_reply: false,
+                disconnected: false
             }),
         };
         session
@@ -183,7 +183,9 @@ impl<'a> Connection<'a> {
                                                buffer: &mut CryptoBuf,
                                                buffer2: &mut CryptoBuf)
                                                -> Result<bool, Error> {
-
+        if self.session.0.disconnected {
+            return Err(Error::Disconnect)
+        }
         let mut at_least_one_was_read = false;
         loop {
             match self.read_one_packet(client, stream, buffer, buffer2) {
@@ -246,15 +248,37 @@ impl<'a> Connection<'a> {
             match std::mem::replace(&mut self.session.0.kex, None) {
                 Some(Kex::KexInit(kexinit)) =>
                     if kexinit.algo.is_some() || buf[0] == msg::KEXINIT || self.session.0.encrypted.is_none() {
-                        let kexdhdone = try!(kexinit.client_parse(self.session.0.config.as_ref(), &mut self.session.0.cipher, buf, &mut self.session.0.write_buffer));
-                        self.session.0.kex = Some(Kex::KexDhDone(kexdhdone));
+                        let kexdhdone = kexinit.client_parse(self.session.0.config.as_ref(), &mut self.session.0.cipher, buf, &mut self.session.0.write_buffer);
+
+                        match kexdhdone {
+                            Ok(kexdhdone) => {
+                                self.session.0.kex = Some(Kex::KexDhDone(kexdhdone));
+                                return Ok(true)
+                            },
+                            Err(e) => {
+                                self.session.disconnect(Disconnect::KeyExchangeFailed, "Key exchange failed", "en");
+                                return Err(e)
+                            }
+                        }
                     } else {
                         try!(self.session.client_read_encrypted(client, buf, buffer));
                     },
-                Some(Kex::KexDhDone(kexdhdone)) =>
-                    self.session.0.kex = Some(try!(kexdhdone.client_parse(buffer, buffer2, client, &mut self.session.0.cipher, buf, &mut self.session.0.write_buffer))),
+                Some(Kex::KexDhDone(kexdhdone)) => {
+                    let kex = kexdhdone.client_parse(buffer, buffer2, client, &mut self.session.0.cipher, buf, &mut self.session.0.write_buffer);
+                    match kex {
+                        Ok(kex) => {
+                            self.session.0.kex = Some(kex);
+                            return Ok(true)
+                        },
+                        Err(e) => {
+                            self.session.disconnect(Disconnect::KeyExchangeFailed, "Key exchange failed", "en");
+                            return Err(e)
+                        }
+                    }
+                },
                 Some(Kex::NewKeys(newkeys)) => {
                     if buf[0] != msg::NEWKEYS {
+                        self.session.disconnect(Disconnect::KeyExchangeFailed, "Key exchange failed", "en");
                         return Err(Error::NewKeys)
                     }
                     self.session.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
@@ -277,10 +301,9 @@ impl<'a> Connection<'a> {
         }
     }
 
-    /// Write all computed packets to the stream. Returns `Ok(())` when there's no such packet.
-    pub fn write<W: Write>(&mut self, stream: &mut W) -> Result<(), Error> {
-        try!(self.session.0.write_buffer.write_all(stream));
-        Ok(())
+    /// Write all computed packets to the stream. Returns whether all packets have been sent.
+    pub fn write<W: Write>(&mut self, stream: &mut W) -> Result<bool, Error> {
+        self.session.0.write_buffer.write_all(stream)
     }
 
 }
@@ -299,6 +322,11 @@ impl<'a> Session<'a> {
                 }
             }
         }
+    }
+
+    /// Sends a disconnect message.
+    pub fn disconnect(&mut self, reason:Disconnect, description:&str, language_tag:&str) {
+        self.0.disconnect(reason, description, language_tag);
     }
 
     /// Set the authentication method.
