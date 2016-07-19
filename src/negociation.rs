@@ -28,7 +28,7 @@ use super::encoding::Reader;
 pub struct Names {
     pub kex: kex::Name,
     pub key: key::Name,
-    pub cipher: &'static str,
+    pub cipher: cipher::Name,
     pub mac: &'static str,
     pub ignore_guessed: bool,
 }
@@ -38,7 +38,7 @@ pub struct Names {
 pub struct Preferred {
     pub kex: &'static [kex::Name],
     pub key: &'static [key::Name],
-    pub cipher: &'static [&'static str],
+    pub cipher: &'static [cipher::Name],
     pub mac: &'static [&'static str],
     pub compression: &'static [&'static str],
 }

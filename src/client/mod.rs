@@ -690,4 +690,3 @@ impl<'a> Session<'a> {
     }
 
 }
-

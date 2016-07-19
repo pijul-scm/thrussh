@@ -332,7 +332,7 @@ impl KexDhDone {
             hash.clone()
         };
         // Now computing keys.
-        let c = try!(self.kex.compute_keys(&session_id, &hash, buffer, buffer2, &self.names.cipher, is_server));
+        let c = try!(self.kex.compute_keys(&session_id, &hash, buffer, buffer2, self.names.cipher, is_server));
         Ok(NewKeys {
             exchange: self.exchange,
             names: self.names,

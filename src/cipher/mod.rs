@@ -27,7 +27,16 @@ pub enum Cipher {
     Chacha20Poly1305(chacha20poly1305::Cipher),
 }
 
-pub fn key_size(c: &str) -> usize {
+#[doc(hidden)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub struct Name(&'static str);
+impl AsRef<str> for Name {
+    fn as_ref(&self) -> &str { self.0 }
+}
+
+pub const CHACHA20POLY1305: Name = Name("chacha20-poly1305@openssh.com");
+
+pub fn key_size(c: Name) -> usize {
     match c {
         CHACHA20POLY1305 => 64,
         _ => 0,
@@ -53,7 +62,6 @@ pub trait CipherT {
     fn write(&self, packet: &[u8], buffer: &mut SSHBuffer);
 }
 
-pub const CHACHA20POLY1305: &'static str = "chacha20-poly1305@openssh.com";
 
 impl CipherT for Cipher {
     fn read<'a, R: BufRead>(&self,
@@ -166,11 +174,6 @@ impl Clear {
 
 
 /// Fills the read buffer, and returns whether a complete message has been read.
-///
-/// It would be tempting to return either a slice of `stream`, or a
-/// slice of `read_buffer`, but except for a very small number of
-/// messages, we need double buffering anyway to decrypt in place on
-/// `read_buffer`.
 fn read<R: BufRead>(stream: &mut R,
                     read_buffer: &mut CryptoBuf,
                     read_len: usize,

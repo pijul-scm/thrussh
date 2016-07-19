@@ -53,7 +53,7 @@
 //!
 //! struct C<'p> {
 //!     server_pk: &'p key::PublicKey,
-//!     channel_confirmed: bool
+//!     channel_confirmed: Option<u32>
 //! }
 //! impl<'p> Client for C<'p> {
 //!     fn check_server_key(&mut self, server_pk:&key::PublicKey) -> Result<bool, Error> {
@@ -64,8 +64,8 @@
 //!
 //!         Ok(self.server_pk == server_pk)
 //!     }
-//!     fn channel_open_confirmation(&mut self, _:u32, session:&mut client::Session) -> Result<(), Error> {
-//!         self.channel_confirmed = true;
+//!     fn channel_open_confirmation(&mut self, channel:u32, _:&mut client::Session) -> Result<(), Error> {
+//!         self.channel_confirmed = Some(channel);
 //!         Ok(())
 //!     }
 //! }
@@ -91,7 +91,7 @@
 //!
 //! let mut client = C{
 //!     server_pk: &server_keypair.public_key(),
-//!     channel_confirmed: false
+//!     channel_confirmed: None
 //! };
 //! let mut client_connection = client::Connection::new(client_config);
 //! client_connection.session.set_auth_public_key("pe", client_keypair);
@@ -134,7 +134,7 @@
 //!
 //! // Then run the protocol again, until our channel is confirmed.
 //! loop {
-//!     if client.channel_confirmed { break };
+//!     if client.channel_confirmed == Some(channel) { break };
 //!     run_protocol(&mut client_connection, &mut client);
 //! }
 //!
@@ -155,21 +155,19 @@ extern crate byteorder;
 extern crate rustc_serialize; // config: read base 64.
 extern crate time;
 
+use std::sync::{Once, ONCE_INIT};
+use std::io::{Read, BufRead, BufReader};
+use byteorder::{ByteOrder};
+use rustc_serialize::base64::FromBase64;
+use std::path::Path;
+use std::fs::File;
+use std::borrow::Cow;
+
 mod sodium;
 mod cryptobuf;
 pub use cryptobuf::CryptoBuf;
 
 mod sshbuffer;
-
-use std::sync::{Once, ONCE_INIT};
-use std::io::{Read, BufRead, BufReader};
-
-
-use byteorder::{ByteOrder};
-use rustc_serialize::base64::FromBase64;
-use std::path::Path;
-use std::fs::File;
-
 
 static SODIUM_INIT: Once = ONCE_INIT;
 
@@ -210,7 +208,9 @@ pub enum Error {
     UnknownChannelType,
     UnknownSignal,
     IO(std::io::Error),
-    Disconnect
+    Disconnect,
+    NoHomeDir,
+    KeyChanged
 }
 
 impl From<std::io::Error> for Error {
@@ -583,8 +583,7 @@ pub fn load_public_key<P: AsRef<Path>>(p: P) -> Result<key::PublicKey, Error> {
 
     match (split.next(), split.next()) {
         (Some(_), Some(key)) => {
-            let base = try!(key.from_base64());
-            parse_public_key(&base)
+            parse_public_key_base64(key)
         }
         _ => Err(Error::CouldNotReadKey),
     }
@@ -595,8 +594,13 @@ pub fn load_public_key<P: AsRef<Path>>(p: P) -> Result<key::PublicKey, Error> {
 /// as `ssh-ed25519 AAAAC3N...`).
 ///
 /// ```
-/// thrussh::parse_public_key(b"AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ").is_ok();
+/// thrussh::parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ").is_ok();
 /// ```
+pub fn parse_public_key_base64(key:&str) -> Result<key::PublicKey, Error> {
+    let base = try!(key.from_base64());
+    parse_public_key(&base)
+}
+
 pub fn parse_public_key(p: &[u8]) -> Result<key::PublicKey, Error> {
     let mut pos = p.reader(0);
     if try!(pos.read_string()) == b"ssh-ed25519" {
@@ -606,6 +610,7 @@ pub fn parse_public_key(p: &[u8]) -> Result<key::PublicKey, Error> {
     }
     Err(Error::CouldNotReadKey)
 }
+
 
 /// Load a secret key from a file. Only ed25519 keys are currently supported.
 pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
@@ -684,5 +689,106 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
         }
     } else {
         Err(Error::CouldNotReadKey)
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn check_known_hosts(host:&str, port:u16, pubkey: &key::PublicKey) -> Result<bool,Error> {
+    if let Some(mut known_host_file) = std::env::home_dir() {
+        known_host_file.push("ssh");
+        known_host_file.push("known_hosts");
+        check_known_hosts_path(host, port, pubkey, &known_host_file)
+    } else {
+        Err(Error::NoHomeDir)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn check_known_hosts(host:&str, port:u16, pubkey: &key::PublicKey) -> Result<bool,Error> {
+    if let Some(mut known_host_file) = std::env::home_dir() {
+        known_host_file.push(".ssh");
+        known_host_file.push("known_hosts");
+        debug!("known_hosts file = {:?}", known_host_file);
+        check_known_hosts_path(host, port, pubkey, &known_host_file)
+    } else {
+        Err(Error::NoHomeDir)
+    }
+}
+
+
+pub fn check_known_hosts_path<P:AsRef<Path>>(host:&str, port:u16, pubkey:&key::PublicKey, path:P) -> Result<bool, Error> {
+    let mut f = BufReader::new(try!(File::open(path)));
+    let mut buffer = String::new();
+
+    let host_port = if port == 22 {
+        Cow::Borrowed(host)
+    } else {
+        Cow::Owned(format!("[{}]:{}", host, port))
+    };
+    while f.read_line(&mut buffer).unwrap() > 0 {
+        {
+            if buffer.as_bytes()[0] == b'#' {
+                buffer.clear();
+                continue
+            }
+            let mut s = buffer.split(' ');
+            let hosts = s.next();
+            let _ = s.next();
+            let key = s.next();
+            match (hosts, key) {
+                (Some(h), Some(k)) => {
+                    let host_matches = h.split(',').any(|x| {
+                        x == host_port
+                    });
+                    if host_matches {
+                        if &try!(parse_public_key_base64(k)) == pubkey {
+                            return Ok(true)
+                        } else {
+                            return Err(Error::KeyChanged)
+                        }
+                    }
+                    
+                },
+                _ => {}
+            }
+        }
+        buffer.clear();
+    }
+    Ok(false)
+}
+
+
+#[cfg(test)]
+mod test {
+    extern crate tempdir;
+    use std::fs::File;
+    use std::io::Write;
+    use super::*;
+    #[test]
+    fn test_check_known_hosts() {
+        let dir = tempdir::TempDir::new("thrussh").unwrap();
+        let path = dir.path().join("known_hosts");
+        {
+            let mut f = File::create(&path).unwrap();
+            f.write(b"[localhost]:13265 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ\n#pijul.org,37.120.161.53 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G2sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X\npijul.org,37.120.161.53 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X\n").unwrap();
+        }
+
+        // Valid key, non-standard port.
+        let host = "localhost";
+        let port = 13265;
+        let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ").unwrap();
+        assert!(check_known_hosts_path(host,port,&hostkey, &path).unwrap());
+
+        // Valid key, several hosts, port 22
+        let host = "pijul.org";
+        let port = 22;
+        let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X").unwrap();
+        assert!(check_known_hosts_path(host,port,&hostkey, &path).unwrap());
+
+        // Now with the key in a comment above, check that it's not recognized
+        let host = "pijul.org";
+        let port = 22;
+        let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G2sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X").unwrap();
+        assert!(check_known_hosts_path(host,port,&hostkey, &path).is_err());
     }
 }

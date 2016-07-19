@@ -24,6 +24,7 @@ use super::sodium::curve25519;
 use super::cryptobuf::CryptoBuf;
 use session::Exchange;
 use key;
+use cipher;
 
 #[doc(hidden)]
 #[derive(Debug,Clone)]
@@ -224,7 +225,7 @@ impl Algorithm {
                         exchange_hash: &Digest,
                         buffer: &mut CryptoBuf,
                         key: &mut CryptoBuf,
-                        cipher: &'static str,
+                        cipher: cipher::Name,
                         is_server: bool)
                         -> Result<super::cipher::CipherPair, Error> {
         match self {
