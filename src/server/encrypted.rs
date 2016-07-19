@@ -107,15 +107,28 @@ impl Session {
     }
 
     fn server_read_authenticated<S: Server>(&mut self,
-                                                server: &mut S,
-                                                buf: &[u8])
-                                                -> Result<(), Error> {
+                                            server: &mut S,
+                                            buf: &[u8])
+                                            -> Result<(), Error> {
         debug!("authenticated buf = {:?}", buf);
         match buf[0] {
             msg::CHANNEL_OPEN => {
                 try!(self.server_handle_channel_open(server, buf));
                 Ok(())
             },
+            msg::CHANNEL_CLOSE => {
+                let mut r = buf.reader(1);
+                let channel_num = try!(r.read_u32());
+                if let Some(ref mut enc) = self.0.encrypted {
+                    enc.channels.remove(&channel_num);
+                }
+                server.channel_close(channel_num, self)
+            }
+            msg::CHANNEL_EOF => {
+                let mut r = buf.reader(1);
+                let channel_num = try!(r.read_u32());
+                server.channel_eof(channel_num, self)
+            }
             msg::CHANNEL_EXTENDED_DATA |
             msg::CHANNEL_DATA => {
                 let mut r = buf.reader(1);
@@ -250,15 +263,6 @@ impl Session {
                 }
                 Ok(())
             }
-            msg::CHANNEL_EOF |
-            msg::CHANNEL_CLOSE => {
-                let mut r = buf.reader(1);
-                let channel_num = try!(r.read_u32());
-                if let Some(ref mut enc) = self.0.encrypted {
-                    enc.channels.remove(&channel_num);
-                }
-                Ok(())
-            }
             msg::GLOBAL_REQUEST => {
                 let mut r = buf.reader(1);
                 let req_type = try!(r.read_string());
@@ -386,7 +390,7 @@ impl Session {
 impl Encrypted {
 
     pub fn server_read_auth_request<S: Server>(&mut self,
-                                               server: &S,
+                                               server: &mut S,
                                                buf: &[u8],
                                                buffer: &mut CryptoBuf,
                                                mut auth_request: AuthRequest)

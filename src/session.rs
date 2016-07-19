@@ -22,7 +22,7 @@ use cipher;
 use msg;
 use key;
 use sodium;
-use {read_public_key,Error,Channel,Client, Disconnect};
+use {parse_public_key,Error,Channel,Client, Disconnect};
 use cryptobuf::CryptoBuf;
 use std::collections::HashMap;
 use encoding::Reader;
@@ -103,6 +103,17 @@ impl<'a, C> CommonSession<'a, C> {
             enc.write.truncate(i0)
         } else {
             cipher::Clear.disconnect(reason, description, language_tag, &mut self.write_buffer)
+        }
+    }
+
+    pub fn byte(&mut self, channel:u32, msg:u8) {
+        if let Some(ref mut enc) = self.encrypted {
+            if let Some(channel) = enc.channels.get(&channel) {
+                push_packet!(enc.write, {
+                    enc.write.push(msg);
+                    enc.write.push_u32_be(channel.recipient_channel);
+                });
+            }
         }
     }
 }
@@ -335,7 +346,7 @@ impl KexDhDone {
     }
 
     pub fn client_compute_exchange_hash<C: Client>(&mut self,
-                                                   client: &C,
+                                                   client: &mut C,
                                                    payload: &[u8],
                                                    buffer: &mut CryptoBuf)
                                                    -> Result<kex::Digest, Error> {
@@ -343,8 +354,8 @@ impl KexDhDone {
         let mut reader = payload.reader(1);
 
         let pubkey = try!(reader.read_string()); // server public key.
-        let pubkey = try!(read_public_key(pubkey));
-        if !client.check_server_key(&pubkey) {
+        let pubkey = try!(parse_public_key(pubkey));
+        if ! try!(client.check_server_key(&pubkey)) {
             return Err(Error::UnknownKey);
         }
         let server_ephemeral = try!(reader.read_string());

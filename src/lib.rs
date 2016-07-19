@@ -22,7 +22,7 @@
 //!
 //!```
 //! use std::sync::Arc;
-//! use thrussh::{key, auth, server, client, Server, Client, CryptoBuf};
+//! use thrussh::{key, auth, server, client, Server, Client, CryptoBuf, Error};
 //! let client_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
 //! let server_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
 //!
@@ -32,7 +32,7 @@
 //!     client_pubkey: &'p key::PublicKey
 //! }
 //! impl<'p> Server for S<'p> {
-//!     fn auth(&self, m:auth::MethodSet, method:&auth::Method<key::PublicKey>) -> auth::Answer {
+//!     fn auth(&mut self, m:auth::MethodSet, method:&auth::Method<key::PublicKey>) -> auth::Answer {
 //!         match *method {
 //!             auth::Method::PublicKey { ref user, ref public_key }
 //!               if *user == "pe" && public_key == self.client_pubkey=> {
@@ -52,16 +52,21 @@
 //! // Client instance
 //!
 //! struct C<'p> {
-//!     server_pk: &'p key::PublicKey
+//!     server_pk: &'p key::PublicKey,
+//!     channel_confirmed: bool
 //! }
 //! impl<'p> Client for C<'p> {
-//!     fn check_server_key(&self, server_pk:&key::PublicKey) -> bool {
+//!     fn check_server_key(&mut self, server_pk:&key::PublicKey) -> Result<bool, Error> {
 //!
 //!         // This is an important part of the protocol: check the
 //!         // server's public key against the known one, to help prevent
 //!         // man-in-the-middle attacks.
 //!
-//!         self.server_pk == server_pk
+//!         Ok(self.server_pk == server_pk)
+//!     }
+//!     fn channel_open_confirmation(&mut self, _:u32, session:&mut client::Session) -> Result<(), Error> {
+//!         self.channel_confirmed = true;
+//!         Ok(())
 //!     }
 //! }
 //!
@@ -83,9 +88,10 @@
 //! // Initialize the client
 //! 
 //! let client_config = Arc::new(Default::default());
-
+//!
 //! let mut client = C{
-//!     server_pk: &server_keypair.public_key()
+//!     server_pk: &server_keypair.public_key(),
+//!     channel_confirmed: false
 //! };
 //! let mut client_connection = client::Connection::new(client_config);
 //! client_connection.session.set_auth_public_key("pe", client_keypair);
@@ -102,10 +108,10 @@
 //! let mut buffer0 = CryptoBuf::new();
 //! let mut buffer1 = CryptoBuf::new();
 //!
-//! let mut run_protocol = |client_connection:&mut client::Connection| {
+//! let mut run_protocol = |client_connection:&mut client::Connection, client:&mut C| {
 //!     {
 //!         let mut swrite = &server_write[..];
-//!         client_connection.read(&mut client, &mut swrite, &mut buffer0, &mut buffer1).unwrap();
+//!         client_connection.read(client, &mut swrite, &mut buffer0, &mut buffer1).unwrap();
 //!     }
 //!     server_write.clear();
 //!     client_connection.write(&mut server_read).unwrap();
@@ -119,7 +125,7 @@
 //!
 //! // Run the protocol until authentication is complete.
 //! while !client_connection.session.is_authenticated() {
-//!     run_protocol(&mut client_connection)
+//!     run_protocol(&mut client_connection, &mut client)
 //! }
 //!
 //! // From the client, ask the server to open a channel (prepare buffers to do so).
@@ -128,12 +134,8 @@
 //!
 //! // Then run the protocol again, until our channel is confirmed.
 //! loop {
-//!     if let Some(chan) = client_connection.session.channels().and_then(|x| x.get(&channel)) {
-//!         if chan.confirmed {
-//!             break
-//!         }
-//!     }
-//!     run_protocol(&mut client_connection);
+//!     if client.channel_confirmed { break };
+//!     run_protocol(&mut client_connection, &mut client);
 //! }
 //!
 //!```
@@ -336,14 +338,27 @@ impl<'a> Sig<'a> {
 pub trait Server {
     /// Called to check authentication requests.
     #[allow(unused_variables)]
-    fn auth(&self, methods: auth::MethodSet, method: &auth::Method<key::PublicKey>) -> auth::Answer {
+    fn auth(&mut self, methods: auth::MethodSet, method: &auth::Method<key::PublicKey>) -> auth::Answer {
         auth::Answer::Reject {
             remaining_methods: methods - method.num(),
             partial_success: false,
         }
     }
 
-    /// Called when a new channel is created.
+
+    /// Called when the client closes a channel.
+    #[allow(unused_variables)]
+    fn channel_close(&mut self, channel:u32, session: &mut server::Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called when the client sends EOF to a channel.
+    #[allow(unused_variables)]
+    fn channel_eof(&mut self, channel:u32, session: &mut server::Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called when a new session channel is created.
     #[allow(unused_variables)]
     fn channel_open_session(&mut self, channel: u32, session: &mut server::Session) {}
 
@@ -451,19 +466,31 @@ pub trait Client {
     /// step to help prevent man-in-the-middle attacks. The default
     /// implementation rejects all keys.
     #[allow(unused_variables)]
-    fn check_server_key(&self, server_public_key: &key::PublicKey) -> bool {
-        false
+    fn check_server_key(&mut self, server_public_key: &key::PublicKey) -> Result<bool, Error> {
+        Ok(false)
     }
 
     /// Called when the server confirmed our request to open a channel. A channel can only be written to after receiving this message (this library panics otherwise).
     #[allow(unused_variables)]
-    fn channel_open_confirmation(&self, channel:u32, session: &mut client::Session) -> Result<(), Error> {
+    fn channel_open_confirmation(&mut self, channel:u32, session: &mut client::Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called when the server closes a channel.
+    #[allow(unused_variables)]
+    fn channel_close(&mut self, channel:u32, session: &mut client::Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called when the server sends EOF to a channel.
+    #[allow(unused_variables)]
+    fn channel_eof(&mut self, channel:u32, session: &mut client::Session) -> Result<(), Error> {
         Ok(())
     }
 
     /// Called when the server rejected our request to open a channel.
     #[allow(unused_variables)]
-    fn channel_open_failure(&self, channel:u32, reason: ChannelOpenFailure, description:&str, language:&str, session: &mut client::Session) -> Result<(), Error> {
+    fn channel_open_failure(&mut self, channel:u32, reason: ChannelOpenFailure, description:&str, language:&str, session: &mut client::Session) -> Result<(), Error> {
         Ok(())
     }
 
@@ -530,6 +557,7 @@ impl ChannelOpenFailure {
 
 /// The parameters of a channel.
 #[derive(Debug)]
+#[doc(hidden)]
 pub struct Channel {
     recipient_channel: u32,
     sender_channel: u32,
@@ -556,13 +584,20 @@ pub fn load_public_key<P: AsRef<Path>>(p: P) -> Result<key::PublicKey, Error> {
     match (split.next(), split.next()) {
         (Some(_), Some(key)) => {
             let base = try!(key.from_base64());
-            read_public_key(&base)
+            parse_public_key(&base)
         }
         _ => Err(Error::CouldNotReadKey),
     }
 }
 
-fn read_public_key(p: &[u8]) -> Result<key::PublicKey, Error> {
+/// Reads a public key from the standard encoding. In some cases, the
+/// encoding is prefixed with a key type identifier and a space (such
+/// as `ssh-ed25519 AAAAC3N...`).
+///
+/// ```
+/// thrussh::parse_public_key(b"AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ").is_ok();
+/// ```
+pub fn parse_public_key(p: &[u8]) -> Result<key::PublicKey, Error> {
     let mut pos = p.reader(0);
     if try!(pos.read_string()) == b"ssh-ed25519" {
         if let Ok(pubkey) = pos.read_string() {

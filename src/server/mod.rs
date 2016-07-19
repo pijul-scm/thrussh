@@ -426,6 +426,19 @@ impl Session {
         }
     }
 
+
+    /// Close a channel.
+    pub fn close(&mut self, channel:u32) {
+        self.0.byte(channel, msg::CHANNEL_CLOSE);
+        self.flush();
+    }
+
+    /// Send EOF to a channel
+    pub fn eof(&mut self, channel:u32) {
+        self.0.byte(channel, msg::CHANNEL_EOF);
+        self.flush();
+    }
+
     /// Send data to a channel. On session channels, `extended` can be used to encode standard error by passing `Some(1)`, and stdout by passing `None`.
     pub fn data(&mut self, channel: u32, extended: Option<u32>, data: &[u8]) -> Result<usize, Error> {
         if let Some(ref mut enc) = self.0.encrypted {

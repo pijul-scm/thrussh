@@ -156,6 +156,19 @@ impl<'a> super::Session<'a> {
                     }
                     try!(client.channel_open_confirmation(id_send, self));
                 }
+                msg::CHANNEL_CLOSE => {
+                    let mut r = buf.reader(1);
+                    let channel_num = try!(r.read_u32());
+                    if let Some(ref mut enc) = self.0.encrypted {
+                        enc.channels.remove(&channel_num);
+                    }
+                    try!(client.channel_close(channel_num, self));
+                }
+                msg::CHANNEL_EOF => {
+                    let mut r = buf.reader(1);
+                    let channel_num = try!(r.read_u32());
+                    try!(client.channel_eof(channel_num, self));
+                }
                 msg::CHANNEL_OPEN_FAILURE => {
                     let mut r = buf.reader(1);
                     let channel_num = try!(r.read_u32());

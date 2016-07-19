@@ -16,9 +16,8 @@
 use std::sync::Arc;
 use std::io::{Write, BufRead};
 use std;
-use std::collections::HashMap;
 
-use {Disconnect, Error, Limits, Client, Channel, Sig};
+use {Disconnect, Error, Limits, Client, Sig};
 use key;
 use msg;
 use auth;
@@ -378,18 +377,6 @@ impl<'a> Session<'a> {
         }
     }
 
-
-    
-    /// Set of all channels requested during this connection, and not closed.
-    pub fn channels(&self) -> Option<&HashMap<u32, Channel>> {
-        if let Some(ref enc) = self.0.encrypted {
-            Some(&enc.channels)
-        } else {
-            None
-        }
-    }
-
-
     
     /// Request a session channel (the most basic type of
     /// channel). This function returns `Some(..)` immediately if the
@@ -494,6 +481,17 @@ impl<'a> Session<'a> {
         result
     }
 
+    /// Close a channel.
+    pub fn close(&mut self, channel:u32) {
+        self.0.byte(channel, msg::CHANNEL_CLOSE);
+        self.flush();
+    }
+
+    /// Send EOF to a channel
+    pub fn eof(&mut self, channel:u32) {
+        self.0.byte(channel, msg::CHANNEL_EOF);
+        self.flush();
+    }
 
     /// Send data or "extended data" to the given channel. Extended data can be used to multiplex different data streams into a single channel.
     pub fn data(&mut self, channel: u32, extended: Option<u32>, data: &[u8]) -> Result<usize, Error> {
