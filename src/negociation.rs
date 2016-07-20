@@ -69,49 +69,44 @@ pub trait Select {
     fn select<S:AsRef<str> + Copy>(a: &[S], b: &[u8]) -> Option<(bool, S)>;
 
     fn read_kex(buffer: &[u8], pref: &Preferred) -> Result<Names, Error> {
-        if buffer[0] != msg::KEXINIT {
-            Err(Error::KexInit)
-        } else {
+        let mut r = buffer.reader(17);
+        let (kex_both_first, kex_algorithm) =
+            if let Some(x) = Self::select(pref.kex, try!(r.read_string())) {
+                x
+            } else {
+                return Err(Error::KexInit);
+            };
 
-            let mut r = buffer.reader(17);
-            let (kex_both_first, kex_algorithm) =
-                if let Some(x) = Self::select(pref.kex, try!(r.read_string())) {
-                    x
-                } else {
-                    return Err(Error::KexInit);
-                };
+        let (key_both_first, key_algorithm) =
+            if let Some(x) = Self::select(pref.key, try!(r.read_string())) {
+                x
+            } else {
+                return Err(Error::KexInit);
+            };
 
-            let (key_both_first, key_algorithm) =
-                if let Some(x) = Self::select(pref.key, try!(r.read_string())) {
-                    x
-                } else {
-                    return Err(Error::KexInit);
-                };
+        let cipher = Self::select(pref.cipher, try!(r.read_string()));
 
-            let cipher = Self::select(pref.cipher, try!(r.read_string()));
+        try!(r.read_string()); // SERVER_TO_CLIENT
+        let mac = Self::select(pref.mac, try!(r.read_string()));
 
-            try!(r.read_string()); // SERVER_TO_CLIENT
-            let mac = Self::select(pref.mac, try!(r.read_string()));
+        try!(r.read_string()); // SERVER_TO_CLIENT
+        try!(r.read_string()); //
+        try!(r.read_string()); //
+        try!(r.read_string()); //
 
-            try!(r.read_string()); // SERVER_TO_CLIENT
-            try!(r.read_string()); //
-            try!(r.read_string()); //
-            try!(r.read_string()); //
-
-            let follows = try!(r.read_byte()) != 0;
-            match (cipher, mac, follows) {
-                (Some((_, cip)), Some((_, mac)), fol) => {
-                    Ok(Names {
-                        kex: kex_algorithm,
-                        key: key_algorithm,
-                        cipher: cip,
-                        mac: mac,
-                        // Ignore the next packet if (1) it follows and (2) it's not the correct guess.
-                        ignore_guessed: fol && !(kex_both_first && key_both_first),
-                    })
-                }
-                _ => Err(Error::KexInit),
+        let follows = try!(r.read_byte()) != 0;
+        match (cipher, mac, follows) {
+            (Some((_, cip)), Some((_, mac)), fol) => {
+                Ok(Names {
+                    kex: kex_algorithm,
+                    key: key_algorithm,
+                    cipher: cip,
+                    mac: mac,
+                    // Ignore the next packet if (1) it follows and (2) it's not the correct guess.
+                    ignore_guessed: fol && !(kex_both_first && key_both_first),
+                })
             }
+            _ => Err(Error::KexInit),
         }
     }
 }

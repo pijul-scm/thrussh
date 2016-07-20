@@ -107,7 +107,7 @@ impl Algorithm {
                     shared_secret: Some(shared_secret),
                 }))
             }
-            _ => Err(Error::Kex),
+            _ => unreachable!()
         }
     }
     pub fn client_dh(name: Name,
@@ -149,7 +149,7 @@ impl Algorithm {
                     shared_secret: None,
                 }))
             }
-            _ => Err(Error::Kex),
+            _ => unreachable!()
         }
     }
 
@@ -200,12 +200,8 @@ impl Algorithm {
                 debug_assert_eq!(exchange.server_ephemeral.len(), 32);
                 buffer.extend_ssh_string(exchange.server_ephemeral.as_slice());
 
-                debug!("shared: {:?}", kex.shared_secret);
-                // unimplemented!(); // Should be in wire format.
                 if let Some(ref shared) = kex.shared_secret {
                     buffer.extend_ssh_mpint(shared.as_bytes());
-                } else {
-                    return Err(Error::Kex);
                 }
                 debug!("buffer len = {:?}", buffer.len());
                 debug!("buffer: {:?}", buffer.as_slice());
@@ -215,7 +211,6 @@ impl Algorithm {
                 debug!("hash: {:?}", hash);
                 Ok(Digest::Sha256(hash))
             }
-            // _ => Err(Error::Kex)
         }
     }
 
@@ -264,7 +259,7 @@ impl Algorithm {
 
                 match cipher {
                     super::cipher::CHACHA20POLY1305 => {
-
+                        
                         let client_to_server = {
                             compute_key(b'C', key, super::cipher::key_size(cipher));
                             super::cipher::Cipher::Chacha20Poly1305 (
@@ -290,10 +285,9 @@ impl Algorithm {
                             }
                         })
                     }
-                    _ => Err(Error::DH),
+                    _ => unreachable!()
                 }
             }
-            // _ => unimplemented!()
         }
     }
 }

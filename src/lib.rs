@@ -183,15 +183,12 @@ pub enum Error {
     KexInit,
     Version,
     Kex,
-    DH,
     PacketAuth,
     NewKeys,
     Inconsistent,
-    HUP,
     IndexOutOfBounds,
     Utf8(std::str::Utf8Error),
     UnknownKey,
-    WrongState,
     WrongChannel,
     UnknownChannelType,
     UnknownSignal,
@@ -201,6 +198,44 @@ pub enum Error {
     KeyChanged
 }
 
+use std::error::Error as StdError;
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.description())
+    }
+}
+impl std::error::Error for Error {
+    fn description(&self) -> &str {
+        match *self {
+            Error::Base64(ref e) => e.description(),
+            Error::Utf8(ref e) => e.description(),
+            Error::IO(ref e) => e.description(),
+            Error::CouldNotReadKey => "Could not read key",
+            Error::KexInit => "No common algorithms were found",
+            Error::Kex => "Received invalid key exchange packet",
+            Error::Version => "Invalid version string from the remote side",
+            Error::PacketAuth => "Incorrect packet authentication code",
+            Error::NewKeys => "No NEWKEYS packet received",
+            Error::Inconsistent => "Unexpected packet",
+            Error::IndexOutOfBounds => "Index out of bounds in a packet",
+            Error::UnknownKey => "Unknown host key",
+            Error::WrongChannel => "Inexistent channel",
+            Error::UnknownChannelType => "Unknown channel type",
+            Error::UnknownSignal => "Unknown signal",
+            Error::Disconnect => "Disconnected",
+            Error::NoHomeDir => "Home directory not found",
+            Error::KeyChanged => "Server key changed"
+        }
+    }
+    fn cause(&self) -> Option<&std::error::Error> {
+        match *self {
+            Error::Base64(ref e) => Some(e),
+            Error::Utf8(ref e) => Some(e),
+            Error::IO(ref e) => Some(e),
+            _ => None
+        }
+    }
+}
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Error {
         Error::IO(e)
