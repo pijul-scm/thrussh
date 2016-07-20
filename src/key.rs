@@ -120,12 +120,12 @@ impl Named for Algorithm {
 
 impl Algorithm {
 
-    /// Copy the public key of this algorithm.
+    /*/// Copy the public key of this algorithm.
     pub fn public_key(&self) -> PublicKey {
         match self {
             &Algorithm::Ed25519 { ref public, .. } => PublicKey::Ed25519(public.clone())
         }
-    }
+    }*/
     
     /// Generate a key pair.
     pub fn generate_keypair(t:Name) -> Option<Self> {

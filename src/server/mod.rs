@@ -32,6 +32,7 @@ use key::PubKey;
 use encoding::Reader;
 
 use session::*;
+use auth;
 
 #[derive(Debug)]
 pub struct Config {

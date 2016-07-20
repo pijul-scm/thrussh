@@ -16,6 +16,7 @@
 use std::sync::Arc;
 use std::io::{Write, BufRead};
 use std;
+use std::borrow::Cow;
 
 use {Disconnect, Error, Limits, Client, Sig};
 use key;
@@ -331,17 +332,17 @@ impl<'a> Session<'a> {
     }
 
     /// Set the authentication method.
-    pub fn set_auth_public_key(&mut self, user:&'a str, public_key: key::Algorithm) {
+    pub fn set_auth_public_key(&mut self, user:Cow<'a,str>, key: key::Algorithm) {
         self.0.auth_method = Some(
             auth::Method::PublicKey {
                 user:user,
-                public_key: public_key
+                key: key
             }
         );
     }
 
     /// Set the authentication method.
-    pub fn set_auth_password(&mut self, user:&'a str, password:&'a str) {
+    pub fn set_auth_password(&mut self, user:Cow<'a, str>, password:Cow<'a,str>) {
         self.0.auth_method = Some(
             auth::Method::Password {
                 user:user,

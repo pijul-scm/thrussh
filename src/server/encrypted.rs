@@ -24,6 +24,7 @@ use rand::{thread_rng, Rng};
 use key::Verify;
 use negociation;
 use negociation::Select;
+use auth;
 
 impl Session {
 
@@ -397,12 +398,12 @@ impl Encrypted {
                                                -> Result<(), Error> {
         // https://tools.ietf.org/html/rfc4252#section-5
         let mut r = buf.reader(1);
-        let name = try!(r.read_string());
-        let name = try!(std::str::from_utf8(name));
+        let user = try!(r.read_string());
+        let user = try!(std::str::from_utf8(user));
         let service_name = try!(r.read_string());
         let method = try!(r.read_string());
         debug!("name: {:?} {:?} {:?}",
-               name, std::str::from_utf8(service_name),
+               user, std::str::from_utf8(service_name),
                std::str::from_utf8(method));
 
         if service_name == b"ssh-connection" {
@@ -412,22 +413,16 @@ impl Encrypted {
                 try!(r.read_byte());
                 let password = try!(r.read_string());
                 let password = try!(std::str::from_utf8(password));
-                let method = Method::Password {
-                    user: name,
-                    password: password,
-                };
-                match server.auth(auth_request.methods, &method) {
-                    auth::Answer::Success => {
-                        server_auth_request_success(&mut self.write);
-                        self.state = Some(EncryptedState::Authenticated);
-                    },
-                    auth::Answer::Reject { remaining_methods, partial_success } => {
-                        auth_request.methods = remaining_methods;
-                        auth_request.partial_success = partial_success;
-                        self.reject_auth_request(auth_request);
-                    }
+
+                if server.auth_password(user, password) {
+                    server_auth_request_success(&mut self.write);
+                    self.state = Some(EncryptedState::Authenticated);
+                } else {
+                    auth_request.methods = auth_request.methods - auth::PASSWORD;
+                    auth_request.partial_success = false;
+                    self.reject_auth_request(auth_request);
                 }
-                
+
             } else if method == b"publickey" {
 
                 let is_real = try!(r.read_byte());
@@ -440,58 +435,41 @@ impl Encrypted {
 
                     let pos0 = r.position;
                     // Check that the user is still authorized (the client may have changed user since we accepted).
-                    let method = Method::PublicKey {
-                        user: name,
-                        public_key: pubkey.clone()
-                    };
-
-                    match server.auth(auth_request.methods, &method) {
-                        auth::Answer::Success => {
-                            let signature = try!(r.read_string());
-                            let mut s = signature.reader(0);
-                            // let algo_ =
-                            try!(s.read_string());
-                            let sig = try!(s.read_string());
-                            
-                            buffer.clear();
-                            buffer.extend_ssh_string(self.session_id.as_bytes());
-                            buffer.extend(&buf[0..pos0]);
-                            // Verify signature.
-                            if pubkey.verify_detached(buffer.as_slice(), sig) {
-                                debug!("signature verified");
-                                server_auth_request_success(&mut self.write);
-                                self.state = Some(EncryptedState::Authenticated);
-                            } else {
-                                debug!("wrong signature");
-                                self.reject_auth_request(auth_request);
-                            }
+                    if server.auth_publickey(user, &pubkey) {
+                        let signature = try!(r.read_string());
+                        let mut s = signature.reader(0);
+                        // let algo_ =
+                        try!(s.read_string());
+                        let sig = try!(s.read_string());
+                        
+                        buffer.clear();
+                        buffer.extend_ssh_string(self.session_id.as_bytes());
+                        buffer.extend(&buf[0..pos0]);
+                        // Verify signature.
+                        if pubkey.verify_detached(buffer.as_slice(), sig) {
+                            debug!("signature verified");
+                            server_auth_request_success(&mut self.write);
+                            self.state = Some(EncryptedState::Authenticated);
+                        } else {
+                            debug!("wrong signature");
+                            self.reject_auth_request(auth_request);
                         }
-                        _ => {
-                            debug!("rejected");
-                            self.reject_auth_request(auth_request)
-                        }
+                    } else {
+                        debug!("rejected");
+                        self.reject_auth_request(auth_request)
                     }
 
                 } else {
 
-                    let method = Method::PublicKey {
-                        user: name,
-                        public_key: pubkey
-                    };
-
-                    match server.auth(auth_request.methods, &method) {
-                        auth::Answer::Success => {
-                            // Public key ?
-                            auth_request.public_key.extend(pubkey_key);
-                            auth_request.public_key_algorithm.extend(pubkey_algo);
-                            server_send_pk_ok(&mut self.write, &mut auth_request);
-                            self.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
-                        }
-                        auth::Answer::Reject { remaining_methods, partial_success } => {
-                            auth_request.methods = remaining_methods;
-                            auth_request.partial_success = partial_success;
-                            self.reject_auth_request(auth_request);
-                        }
+                    if server.auth_publickey(user, &pubkey) {
+                        auth_request.public_key.extend(pubkey_key);
+                        auth_request.public_key_algorithm.extend(pubkey_algo);
+                        server_send_pk_ok(&mut self.write, &mut auth_request);
+                        self.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
+                    } else {
+                        auth_request.methods -= auth::PUBLICKEY;
+                        auth_request.partial_success = false;
+                        self.reject_auth_request(auth_request);
                     }
                 }
             } else {

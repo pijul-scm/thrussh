@@ -271,16 +271,15 @@ impl Encrypted {
                     self.write.extend_ssh_string(password.as_bytes());
                     true
                 }
-                auth::Method::PublicKey { ref user, ref public_key } => {
+                auth::Method::PublicKey { ref user, ref key } => {
                     self.write.extend_ssh_string(user.as_bytes());
                     self.write.extend_ssh_string(SSH_CONNECTION);
                     self.write.extend_ssh_string(b"publickey");
                     self.write.push(0); // This is a probe
-                    self.write.extend_ssh_string(public_key.name().as_bytes());
-                    public_key.push_to(&mut self.write);
+                    self.write.extend_ssh_string(key.name().as_bytes());
+                    key.push_to(&mut self.write);
                     true
                 }
-                _ => false
             }
         })
     }
@@ -290,7 +289,7 @@ impl Encrypted {
                                  buffer: &mut CryptoBuf) {
         debug!("sending signature {:?}", method);
         match method {
-            &auth::Method::PublicKey { ref user, ref public_key } => {
+            &auth::Method::PublicKey { ref user, ref key } => {
 
                 buffer.clear();
                 buffer.extend_ssh_string(self.session_id.as_bytes());
@@ -300,10 +299,10 @@ impl Encrypted {
                 buffer.extend_ssh_string(SSH_CONNECTION);
                 buffer.extend_ssh_string(b"publickey");
                 buffer.push(1);
-                buffer.extend_ssh_string(public_key.name().as_bytes());
-                public_key.push_to(buffer);
+                buffer.extend_ssh_string(key.name().as_bytes());
+                key.push_to(buffer);
                 // Extend with self-signature.
-                public_key.add_self_signature(buffer);
+                key.add_self_signature(buffer);
                 debug!("packet : {:?}", &buffer.as_slice()[i0..]);
                 push_packet!(self.write, {
                     self.write.extend(&buffer.as_slice()[i0..]);

@@ -56,7 +56,7 @@ impl CryptoBuf {
         self.extend(&s[i..]);
     }
 
-
+    
     pub fn extend_list<A: Bytes, I: Iterator<Item = A>>(&mut self, list: I) {
         let len0 = self.len();
         self.extend(&[0, 0, 0, 0]);
@@ -74,6 +74,7 @@ impl CryptoBuf {
         let buf = self.as_mut_slice();
         BigEndian::write_u32(&mut buf[len0..], len);
     }
+
     pub fn write_empty_list(&mut self) {
         self.extend(&[0, 0, 0, 0]);
     }

@@ -247,7 +247,7 @@ mod cipher;
 mod encoding;
 use encoding::*;
 
-pub mod auth;
+mod auth;
 
 /// The number of bytes read/written, and the number of seconds before a key re-exchange is requested.
 #[derive(Debug,Clone)]
@@ -336,13 +336,20 @@ impl<'a> Sig<'a> {
 }
 
 pub trait Server {
-    /// Called to check authentication requests.
+
     #[allow(unused_variables)]
-    fn auth(&mut self, methods: auth::MethodSet, method: &auth::Method<key::PublicKey>) -> auth::Answer {
-        auth::Answer::Reject {
-            remaining_methods: methods - method.num(),
-            partial_success: false,
-        }
+    fn auth_none(&mut self, user: &str) -> bool {
+        false
+    }
+
+    #[allow(unused_variables)]
+    fn auth_password(&mut self, user: &str, password:&str) -> bool {
+        false
+    }
+
+    #[allow(unused_variables)]
+    fn auth_publickey(&mut self, user: &str, public_key:&key::PublicKey) -> bool {
+        false
     }
 
 

@@ -13,7 +13,9 @@
 // limitations under the License.
 //
 
-use super::encoding;
+use std::borrow::Cow;
+
+use encoding;
 use cryptobuf::CryptoBuf;
 
 /// Set of methods, represented by bit flags.
@@ -51,27 +53,16 @@ impl Iterator for MethodSet {
 
 #[derive(Debug)]
 pub enum Method<'a, K> {
-    None,
+    // None,
     Password {
-        user: &'a str,
-        password: &'a str,
+        user: Cow<'a, str>,
+        password: Cow<'a, str>,
     },
     PublicKey {
-        user: &'a str,
-        public_key: K
+        user: Cow<'a, str>,
+        key: K
     },
-    Hostbased,
-}
-
-impl<'a,K> Method<'a,K> {
-    pub fn num(&self) -> MethodSet {
-        match *self {
-            Method::None => NONE,
-            Method::Password { .. } => PASSWORD,
-            Method::PublicKey { .. } => PUBLICKEY,
-            Method::Hostbased => HOSTBASED,
-        }
-    }
+    // Hostbased,
 }
 
 impl encoding::Bytes for MethodSet {
@@ -96,16 +87,6 @@ impl MethodSet {
             _ => None
         }
     }
-}
-
-/// Answer to a request
-#[derive(Debug)]
-pub enum Answer {
-    Success,
-    Reject {
-        remaining_methods: MethodSet,
-        partial_success: bool,
-    },
 }
 
 #[doc(hidden)]
