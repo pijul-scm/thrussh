@@ -360,6 +360,16 @@ impl Session {
         false
     }
 
+    /// Check whether a channel has been confirmed.
+    pub fn channel_is_open(&self, channel:u32) -> bool {
+        if let Some(ref enc) = self.0.encrypted {
+            if let Some(ref channel) = enc.channels.get(&channel) {
+                return channel.confirmed
+            }
+        }
+        false
+    }
+
     /// Tests whether we need an authentication method (for instance if the last attempt failed).
     pub fn needs_auth_method(&self) -> bool {
         self.0.auth_method.is_none()

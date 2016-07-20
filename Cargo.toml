@@ -1,7 +1,7 @@
 [package]
 name = "thrussh"
 description = "A client and server SSH library. Memory-safe, doesn't do its own crypto (based on libsodium)."
-version = "0.3.2"
+version = "0.3.3"
 authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
 repository = "https://pijul.org/thrussh"
 homepage = "https://pijul.org/thrussh"
