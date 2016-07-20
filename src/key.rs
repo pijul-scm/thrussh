@@ -17,7 +17,7 @@ use cryptobuf::CryptoBuf;
 use negociation::Named;
 use Error;
 use encoding::Reader;
-
+use std;
 #[doc(hidden)]
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct Name(&'static str);
@@ -64,12 +64,21 @@ impl Verify for PublicKey {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Algorithm {
     #[doc(hidden)]
     Ed25519 { public:ed25519::PublicKey, secret: ed25519::SecretKey }
 }
 
+impl std::fmt::Debug for Algorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match *self {
+            Algorithm::Ed25519 { ref public, .. } => {
+                write!(f, "Ed25519 {{ public: {:?}, secret: (hidden) }}", public)
+            }
+        }
+    }
+}
 #[doc(hidden)]
 pub trait PubKey {
     fn push_to(&self, buffer:&mut CryptoBuf);
@@ -120,12 +129,12 @@ impl Named for Algorithm {
 
 impl Algorithm {
 
-    /*/// Copy the public key of this algorithm.
-    pub fn public_key(&self) -> PublicKey {
+    /// Copy the public key of this algorithm.
+    pub fn clone_public_key(&self) -> PublicKey {
         match self {
             &Algorithm::Ed25519 { ref public, .. } => PublicKey::Ed25519(public.clone())
         }
-    }*/
+    }
     
     /// Generate a key pair.
     pub fn generate_keypair(t:Name) -> Option<Self> {

@@ -22,47 +22,35 @@
 //!
 //!```
 //! use std::sync::Arc;
-//! use thrussh::{key, auth, server, client, Server, Client, CryptoBuf, Error};
+//! use thrussh::{key, server, client, Server, Client, CryptoBuf, Error};
 //! let client_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
 //! let server_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
 //!
 //! // Server instance
 //!
-//! struct S<'p> {
-//!     client_pubkey: &'p key::PublicKey
+//! struct S {
+//!     client_pubkey: key::PublicKey
 //! }
-//! impl<'p> Server for S<'p> {
-//!     fn auth(&mut self, m:auth::MethodSet, method:&auth::Method<key::PublicKey>) -> auth::Answer {
-//!         match *method {
-//!             auth::Method::PublicKey { ref user, ref public_key }
-//!               if *user == "pe" && public_key == self.client_pubkey=> {
-//!                 // If the user and public key match, accept the public key.
-//!                 auth::Answer::Success
-//!             },
-//!             _ =>
-//!                 // Else, reject and provide no other methods.
-//!                 auth::Answer::Reject {
-//!                     partial_success:false,
-//!                     remaining_methods: m - method.num()
-//!                 }
-//!         }
+//! impl Server for S {
+//!     fn auth_publickey(&mut self, user:&str, publickey:&key::PublicKey) -> bool {
+//!         user == "pe" && publickey == &self.client_pubkey
 //!     }
 //! }
 //!
 //! // Client instance
 //!
-//! struct C<'p> {
-//!     server_pk: &'p key::PublicKey,
+//! struct C {
+//!     server_pk: key::PublicKey,
 //!     channel_confirmed: Option<u32>
 //! }
-//! impl<'p> Client for C<'p> {
+//! impl Client for C {
 //!     fn check_server_key(&mut self, server_pk:&key::PublicKey) -> Result<bool, Error> {
 //!
 //!         // This is an important part of the protocol: check the
 //!         // server's public key against the known one, to help prevent
 //!         // man-in-the-middle attacks.
 //!
-//!         Ok(self.server_pk == server_pk)
+//!         Ok(&self.server_pk == server_pk)
 //!     }
 //!     fn channel_open_confirmation(&mut self, channel:u32, _:&mut client::Session) -> Result<(), Error> {
 //!         self.channel_confirmed = Some(channel);
@@ -80,7 +68,7 @@
 //! };
 
 //! let mut server = S{
-//!     client_pubkey: &client_keypair.public_key()
+//!     client_pubkey: client_keypair.clone_public_key()
 //! };
 //! let mut server_connection = server::Connection::new(server_config.clone());
 //!
@@ -90,11 +78,11 @@
 //! let client_config = Arc::new(Default::default());
 //!
 //! let mut client = C{
-//!     server_pk: &server_keypair.public_key(),
+//!     server_pk: server_keypair.clone_public_key(),
 //!     channel_confirmed: None
 //! };
 //! let mut client_connection = client::Connection::new(client_config);
-//! client_connection.session.set_auth_public_key("pe", client_keypair);
+//! client_connection.session.set_auth_public_key("pe".to_string(), client_keypair);
 //!
 //! // Now, run the protocol (it is obviously more useful when the
 //! // instances of Read and Write are networks sockets instead of Vec).

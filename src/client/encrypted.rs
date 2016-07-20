@@ -27,7 +27,7 @@ use negociation::Select;
 
 const SSH_CONNECTION:&'static [u8] = b"ssh-connection";
 
-impl<'a> super::Session<'a> {
+impl super::Session {
     #[doc(hidden)]
     pub fn client_read_encrypted<C: Client>(&mut self,
                                             client: &mut C,

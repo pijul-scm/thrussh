@@ -16,7 +16,6 @@
 use std::sync::Arc;
 use std::io::{Write, BufRead};
 use std;
-use std::borrow::Cow;
 
 use {Disconnect, Error, Limits, Client, Sig};
 use key;
@@ -72,13 +71,13 @@ impl std::default::Default for Config {
 
 /// Client connection.
 #[derive(Debug)]
-pub struct Connection<'a> {
+pub struct Connection {
     read_buffer: SSHBuffer,
-    pub session: Session<'a>
+    pub session: Session
 }
 
 #[derive(Debug)]
-pub struct Session<'a>(CommonSession<'a, Config>);
+pub struct Session(CommonSession<Config>);
 
 impl KexInit {
     pub fn client_parse<C:CipherT>(mut self, config:&Config, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<KexDhDone, Error> {
@@ -150,7 +149,7 @@ impl KexDhDone {
 }
 
 
-impl<'a> Connection<'a> {
+impl Connection {
 
     pub fn new(config:Arc<Config>) -> Self {
         super::SODIUM_INIT.call_once(|| {
@@ -310,7 +309,7 @@ impl<'a> Connection<'a> {
 
 }
 
-impl<'a> Session<'a> {
+impl Session {
 
     fn flush(&mut self) {
         if let Some(ref mut enc) = self.0.encrypted {
@@ -332,7 +331,7 @@ impl<'a> Session<'a> {
     }
 
     /// Set the authentication method.
-    pub fn set_auth_public_key(&mut self, user:Cow<'a,str>, key: key::Algorithm) {
+    pub fn set_auth_public_key(&mut self, user:String, key: key::Algorithm) {
         self.0.auth_method = Some(
             auth::Method::PublicKey {
                 user:user,
@@ -342,7 +341,7 @@ impl<'a> Session<'a> {
     }
 
     /// Set the authentication method.
-    pub fn set_auth_password(&mut self, user:Cow<'a, str>, password:Cow<'a,str>) {
+    pub fn set_auth_password(&mut self, user:String, password:String) {
         self.0.auth_method = Some(
             auth::Method::Password {
                 user:user,

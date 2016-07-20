@@ -13,8 +13,6 @@
 // limitations under the License.
 //
 
-use std::borrow::Cow;
-
 use encoding;
 use cryptobuf::CryptoBuf;
 
@@ -52,14 +50,14 @@ impl Iterator for MethodSet {
 }
 
 #[derive(Debug)]
-pub enum Method<'a, K> {
+pub enum Method<K> {
     // None,
     Password {
-        user: Cow<'a, str>,
-        password: Cow<'a, str>,
+        user: String,
+        password: String
     },
     PublicKey {
-        user: Cow<'a, str>,
+        user: String,
         key: K
     },
     // Hostbased,

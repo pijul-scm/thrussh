@@ -178,7 +178,7 @@ pub struct Connection {
 }
 
 #[derive(Debug)]
-pub struct Session(CommonSession<'static, Config>);
+pub struct Session(CommonSession<Config>);
 
 
 impl Connection {
