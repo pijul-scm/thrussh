@@ -70,6 +70,19 @@ pub struct Connection {
     pub session: Session,
 }
 
+impl std::ops::Deref for Connection {
+    type Target = Session;
+    fn deref(&self) -> &Session {
+        &self.session
+    }
+}
+
+impl std::ops::DerefMut for Connection {
+    fn deref_mut(&mut self) -> &mut Session {
+        &mut self.session
+    }
+}
+
 #[derive(Debug)]
 pub struct Session(CommonSession<Config>);
 

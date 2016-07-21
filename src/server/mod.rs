@@ -86,6 +86,18 @@ pub struct Connection {
 #[derive(Debug)]
 pub struct Session(CommonSession<Config>);
 
+impl std::ops::Deref for Connection {
+    type Target = Session;
+    fn deref(&self) -> &Session {
+        &self.session
+    }
+}
+
+impl std::ops::DerefMut for Connection {
+    fn deref_mut(&mut self) -> &mut Session {
+        &mut self.session
+    }
+}
 
 pub trait Handler {
     #[allow(unused_variables)]
@@ -349,8 +361,9 @@ impl KexDh {
             assert!(buf[0] == msg::KEX_ECDH_INIT);
             let mut r = buf.reader(1);
             self.exchange.client_ephemeral.extend(try!(r.read_string()));
-            let kex =
-                try!(super::kex::Algorithm::server_dh(self.names.kex, &mut self.exchange, buf));
+            let kex = try!(super::kex::Algorithm::server_dh(self.names.kex,
+                                                            &mut self.exchange,
+                                                            buf));
             // Then, we fill the write buffer right away, so that we
             // can output it immediately when the time comes.
             let kexdhdone = KexDhDone {
@@ -362,7 +375,9 @@ impl KexDh {
             };
 
             let hash = try!(kexdhdone.kex
-                .compute_exchange_hash(&config.keys[kexdhdone.key], &kexdhdone.exchange, buffer));
+                                     .compute_exchange_hash(&config.keys[kexdhdone.key],
+                                                            &kexdhdone.exchange,
+                                                            buffer));
 
             buffer.clear();
             buffer.push(msg::KEX_ECDH_REPLY);
