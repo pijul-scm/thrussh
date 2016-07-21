@@ -141,7 +141,7 @@ extern crate log;
 extern crate byteorder;
 
 extern crate rustc_serialize; // config: read base 64.
-extern crate time;
+
 
 use std::sync::{Once, ONCE_INIT};
 use std::io::{Read, BufRead, BufReader};
@@ -279,7 +279,19 @@ mod auth;
 pub struct Limits {
     pub rekey_write_limit: usize,
     pub rekey_read_limit: usize,
-    pub rekey_time_limit_s: f64,
+    pub rekey_time_limit: std::time::Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        // Following the recommendations of
+        // https://tools.ietf.org/html/rfc4253#section-9
+        Limits {
+            rekey_write_limit: 1 << 30, // 1 Gb
+            rekey_read_limit: 1 << 30, // 1 Gb
+            rekey_time_limit: std::time::Duration::from_secs(3600),
+        }
+    }
 }
 
 pub mod server;
