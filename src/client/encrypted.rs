@@ -77,7 +77,7 @@ impl super::Session {
                             };
 
                             if let Some(ref meth) = self.0.auth_method {
-                                if enc.write_auth_request(meth) {
+                                if enc.write_auth_request(&self.0.auth_user, meth) {
                                     enc.state =
                                         Some(EncryptedState::WaitingAuthRequest(auth_request));
                                     return Ok(());
@@ -113,7 +113,7 @@ impl super::Session {
 
                         auth_request.public_key_is_ok = true;
                         if let Some(ref auth_method) = self.0.auth_method {
-                            enc.client_send_signature(auth_method, buffer);
+                            enc.client_send_signature(&self.0.auth_user, auth_method, buffer);
                         }
                         enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
                     } else {
@@ -259,12 +259,12 @@ impl super::Session {
     }
 }
 impl Encrypted {
-    pub fn write_auth_request(&mut self, auth_method: &auth::Method<key::Algorithm>) -> bool {
+    pub fn write_auth_request(&mut self, user:&str, auth_method: &auth::Method<key::Algorithm>) -> bool {
         // The server is waiting for our USERAUTH_REQUEST.
         push_packet!(self.write, {
             self.write.push(msg::USERAUTH_REQUEST);
             match *auth_method {
-                auth::Method::Password { ref user, ref password } => {
+                auth::Method::Password { ref password } => {
                     self.write.extend_ssh_string(user.as_bytes());
                     self.write.extend_ssh_string(SSH_CONNECTION);
                     self.write.extend_ssh_string(b"password");
@@ -272,7 +272,7 @@ impl Encrypted {
                     self.write.extend_ssh_string(password.as_bytes());
                     true
                 }
-                auth::Method::PublicKey { ref user, ref key } => {
+                auth::Method::PublicKey { ref key } => {
                     self.write.extend_ssh_string(user.as_bytes());
                     self.write.extend_ssh_string(SSH_CONNECTION);
                     self.write.extend_ssh_string(b"publickey");
@@ -286,11 +286,12 @@ impl Encrypted {
     }
 
     pub fn client_send_signature(&mut self,
+                                 user: &str,
                                  method: &auth::Method<key::Algorithm>,
                                  buffer: &mut CryptoBuf) {
         debug!("sending signature {:?}", method);
         match method {
-            &auth::Method::PublicKey { ref user, ref key } => {
+            &auth::Method::PublicKey { ref key } => {
 
                 buffer.clear();
                 buffer.extend_ssh_string(self.session_id.as_bytes());

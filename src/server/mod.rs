@@ -410,6 +410,7 @@ impl Connection {
             session: Session(CommonSession {
                 write_buffer: write_buffer,
                 kex: None,
+                auth_user: String::new(),
                 auth_method: None, // Client only.
                 cipher: cipher::CLEAR_PAIR,
                 encrypted: None,

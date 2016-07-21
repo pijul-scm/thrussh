@@ -304,6 +304,7 @@ impl Connection {
             read_buffer: SSHBuffer::new(),
             session: Session(CommonSession {
                 write_buffer: write_buffer,
+                auth_user: String::new(),
                 auth_method: None,
                 kex: None,
                 cipher: cipher::CLEAR_PAIR,
@@ -497,18 +498,22 @@ impl Session {
         self.0.disconnect(reason, description, language_tag);
     }
 
+    /// Set the user.
+    pub fn set_auth_user(&mut self, user: &str) {
+        self.0.auth_user.clear();
+        self.0.auth_user.push_str(user)
+    }
+
     /// Set the authentication method.
-    pub fn set_auth_public_key(&mut self, user: String, key: key::Algorithm) {
+    pub fn set_auth_public_key(&mut self, key: key::Algorithm) {
         self.0.auth_method = Some(auth::Method::PublicKey {
-            user: user,
             key: key,
         });
     }
 
     /// Set the authentication method.
-    pub fn set_auth_password(&mut self, user: String, password: String) {
+    pub fn set_auth_password(&mut self, password: String) {
         self.0.auth_method = Some(auth::Method::Password {
-            user: user,
             password: password,
         });
     }

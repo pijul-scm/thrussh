@@ -84,6 +84,7 @@ impl Session {
                                                           server,
                                                           buf,
                                                           buffer,
+                                                          &mut self.0.auth_user,
                                                           auth_request));
                     } else {
                         // Wrong request
@@ -411,6 +412,7 @@ impl Encrypted {
                                                 server: &mut S,
                                                 buf: &[u8],
                                                 buffer: &mut CryptoBuf,
+                                                auth_user: &mut String,
                                                 mut auth_request: AuthRequest)
                                                 -> Result<(), Error> {
         // https://tools.ietf.org/html/rfc4252#section-5
@@ -427,6 +429,9 @@ impl Encrypted {
         if service_name == b"ssh-connection" {
 
             if method == b"password" {
+
+                auth_user.clear();
+                auth_user.push_str(user);
 
                 try!(r.read_byte());
                 let password = try!(r.read_string());
@@ -460,7 +465,8 @@ impl Encrypted {
 
                     let pos0 = r.position;
                     // Check that the user is still authorized (the client may have changed user since we accepted).
-                    if server.auth_publickey(user, &pubkey) {
+                    if server.auth_publickey(user, &pubkey) || (auth_request.sent_pk_ok && user == auth_user) {
+
                         let signature = try!(r.read_string());
                         let mut s = signature.reader(0);
                         // let algo_ =
@@ -487,6 +493,9 @@ impl Encrypted {
                 } else {
 
                     if server.auth_publickey(user, &pubkey) {
+
+                        auth_user.clear();
+                        auth_user.push_str(user);
                         auth_request.public_key.extend(pubkey_key);
                         auth_request.public_key_algorithm.extend(pubkey_algo);
                         server_send_pk_ok(&mut self.write, &mut auth_request);
@@ -508,7 +517,7 @@ impl Encrypted {
         }
     }
 
-    fn reject_auth_request(&mut self, auth_request: AuthRequest) {
+    fn reject_auth_request(&mut self, mut auth_request: AuthRequest) {
         debug!("rejecting {:?}", auth_request);
         push_packet!(self.write, {
             self.write.push(msg::USERAUTH_FAILURE);
@@ -519,6 +528,7 @@ impl Encrypted {
                 0
             });
         });
+        auth_request.sent_pk_ok = false;
         debug!("packet pushed");
         self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
     }

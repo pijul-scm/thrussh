@@ -52,6 +52,7 @@ pub struct Encrypted {
 #[derive(Debug)]
 pub struct CommonSession<Config> {
     pub encrypted: Option<Encrypted>,
+    pub auth_user: String,
     pub auth_method: Option<auth::Method<key::Algorithm>>,
     pub write_buffer: SSHBuffer,
     pub kex: Option<Kex>,

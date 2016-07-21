@@ -53,11 +53,9 @@ impl Iterator for MethodSet {
 pub enum Method<K> {
     // None,
     Password {
-        user: String,
         password: String,
     },
     PublicKey {
-        user: String,
         key: K,
     }, // Hostbased,
 }

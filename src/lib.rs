@@ -82,7 +82,8 @@
 //!     channel_confirmed: None
 //! };
 //! let mut client_connection = client::Connection::new(client_config);
-//! client_connection.session.set_auth_public_key("pe".to_string(), client_keypair);
+//! client_connection.set_auth_user("pe");
+//! client_connection.set_auth_public_key(client_keypair);
 //!
 //! // Now, run the protocol (it is obviously more useful when the
 //! // instances of Read and Write are networks sockets instead of Vec).
