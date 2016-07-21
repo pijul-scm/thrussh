@@ -34,6 +34,8 @@ use encoding::Reader;
 use session::*;
 use auth;
 
+mod encrypted;
+
 #[derive(Debug)]
 pub struct Config {
     /// The server ID string sent at the beginning of the protocol.
@@ -79,7 +81,143 @@ impl Default for Config {
     }
 }
 
-mod encrypted;
+#[derive(Debug)]
+pub struct Connection {
+    read_buffer: SSHBuffer,
+    session: Session
+}
+
+
+#[derive(Debug)]
+pub struct Session(CommonSession<Config>);
+
+
+pub trait Handler {
+
+    #[allow(unused_variables)]
+    fn auth_none(&mut self, user: &str) -> bool {
+        false
+    }
+
+    #[allow(unused_variables)]
+    fn auth_password(&mut self, user: &str, password:&str) -> bool {
+        false
+    }
+
+    #[allow(unused_variables)]
+    fn auth_publickey(&mut self, user: &str, public_key:&key::PublicKey) -> bool {
+        false
+    }
+
+
+    /// Called when the client closes a channel.
+    #[allow(unused_variables)]
+    fn channel_close(&mut self, channel:u32, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called when the client sends EOF to a channel.
+    #[allow(unused_variables)]
+    fn channel_eof(&mut self, channel:u32, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called when a new session channel is created.
+    #[allow(unused_variables)]
+    fn channel_open_session(&mut self, channel: u32, session: &mut Session) {}
+
+    /// Called when a new X11 channel is created.
+    #[allow(unused_variables)]
+    fn channel_open_x11(&mut self, channel: u32, originator_address:&str, originator_port:u32, session: &mut Session) {}
+
+    /// Called when a new channel is created.
+    #[allow(unused_variables)]
+    fn channel_open_direct_tcpip(&mut self, channel: u32, host_to_connect:&str, port_to_connect:u32, originator_address:&str, originator_port:u32, session: &mut Session) {}
+
+    /// Called when a data packet is received. A response can be
+    /// written to the `response` argument.
+    #[allow(unused_variables)]
+    fn data(&mut self, channel:u32, data: &[u8], session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called when an extended data packet is received. Code 1 means
+    /// that this packet comes from stderr, other codes are not
+    /// defined (see [RFC4254](https://tools.ietf.org/html/rfc4254#section-5.2)).
+    #[allow(unused_variables)]
+    fn extended_data(&mut self, channel:u32, code:u32, data: &[u8], session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called when the network window is adjusted, meaning that we can send more bytes.
+    #[allow(unused_variables)]
+    fn window_adjusted(&mut self, channel:u32, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// The client requests a pseudo-terminal with the given specifications.
+    #[allow(unused_variables)]
+    fn pty_request(&mut self, channel:u32, term:&str, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, modes:&[(Pty, u32)], session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// The client requests an X11 connection.
+    #[allow(unused_variables)]
+    fn x11_request(&mut self, channel:u32, single_connection:bool, x11_auth_protocol:&str, x11_auth_cookie:&str, x11_screen_number:u32, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// The client wants to set the given environment variable. Check
+    /// these carefully, as it is dangerous to allow any variable
+    /// environment to be set.
+    #[allow(unused_variables)]
+    fn env_request(&mut self, channel:u32, variable_name:&str, variable_value:&str, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// The client requests a shell.
+    #[allow(unused_variables)]
+    fn shell_request(&mut self, channel:u32, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// The client sends a command to execute, to be passed to a shell. Make sure to check the command before doing so.
+    #[allow(unused_variables)]
+    fn exec_request(&mut self, channel:u32, data: &[u8], session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// The client asks to start the subsystem with the given name (such as sftp).
+    #[allow(unused_variables)]
+    fn subsystem_request(&mut self, channel:u32, name: &str, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// The client's pseudo-terminal window size has changed.
+    #[allow(unused_variables)]
+    fn window_change_request(&mut self, channel:u32, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// The client is sending a signal (usually to pass to the currently running process).
+    #[allow(unused_variables)]
+    fn signal(&mut self, channel: u32, signal_name: Sig, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Used for reverse-forwarding ports, see [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
+    #[allow(unused_variables)]
+    fn tcpip_forward(&mut self, address:&str, port: u32, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Used to stop the reverse-forwarding of a port, see [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
+    #[allow(unused_variables)]
+    fn cancel_tcpip_forward(&mut self, address:&str, port: u32, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+}
 
 
 impl KexInit {
@@ -168,20 +306,6 @@ impl KexDh {
     }
 }
 
-// When we're rekeying, any packet can be answered to, but the
-// answers can be sent only after the end of the rekeying. Since we
-// don't know the future keys yet, these "pending packets" are left
-// in the session's `write` buffer, and flushed later. The write
-// buffer is also useful to prepare complete packets before we can
-// pass them to the ciphers.
-#[derive(Debug)]
-pub struct Connection {
-    read_buffer: SSHBuffer,
-    session: Session
-}
-
-#[derive(Debug)]
-pub struct Session(CommonSession<Config>);
 
 
 impl Connection {
@@ -211,7 +335,7 @@ impl Connection {
 
     /// Process all packets available in the buffer, and returns
     /// whether at least one complete packet was read. `buffer` and `buffer2` are work spaces mostly used to compute keys. They are cleared before using, hence nothing is expected from them.
-    pub fn read<R: BufRead, S: super::Server> (&mut self,
+    pub fn read<R: BufRead, S: Handler> (&mut self,
                                                server: &mut S,
                                                stream: &mut R,
                                                buffer: &mut CryptoBuf,
@@ -233,8 +357,8 @@ impl Connection {
         }
     }
 
-    // returns whether a complete packet has been read.
-    fn read_one_packet<R: BufRead, S: Server>(&mut self,
+        // returns whether a complete packet has been read.
+    fn read_one_packet<R: BufRead, S: Handler>(&mut self,
                                               server: &mut S,
                                               stream: &mut R,
                                               buffer: &mut CryptoBuf,

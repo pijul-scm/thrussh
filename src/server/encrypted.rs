@@ -29,7 +29,7 @@ use auth;
 impl Session {
 
     #[doc(hidden)]
-    pub fn server_read_encrypted<S: Server>(&mut self,
+    pub fn server_read_encrypted<S: Handler>(&mut self,
                                             server: &mut S,
                                             buf: &[u8],
                                             buffer: &mut CryptoBuf)
@@ -107,7 +107,7 @@ impl Session {
         }    
     }
 
-    fn server_read_authenticated<S: Server>(&mut self,
+    fn server_read_authenticated<S: Handler>(&mut self,
                                             server: &mut S,
                                             buf: &[u8])
                                             -> Result<(), Error> {
@@ -316,7 +316,7 @@ impl Session {
         }
     }
 
-    fn server_handle_channel_open<S: Server>(&mut self,
+    fn server_handle_channel_open<S: Handler>(&mut self,
                                              server: &mut S,
                                              buf: &[u8])
                                              -> Result<(), Error> {
@@ -390,7 +390,7 @@ impl Session {
 
 impl Encrypted {
 
-    pub fn server_read_auth_request<S: Server>(&mut self,
+    pub fn server_read_auth_request<S: Handler>(&mut self,
                                                config: &Config,
                                                server: &mut S,
                                                buf: &[u8],

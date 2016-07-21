@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::io::{Write, BufRead};
 use std;
 
-use {Disconnect, Error, Limits, Client, Sig};
+use {Disconnect, Error, Limits, Sig, ChannelOpenFailure};
 use key;
 use msg;
 use auth;
@@ -79,6 +79,92 @@ pub struct Connection {
 #[derive(Debug)]
 pub struct Session(CommonSession<Config>);
 
+pub trait Handler {
+
+    /// Called when the server sends us an authentication banner. This is usually meant to be shown to the user, see [RFC4252](https://tools.ietf.org/html/rfc4252#section-5.4) for more details.
+    #[allow(unused_variables)]
+    fn auth_banner(&mut self, banner: &str) {}
+
+    /// Called to check the server's public key. This is a very important
+    /// step to help prevent man-in-the-middle attacks. The default
+    /// implementation rejects all keys.
+    #[allow(unused_variables)]
+    fn check_server_key(&mut self, server_public_key: &key::PublicKey) -> Result<bool, Error> {
+        Ok(false)
+    }
+
+    /// Called when the server confirmed our request to open a channel. A channel can only be written to after receiving this message (this library panics otherwise).
+    #[allow(unused_variables)]
+    fn channel_open_confirmation(&mut self, channel:u32, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called when the server closes a channel.
+    #[allow(unused_variables)]
+    fn channel_close(&mut self, channel:u32, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called when the server sends EOF to a channel.
+    #[allow(unused_variables)]
+    fn channel_eof(&mut self, channel:u32, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called when the server rejected our request to open a channel.
+    #[allow(unused_variables)]
+    fn channel_open_failure(&mut self, channel:u32, reason: ChannelOpenFailure, description:&str, language:&str, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called when a new channel is created.
+    #[allow(unused_variables)]
+    fn channel_open_forwarded_tcpip(&mut self, channel: u32, connected_address:&str, connected_port:u32, originator_address:&str, originator_port:u32, session: &mut Session) {}
+
+    /// Called when the server sends us data. The `extended_code` parameter is a stream identifier, `None` is usually the standard output, and `Some(1)` is the standard error. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-5.2).
+    #[allow(unused_variables)]
+    fn data(&mut self, channel:u32, extended_code: Option<u32>, data: &[u8], session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// The server informs this client of whether the client may perform control-S/control-Q flow control. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-6.8).
+    #[allow(unused_variables)]
+    fn xon_xoff(&mut self, channel: u32, client_can_do: bool, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// The remote process has exited, with the given exit status.
+    #[allow(unused_variables)]
+    fn exit_status(&mut self, channel: u32, exit_status: u32, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// The remote process exited upon receiving a signal.
+    #[allow(unused_variables)]
+    fn exit_signal(&mut self, channel: u32, signal_name: Sig, core_dumped: bool, error_message:&str, lang_tag:&str, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Called when the network window is adjusted, meaning that we
+    /// can send more bytes. This is useful if this client wants to
+    /// send huge amounts of data, for instance if we have called
+    /// `Session::data` before, and it returned less than the
+    /// full amount of data.
+    #[allow(unused_variables)]
+    fn window_adjusted(&mut self, channel:u32, session: &mut Session) -> Result<(), Error> {
+        Ok(())
+    }
+
+}
+
+
+
+
+
+
+
+
+
 impl KexInit {
     pub fn client_parse<C:CipherT>(mut self, config:&Config, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<KexDhDone, Error> {
 
@@ -127,7 +213,7 @@ impl KexInit {
 
 
 impl KexDhDone {
-    pub fn client_parse<C:CipherT, Cl:Client>(mut self, buffer:&mut CryptoBuf, buffer2: &mut CryptoBuf, client:&mut Cl, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<Kex, Error> {
+    pub fn client_parse<C:CipherT, H:Handler>(mut self, buffer:&mut CryptoBuf, buffer2: &mut CryptoBuf, client:&mut H, cipher:&mut C, buf:&[u8], write_buffer:&mut SSHBuffer) -> Result<Kex, Error> {
 
         if self.names.ignore_guessed {
             self.names.ignore_guessed = false;
@@ -176,12 +262,12 @@ impl Connection {
     /// Process all packets available in the buffer, and returns
     /// whether at least one complete packet was read.
     /// `buffer` and `buffer2` are work spaces mostly used to compute keys. They are cleared before using, hence nothing is expected from them.
-    pub fn read<R: BufRead, C: super::Client> (&mut self,
-                                               client: &mut C,
-                                               stream: &mut R,
-                                               buffer: &mut CryptoBuf,
-                                               buffer2: &mut CryptoBuf)
-                                               -> Result<bool, Error> {
+    pub fn read<R: BufRead, C: Handler> (&mut self,
+                                         client: &mut C,
+                                         stream: &mut R,
+                                         buffer: &mut CryptoBuf,
+                                         buffer2: &mut CryptoBuf)
+                                         -> Result<bool, Error> {
         if self.session.0.disconnected {
             return Err(Error::Disconnect)
         }
@@ -201,12 +287,12 @@ impl Connection {
         }
     }
 
-    fn read_one_packet<R: BufRead, C: super::Client> (&mut self,
-                                                      client: &mut C,
-                                                      stream: &mut R,
-                                                      buffer: &mut CryptoBuf,
-                                                      buffer2: &mut CryptoBuf)
-                                                      -> Result<bool, Error> {
+    fn read_one_packet<R: BufRead, C: Handler> (&mut self,
+                                                client: &mut C,
+                                                stream: &mut R,
+                                                buffer: &mut CryptoBuf,
+                                                buffer2: &mut CryptoBuf)
+                                                -> Result<bool, Error> {
 
         if self.session.0.encrypted.is_none() && self.session.0.kex.is_none() {
 

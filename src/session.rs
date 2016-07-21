@@ -22,7 +22,7 @@ use cipher;
 use msg;
 use key;
 use sodium;
-use {parse_public_key,Error,Channel,Client, Disconnect};
+use {parse_public_key,Error,Channel, Disconnect};
 use cryptobuf::CryptoBuf;
 use std::collections::HashMap;
 use encoding::Reader;
@@ -32,6 +32,7 @@ use byteorder::{BigEndian, ByteOrder};
 use cipher::CipherT;
 use time;
 use std::sync::Arc;
+use client;
 
 #[derive(Debug)]
 pub struct Encrypted {
@@ -345,11 +346,11 @@ impl KexDhDone {
         })
     }
 
-    pub fn client_compute_exchange_hash<C: Client>(&mut self,
-                                                   client: &mut C,
-                                                   payload: &[u8],
-                                                   buffer: &mut CryptoBuf)
-                                                   -> Result<kex::Digest, Error> {
+    pub fn client_compute_exchange_hash<C: client::Handler>(&mut self,
+                                                            client: &mut C,
+                                                            payload: &[u8],
+                                                            buffer: &mut CryptoBuf)
+                                                            -> Result<kex::Digest, Error> {
         assert!(payload[0] == msg::KEX_ECDH_REPLY);
         let mut reader = payload.reader(1);
 

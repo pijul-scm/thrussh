@@ -13,7 +13,7 @@
 // limitations under the License.
 //
 use cryptobuf::CryptoBuf;
-use {Sig, Error, Client, ChannelOpenFailure};
+use {Sig, Error, ChannelOpenFailure};
 use std;
 use auth;
 use session::*;
@@ -29,11 +29,11 @@ const SSH_CONNECTION:&'static [u8] = b"ssh-connection";
 
 impl super::Session {
     #[doc(hidden)]
-    pub fn client_read_encrypted<C: Client>(&mut self,
-                                            client: &mut C,
-                                            buf: &[u8],
-                                            buffer: &mut CryptoBuf)
-                                            -> Result<(), Error> {
+    pub fn client_read_encrypted<C: super::Handler>(&mut self,
+                                                    client: &mut C,
+                                                    buf: &[u8],
+                                                    buffer: &mut CryptoBuf)
+                                                    -> Result<(), Error> {
 
         // Either this packet is a KEXINIT, in which case we start a key re-exchange.
         if buf[0] == msg::KEXINIT {

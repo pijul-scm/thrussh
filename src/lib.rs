@@ -20,9 +20,9 @@
 //!
 //! Here is an example, using `Vec`s as instances of `Read` and `Write`, instead of network sockets.
 //!
-//!```
+//! ```
 //! use std::sync::Arc;
-//! use thrussh::{key, server, client, Server, Client, CryptoBuf, Error};
+//! use thrussh::{key, server, client, CryptoBuf, Error};
 //! let client_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
 //! let server_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
 //!
@@ -31,7 +31,7 @@
 //! struct S {
 //!     client_pubkey: key::PublicKey
 //! }
-//! impl Server for S {
+//! impl server::Handler for S {
 //!     fn auth_publickey(&mut self, user:&str, publickey:&key::PublicKey) -> bool {
 //!         user == "pe" && publickey == &self.client_pubkey
 //!     }
@@ -43,7 +43,7 @@
 //!     server_pk: key::PublicKey,
 //!     channel_confirmed: Option<u32>
 //! }
-//! impl Client for C {
+//! impl client::Handler for C {
 //!     fn check_server_key(&mut self, server_pk:&key::PublicKey) -> Result<bool, Error> {
 //!
 //!         // This is an important part of the protocol: check the
@@ -58,9 +58,9 @@
 //!     }
 //! }
 //!
-//! 
+//!
 //! // Initialize the server
-//! 
+//!
 //! let server_config = {
 //!     let mut config:server::Config = Default::default();
 //!     config.keys.push(server_keypair.clone());
@@ -74,7 +74,7 @@
 //!
 //!
 //! // Initialize the client
-//! 
+//!
 //! let client_config = Arc::new(Default::default());
 //!
 //! let mut client = C{
@@ -126,7 +126,7 @@
 //!     run_protocol(&mut client_connection, &mut client);
 //! }
 //!
-//!```
+//! ```
 
 
 extern crate libc;
@@ -145,7 +145,7 @@ extern crate time;
 
 use std::sync::{Once, ONCE_INIT};
 use std::io::{Read, BufRead, BufReader};
-use byteorder::{ByteOrder};
+use byteorder::ByteOrder;
 use rustc_serialize::base64::FromBase64;
 use std::path::Path;
 use std::fs::File;
@@ -196,7 +196,7 @@ pub enum Error {
     Disconnect,
     NoHomeDir,
     KeyChanged,
-    HUP
+    HUP,
 }
 
 use std::error::Error as StdError;
@@ -226,7 +226,7 @@ impl std::error::Error for Error {
             Error::Disconnect => "Disconnected",
             Error::NoHomeDir => "Home directory not found",
             Error::KeyChanged => "Server key changed",
-            Error::HUP => "Connection closed by the remote side"
+            Error::HUP => "Connection closed by the remote side",
         }
     }
     fn cause(&self) -> Option<&std::error::Error> {
@@ -234,7 +234,7 @@ impl std::error::Error for Error {
             Error::Base64(ref e) => Some(e),
             Error::Utf8(ref e) => Some(e),
             Error::IO(ref e) => Some(e),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -320,7 +320,7 @@ pub enum Sig<'a> {
     SEGV,
     TERM,
     USR1,
-    Custom(&'a str)
+    Custom(&'a str),
 }
 
 impl<'a> Sig<'a> {
@@ -338,7 +338,7 @@ impl<'a> Sig<'a> {
             Sig::SEGV => "SEGV",
             Sig::TERM => "TERM",
             Sig::USR1 => "USR1",
-            Sig::Custom(c) => c
+            Sig::Custom(c) => c,
         }
     }
     fn from_name(name: &'a [u8]) -> Result<Sig, Error> {
@@ -355,216 +355,11 @@ impl<'a> Sig<'a> {
             b"SEGV" => Ok(Sig::SEGV),
             b"TERM" => Ok(Sig::TERM),
             b"USR1" => Ok(Sig::USR1),
-            x => Ok(Sig::Custom(try!(std::str::from_utf8(x))))
+            x => Ok(Sig::Custom(try!(std::str::from_utf8(x)))),
         }
     }
 }
 
-pub trait Server {
-
-    #[allow(unused_variables)]
-    fn auth_none(&mut self, user: &str) -> bool {
-        false
-    }
-
-    #[allow(unused_variables)]
-    fn auth_password(&mut self, user: &str, password:&str) -> bool {
-        false
-    }
-
-    #[allow(unused_variables)]
-    fn auth_publickey(&mut self, user: &str, public_key:&key::PublicKey) -> bool {
-        false
-    }
-
-
-    /// Called when the client closes a channel.
-    #[allow(unused_variables)]
-    fn channel_close(&mut self, channel:u32, session: &mut server::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Called when the client sends EOF to a channel.
-    #[allow(unused_variables)]
-    fn channel_eof(&mut self, channel:u32, session: &mut server::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Called when a new session channel is created.
-    #[allow(unused_variables)]
-    fn channel_open_session(&mut self, channel: u32, session: &mut server::Session) {}
-
-    /// Called when a new X11 channel is created.
-    #[allow(unused_variables)]
-    fn channel_open_x11(&mut self, channel: u32, originator_address:&str, originator_port:u32, session: &mut server::Session) {}
-
-    /// Called when a new channel is created.
-    #[allow(unused_variables)]
-    fn channel_open_direct_tcpip(&mut self, channel: u32, host_to_connect:&str, port_to_connect:u32, originator_address:&str, originator_port:u32, session: &mut server::Session) {}
-
-    /// Called when a data packet is received. A response can be
-    /// written to the `response` argument.
-    #[allow(unused_variables)]
-    fn data(&mut self, channel:u32, data: &[u8], session: &mut server::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Called when an extended data packet is received. Code 1 means
-    /// that this packet comes from stderr, other codes are not
-    /// defined (see [RFC4254](https://tools.ietf.org/html/rfc4254#section-5.2)).
-    #[allow(unused_variables)]
-    fn extended_data(&mut self, channel:u32, code:u32, data: &[u8], session: &mut server::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Called when the network window is adjusted, meaning that we can send more bytes.
-    #[allow(unused_variables)]
-    fn window_adjusted(&mut self, channel:u32, session: &mut server::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// The client requests a pseudo-terminal with the given specifications.
-    #[allow(unused_variables)]
-    fn pty_request(&mut self, channel:u32, term:&str, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, modes:&[(Pty, u32)], session: &mut server::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// The client requests an X11 connection.
-    #[allow(unused_variables)]
-    fn x11_request(&mut self, channel:u32, single_connection:bool, x11_auth_protocol:&str, x11_auth_cookie:&str, x11_screen_number:u32, session: &mut server::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// The client wants to set the given environment variable. Check
-    /// these carefully, as it is dangerous to allow any variable
-    /// environment to be set.
-    #[allow(unused_variables)]
-    fn env_request(&mut self, channel:u32, variable_name:&str, variable_value:&str, session: &mut server::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// The client requests a shell.
-    #[allow(unused_variables)]
-    fn shell_request(&mut self, channel:u32, session: &mut server::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// The client sends a command to execute, to be passed to a shell. Make sure to check the command before doing so.
-    #[allow(unused_variables)]
-    fn exec_request(&mut self, channel:u32, data: &[u8], session: &mut server::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// The client asks to start the subsystem with the given name (such as sftp).
-    #[allow(unused_variables)]
-    fn subsystem_request(&mut self, channel:u32, name: &str, session: &mut server::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// The client's pseudo-terminal window size has changed.
-    #[allow(unused_variables)]
-    fn window_change_request(&mut self, channel:u32, col_width:u32, row_height:u32, pix_width:u32, pix_height:u32, session: &mut server::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// The client is sending a signal (usually to pass to the currently running process).
-    #[allow(unused_variables)]
-    fn signal(&mut self, channel: u32, signal_name: Sig, session: &mut server::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Used for reverse-forwarding ports, see [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
-    #[allow(unused_variables)]
-    fn tcpip_forward(&mut self, address:&str, port: u32, session: &mut server::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Used to stop the reverse-forwarding of a port, see [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
-    #[allow(unused_variables)]
-    fn cancel_tcpip_forward(&mut self, address:&str, port: u32, session: &mut server::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-}
-
-
-pub trait Client {
-
-    /// Called when the server sends us an authentication banner. This is usually meant to be shown to the user, see [RFC4252](https://tools.ietf.org/html/rfc4252#section-5.4) for more details.
-    #[allow(unused_variables)]
-    fn auth_banner(&mut self, banner: &str) {}
-
-    /// Called to check the server's public key. This is a very important
-    /// step to help prevent man-in-the-middle attacks. The default
-    /// implementation rejects all keys.
-    #[allow(unused_variables)]
-    fn check_server_key(&mut self, server_public_key: &key::PublicKey) -> Result<bool, Error> {
-        Ok(false)
-    }
-
-    /// Called when the server confirmed our request to open a channel. A channel can only be written to after receiving this message (this library panics otherwise).
-    #[allow(unused_variables)]
-    fn channel_open_confirmation(&mut self, channel:u32, session: &mut client::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Called when the server closes a channel.
-    #[allow(unused_variables)]
-    fn channel_close(&mut self, channel:u32, session: &mut client::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Called when the server sends EOF to a channel.
-    #[allow(unused_variables)]
-    fn channel_eof(&mut self, channel:u32, session: &mut client::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Called when the server rejected our request to open a channel.
-    #[allow(unused_variables)]
-    fn channel_open_failure(&mut self, channel:u32, reason: ChannelOpenFailure, description:&str, language:&str, session: &mut client::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Called when a new channel is created.
-    #[allow(unused_variables)]
-    fn channel_open_forwarded_tcpip(&mut self, channel: u32, connected_address:&str, connected_port:u32, originator_address:&str, originator_port:u32, session: &mut client::Session) {}
-
-    /// Called when the server sends us data. The `extended_code` parameter is a stream identifier, `None` is usually the standard output, and `Some(1)` is the standard error. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-5.2).
-    #[allow(unused_variables)]
-    fn data(&mut self, channel:u32, extended_code: Option<u32>, data: &[u8], session: &mut client::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// The server informs this client of whether the client may perform control-S/control-Q flow control. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-6.8).
-    #[allow(unused_variables)]
-    fn xon_xoff(&mut self, channel: u32, client_can_do: bool, session: &mut client::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// The remote process has exited, with the given exit status.
-    #[allow(unused_variables)]
-    fn exit_status(&mut self, channel: u32, exit_status: u32, session: &mut client::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// The remote process exited upon receiving a signal.
-    #[allow(unused_variables)]
-    fn exit_signal(&mut self, channel: u32, signal_name: Sig, core_dumped: bool, error_message:&str, lang_tag:&str, session: &mut client::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Called when the network window is adjusted, meaning that we
-    /// can send more bytes. This is useful if this client wants to
-    /// send huge amounts of data, for instance if we have called
-    /// `client::Session::data` before, and it returned less than the
-    /// full amount of data.
-    #[allow(unused_variables)]
-    fn window_adjusted(&mut self, channel:u32, session: &mut client::Session) -> Result<(), Error> {
-        Ok(())
-    }
-
-}
 
 /// Reason for not being able to open a channel.
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -576,13 +371,13 @@ pub enum ChannelOpenFailure {
 }
 
 impl ChannelOpenFailure {
-    fn from_u32(x:u32) -> Option<ChannelOpenFailure> {
+    fn from_u32(x: u32) -> Option<ChannelOpenFailure> {
         match x {
             1 => Some(ChannelOpenFailure::AdministrativelyProhibited),
             2 => Some(ChannelOpenFailure::ConnectFailed),
             3 => Some(ChannelOpenFailure::UnknownChannelType),
             4 => Some(ChannelOpenFailure::ResourceShortage),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -599,7 +394,7 @@ pub struct Channel {
     sender_maximum_packet_size: u32,
     /// Has the other side confirmed the channel?
     pub confirmed: bool,
-    wants_reply: bool
+    wants_reply: bool,
 }
 
 const KEYTYPE_ED25519: &'static [u8] = b"ssh-ed25519";
@@ -614,9 +409,7 @@ pub fn load_public_key<P: AsRef<Path>>(p: P) -> Result<key::PublicKey, Error> {
     let mut split = pubkey.split_whitespace();
 
     match (split.next(), split.next()) {
-        (Some(_), Some(key)) => {
-            parse_public_key_base64(key)
-        }
+        (Some(_), Some(key)) => parse_public_key_base64(key),
         _ => Err(Error::CouldNotReadKey),
     }
 }
@@ -628,7 +421,7 @@ pub fn load_public_key<P: AsRef<Path>>(p: P) -> Result<key::PublicKey, Error> {
 /// ```
 /// thrussh::parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ").is_ok();
 /// ```
-pub fn parse_public_key_base64(key:&str) -> Result<key::PublicKey, Error> {
+pub fn parse_public_key_base64(key: &str) -> Result<key::PublicKey, Error> {
     let base = try!(key.from_base64());
     parse_public_key(&base)
 }
@@ -673,8 +466,8 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
         let kdfoptions = try!(position.read_string());
         info!("ciphername: {:?}", std::str::from_utf8(ciphername));
         debug!("kdf: {:?} {:?}",
-                 std::str::from_utf8(kdfname),
-                 std::str::from_utf8(kdfoptions));
+               std::str::from_utf8(kdfname),
+               std::str::from_utf8(kdfoptions));
 
         let nkeys = try!(position.read_u32());
 
@@ -709,14 +502,18 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
                     debug!("comment = {:?}", comment);
                     let public = sodium::ed25519::PublicKey::copy_from_slice(pubkey);
                     let secret = sodium::ed25519::SecretKey::copy_from_slice(seckey);
-                    return Ok(key::Algorithm::Ed25519 { public: public, secret:secret });
+                    return Ok(key::Algorithm::Ed25519 {
+                        public: public,
+                        secret: secret,
+                    });
                 } else {
                     info!("unsupported key type {:?}", std::str::from_utf8(key_type));
                 }
             }
             Err(Error::CouldNotReadKey)
         } else {
-            info!("unsupported secret key cipher: {:?}", std::str::from_utf8(kdfname));
+            info!("unsupported secret key cipher: {:?}",
+                  std::str::from_utf8(kdfname));
             Err(Error::CouldNotReadKey)
         }
     } else {
@@ -725,7 +522,7 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
 }
 
 #[cfg(target_os = "windows")]
-pub fn check_known_hosts(host:&str, port:u16, pubkey: &key::PublicKey) -> Result<bool,Error> {
+pub fn check_known_hosts(host: &str, port: u16, pubkey: &key::PublicKey) -> Result<bool, Error> {
     if let Some(mut known_host_file) = std::env::home_dir() {
         known_host_file.push("ssh");
         known_host_file.push("known_hosts");
@@ -736,7 +533,7 @@ pub fn check_known_hosts(host:&str, port:u16, pubkey: &key::PublicKey) -> Result
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn check_known_hosts(host:&str, port:u16, pubkey: &key::PublicKey) -> Result<bool,Error> {
+pub fn check_known_hosts(host: &str, port: u16, pubkey: &key::PublicKey) -> Result<bool, Error> {
     if let Some(mut known_host_file) = std::env::home_dir() {
         known_host_file.push(".ssh");
         known_host_file.push("known_hosts");
@@ -748,7 +545,11 @@ pub fn check_known_hosts(host:&str, port:u16, pubkey: &key::PublicKey) -> Result
 }
 
 
-pub fn check_known_hosts_path<P:AsRef<Path>>(host:&str, port:u16, pubkey:&key::PublicKey, path:P) -> Result<bool, Error> {
+pub fn check_known_hosts_path<P: AsRef<Path>>(host: &str,
+                                              port: u16,
+                                              pubkey: &key::PublicKey,
+                                              path: P)
+                                              -> Result<bool, Error> {
     let mut f = BufReader::new(try!(File::open(path)));
     let mut buffer = String::new();
 
@@ -761,7 +562,7 @@ pub fn check_known_hosts_path<P:AsRef<Path>>(host:&str, port:u16, pubkey:&key::P
         {
             if buffer.as_bytes()[0] == b'#' {
                 buffer.clear();
-                continue
+                continue;
             }
             let mut s = buffer.split(' ');
             let hosts = s.next();
@@ -769,18 +570,16 @@ pub fn check_known_hosts_path<P:AsRef<Path>>(host:&str, port:u16, pubkey:&key::P
             let key = s.next();
             match (hosts, key) {
                 (Some(h), Some(k)) => {
-                    let host_matches = h.split(',').any(|x| {
-                        x == host_port
-                    });
+                    let host_matches = h.split(',').any(|x| x == host_port);
                     if host_matches {
                         if &try!(parse_public_key_base64(k)) == pubkey {
-                            return Ok(true)
+                            return Ok(true);
                         } else {
-                            return Err(Error::KeyChanged)
+                            return Err(Error::KeyChanged);
                         }
                     }
-                    
-                },
+
+                }
                 _ => {}
             }
         }
@@ -808,19 +607,25 @@ mod test {
         // Valid key, non-standard port.
         let host = "localhost";
         let port = 13265;
-        let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ").unwrap();
-        assert!(check_known_hosts_path(host,port,&hostkey, &path).unwrap());
+        let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1e\
+                                               bz9/cu7/QEXn9OIeZJ")
+                          .unwrap();
+        assert!(check_known_hosts_path(host, port, &hostkey, &path).unwrap());
 
         // Valid key, several hosts, port 22
         let host = "pijul.org";
         let port = 22;
-        let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X").unwrap();
-        assert!(check_known_hosts_path(host,port,&hostkey, &path).unwrap());
+        let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQ\
+                                               lj2P+jpNSOEWD9OJ3X")
+                          .unwrap();
+        assert!(check_known_hosts_path(host, port, &hostkey, &path).unwrap());
 
         // Now with the key in a comment above, check that it's not recognized
         let host = "pijul.org";
         let port = 22;
-        let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G2sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X").unwrap();
-        assert!(check_known_hosts_path(host,port,&hostkey, &path).is_err());
+        let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G2sz07DnfFlrouTcysQ\
+                                               lj2P+jpNSOEWD9OJ3X")
+                          .unwrap();
+        assert!(check_known_hosts_path(host, port, &hostkey, &path).is_err());
     }
 }
