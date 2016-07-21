@@ -85,7 +85,7 @@ impl Session {
                 },
                 Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                     if buf[0] == msg::USERAUTH_REQUEST {
-                        try!(enc.server_read_auth_request(server, buf, buffer, auth_request));
+                        try!(enc.server_read_auth_request(self.0.config.as_ref(), server, buf, buffer, auth_request));
                     } else {
                         // Wrong request
                         enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
@@ -391,6 +391,7 @@ impl Session {
 impl Encrypted {
 
     pub fn server_read_auth_request<S: Server>(&mut self,
+                                               config: &Config,
                                                server: &mut S,
                                                buf: &[u8],
                                                buffer: &mut CryptoBuf,
@@ -414,10 +415,17 @@ impl Encrypted {
                 let password = try!(r.read_string());
                 let password = try!(std::str::from_utf8(password));
 
+                let t0 = std::time::Instant::now();
+                
                 if server.auth_password(user, password) {
                     server_auth_request_success(&mut self.write);
                     self.state = Some(EncryptedState::Authenticated);
                 } else {
+
+                    let t1 = std::time::Instant::now();
+                    let dur = t1.duration_since(t0);
+                    std::thread::sleep(config.auth_rejection_time - dur);
+
                     auth_request.methods = auth_request.methods - auth::PASSWORD;
                     auth_request.partial_success = false;
                     self.reject_auth_request(auth_request);

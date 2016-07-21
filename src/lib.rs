@@ -195,7 +195,8 @@ pub enum Error {
     IO(std::io::Error),
     Disconnect,
     NoHomeDir,
-    KeyChanged
+    KeyChanged,
+    HUP
 }
 
 use std::error::Error as StdError;
@@ -224,7 +225,8 @@ impl std::error::Error for Error {
             Error::UnknownSignal => "Unknown signal",
             Error::Disconnect => "Disconnected",
             Error::NoHomeDir => "Home directory not found",
-            Error::KeyChanged => "Server key changed"
+            Error::KeyChanged => "Server key changed",
+            Error::HUP => "Connection closed by the remote side"
         }
     }
     fn cause(&self) -> Option<&std::error::Error> {

@@ -42,6 +42,8 @@ pub struct Config {
     pub methods: auth::MethodSet,
     /// The authentication banner, usually a warning message shown to the client.
     pub auth_banner: Option<&'static str>,
+    /// Authentication rejections must happen in constant time for security reasons.
+    pub auth_rejection_time: std::time::Duration,
     /// The server's keys. The first key pair in the client's preference order will be chosen.
     pub keys: Vec<key::Algorithm>,
     /// The bytes and time limits before key re-exchange.
@@ -62,6 +64,7 @@ impl Default for Config {
                                env!("CARGO_PKG_VERSION")),
             methods: auth::MethodSet::all(),
             auth_banner: None,
+            auth_rejection_time: std::time::Duration::from_secs(1),
             keys: Vec::new(),
             window_size: 100,
             maximum_packet_size: 100,
