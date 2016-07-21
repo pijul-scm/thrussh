@@ -63,7 +63,7 @@ pub enum Pty {
 }
 
 impl Pty {
-    pub fn from_u8(x:u8) -> Option<Pty> {
+    pub fn from_u8(x: u8) -> Option<Pty> {
         match x {
             0 => None,
             1 => Some(Pty::VINTR),
@@ -124,7 +124,7 @@ impl Pty {
 
             128 => Some(Pty::TTY_OP_ISPEED),
             129 => Some(Pty::TTY_OP_OSPEED),
-            _ => None
+            _ => None,
         }
     }
 }

@@ -62,27 +62,29 @@ pub trait Named {
 }
 
 impl Named for () {
-    fn name(&self) -> &'static str { "" }
+    fn name(&self) -> &'static str {
+        ""
+    }
 }
 
 pub trait Select {
-    fn select<S:AsRef<str> + Copy>(a: &[S], b: &[u8]) -> Option<(bool, S)>;
+    fn select<S: AsRef<str> + Copy>(a: &[S], b: &[u8]) -> Option<(bool, S)>;
 
     fn read_kex(buffer: &[u8], pref: &Preferred) -> Result<Names, Error> {
         let mut r = buffer.reader(17);
-        let (kex_both_first, kex_algorithm) =
-            if let Some(x) = Self::select(pref.kex, try!(r.read_string())) {
-                x
-            } else {
-                return Err(Error::KexInit);
-            };
+        let (kex_both_first, kex_algorithm) = if let Some(x) =
+                                                     Self::select(pref.kex, try!(r.read_string())) {
+            x
+        } else {
+            return Err(Error::KexInit);
+        };
 
-        let (key_both_first, key_algorithm) =
-            if let Some(x) = Self::select(pref.key, try!(r.read_string())) {
-                x
-            } else {
-                return Err(Error::KexInit);
-            };
+        let (key_both_first, key_algorithm) = if let Some(x) =
+                                                     Self::select(pref.key, try!(r.read_string())) {
+            x
+        } else {
+            return Err(Error::KexInit);
+        };
 
         let cipher = Self::select(pref.cipher, try!(r.read_string()));
 
@@ -115,9 +117,7 @@ pub struct Server;
 pub struct Client;
 
 impl Select for Server {
-    fn select<S:AsRef<str>+Copy>(server_list: &[S],
-                                 client_list: &[u8])
-                                 -> Option<(bool, S)> {
+    fn select<S: AsRef<str> + Copy>(server_list: &[S], client_list: &[u8]) -> Option<(bool, S)> {
         let mut both_first_choice = true;
         for c in client_list.split(|&x| x == b',') {
             for &s in server_list {
@@ -132,9 +132,7 @@ impl Select for Server {
 }
 
 impl Select for Client {
-    fn select<S:AsRef<str>+Copy>(client_list: &[S],
-                            server_list: &[u8])
-                            -> Option<(bool, S)> {
+    fn select<S: AsRef<str> + Copy>(client_list: &[S], server_list: &[u8]) -> Option<(bool, S)> {
         let mut both_first_choice = true;
         for &c in client_list {
             for s in server_list.split(|&x| x == b',') {

@@ -108,7 +108,7 @@ impl CryptoBuf {
         self.truncate(0);
     }
 
-    pub fn truncate(&mut self, len:usize) {
+    pub fn truncate(&mut self, len: usize) {
         unsafe {
             if self.capacity > 0 {
                 let mut i = len;
@@ -163,7 +163,7 @@ impl CryptoBuf {
         }
     }
 
-    pub fn reserve(&mut self, n:usize) -> &mut [u8] {
+    pub fn reserve(&mut self, n: usize) -> &mut [u8] {
         let size = self.size;
         self.resize(size + n);
         unsafe { std::slice::from_raw_parts_mut(self.p.offset(size as isize), n) }

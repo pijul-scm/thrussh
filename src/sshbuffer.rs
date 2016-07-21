@@ -15,7 +15,7 @@
 
 use std;
 use super::*;
-use std::io::{BufRead};
+use std::io::BufRead;
 
 #[derive(Debug)]
 pub struct SSHBuffer {
@@ -40,10 +40,8 @@ impl SSHBuffer {
             let buf = try!(stream.fill_buf());
             let mut i = 0;
             while i < buf.len() {
-                match (buf.get(i), buf.get(i+1)) {
-                    (Some(&u), Some(&v)) if u==b'\r' && v==b'\n' => {
-                        break
-                    },
+                match (buf.get(i), buf.get(i + 1)) {
+                    (Some(&u), Some(&v)) if u == b'\r' && v == b'\n' => break,
                     _ => {}
                 }
                 i += 1
@@ -51,7 +49,7 @@ impl SSHBuffer {
             if buf.len() <= 8 {
                 // Not enough bytes. Don't consume, wait until we have more bytes.
                 return Ok(None);
-            } else if i >= buf.len() -1 {
+            } else if i >= buf.len() - 1 {
                 return Err(Error::Version);
             }
             if &buf[0..8] == b"SSH-2.0-" {
@@ -97,5 +95,4 @@ impl SSHBuffer {
         self.len = 0;
         Ok(true)
     }
-
 }

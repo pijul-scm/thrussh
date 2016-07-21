@@ -22,7 +22,9 @@ use std;
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct Name(&'static str);
 impl AsRef<str> for Name {
-    fn as_ref(&self) -> &str { self.0 }
+    fn as_ref(&self) -> &str {
+        self.0
+    }
 }
 pub const ED25519: Name = Name("ssh-ed25519");
 
@@ -39,14 +41,12 @@ pub enum PublicKey {
 
 #[doc(hidden)]
 impl PublicKey {
-    pub fn parse(algo:&[u8], pubkey:&[u8]) -> Result<Self, Error> {
+    pub fn parse(algo: &[u8], pubkey: &[u8]) -> Result<Self, Error> {
         match algo {
             b"ssh-ed25519" => {
                 let mut p = pubkey.reader(0);
                 try!(p.read_string());
-                Ok(PublicKey::Ed25519(
-                    ed25519::PublicKey::copy_from_slice(try!(p.read_string()))
-                ))
+                Ok(PublicKey::Ed25519(ed25519::PublicKey::copy_from_slice(try!(p.read_string()))))
             }
             _ => Err(Error::UnknownKey),
         }
@@ -67,7 +67,10 @@ impl Verify for PublicKey {
 #[derive(Clone)]
 pub enum Algorithm {
     #[doc(hidden)]
-    Ed25519 { public:ed25519::PublicKey, secret: ed25519::SecretKey }
+    Ed25519 {
+        public: ed25519::PublicKey,
+        secret: ed25519::SecretKey,
+    },
 }
 
 impl std::fmt::Debug for Algorithm {
@@ -81,11 +84,11 @@ impl std::fmt::Debug for Algorithm {
 }
 #[doc(hidden)]
 pub trait PubKey {
-    fn push_to(&self, buffer:&mut CryptoBuf);
+    fn push_to(&self, buffer: &mut CryptoBuf);
 }
 
 impl PubKey for PublicKey {
-    fn push_to(&self, buffer:&mut CryptoBuf) {
+    fn push_to(&self, buffer: &mut CryptoBuf) {
         match self {
             &PublicKey::Ed25519(ref public) => {
 
@@ -98,7 +101,7 @@ impl PubKey for PublicKey {
 }
 
 impl PubKey for Algorithm {
-    fn push_to(&self, buffer:&mut CryptoBuf) {
+    fn push_to(&self, buffer: &mut CryptoBuf) {
         match self {
             &Algorithm::Ed25519 { ref public, .. } => {
 
@@ -114,7 +117,7 @@ impl PubKey for Algorithm {
 impl Named for PublicKey {
     fn name(&self) -> &'static str {
         match self {
-            &PublicKey::Ed25519(_) => ED25519.0
+            &PublicKey::Ed25519(_) => ED25519.0,
         }
     }
 }
@@ -122,34 +125,33 @@ impl Named for PublicKey {
 impl Named for Algorithm {
     fn name(&self) -> &'static str {
         match self {
-            &Algorithm::Ed25519 {..} => ED25519.0
+            &Algorithm::Ed25519 { .. } => ED25519.0,
         }
     }
 }
 
 impl Algorithm {
-
     /// Copy the public key of this algorithm.
     pub fn clone_public_key(&self) -> PublicKey {
         match self {
-            &Algorithm::Ed25519 { ref public, .. } => PublicKey::Ed25519(public.clone())
+            &Algorithm::Ed25519 { ref public, .. } => PublicKey::Ed25519(public.clone()),
         }
     }
-    
+
     /// Generate a key pair.
-    pub fn generate_keypair(t:Name) -> Option<Self> {
+    pub fn generate_keypair(t: Name) -> Option<Self> {
         match t {
             ED25519 => {
-                if let Some((pk,sk)) = super::sodium::ed25519::generate_keypair() {
+                if let Some((pk, sk)) = super::sodium::ed25519::generate_keypair() {
                     Some(Algorithm::Ed25519 {
-                        public:pk,
-                        secret:sk
+                        public: pk,
+                        secret: sk,
                     })
                 } else {
                     None
                 }
-            },
-            _ => None
+            }
+            _ => None,
         }
     }
 

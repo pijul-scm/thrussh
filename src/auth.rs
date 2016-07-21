@@ -54,13 +54,12 @@ pub enum Method<K> {
     // None,
     Password {
         user: String,
-        password: String
+        password: String,
     },
     PublicKey {
         user: String,
-        key: K
-    },
-    // Hostbased,
+        key: K,
+    }, // Hostbased,
 }
 
 impl encoding::Bytes for MethodSet {
@@ -70,19 +69,19 @@ impl encoding::Bytes for MethodSet {
             PASSWORD => b"password",
             PUBLICKEY => b"publickey",
             HOSTBASED => b"hostbased",
-            _ => b""
+            _ => b"",
         }
     }
 }
 
 impl MethodSet {
-    pub fn from_bytes(b:&[u8]) -> Option<MethodSet> {
+    pub fn from_bytes(b: &[u8]) -> Option<MethodSet> {
         match b {
             b"none" => Some(NONE),
             b"password" => Some(PASSWORD),
             b"publickey" => Some(PUBLICKEY),
             b"hostbased" => Some(HOSTBASED),
-            _ => None
+            _ => None,
         }
     }
 }

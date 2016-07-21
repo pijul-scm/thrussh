@@ -621,7 +621,7 @@ mod test {
         let port = 13265;
         let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1e\
                                                bz9/cu7/QEXn9OIeZJ")
-                          .unwrap();
+            .unwrap();
         assert!(check_known_hosts_path(host, port, &hostkey, &path).unwrap());
 
         // Valid key, several hosts, port 22
@@ -629,7 +629,7 @@ mod test {
         let port = 22;
         let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQ\
                                                lj2P+jpNSOEWD9OJ3X")
-                          .unwrap();
+            .unwrap();
         assert!(check_known_hosts_path(host, port, &hostkey, &path).unwrap());
 
         // Now with the key in a comment above, check that it's not recognized
@@ -637,7 +637,7 @@ mod test {
         let port = 22;
         let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G2sz07DnfFlrouTcysQ\
                                                lj2P+jpNSOEWD9OJ3X")
-                          .unwrap();
+            .unwrap();
         assert!(check_known_hosts_path(host, port, &hostkey, &path).is_err());
     }
 }

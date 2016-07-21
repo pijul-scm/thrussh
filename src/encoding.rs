@@ -23,7 +23,7 @@ pub trait Bytes {
     fn bytes(&self) -> &[u8];
 }
 
-impl<A:AsRef<str>> Bytes for A {
+impl<A: AsRef<str>> Bytes for A {
     fn bytes(&self) -> &[u8] {
         self.as_ref().as_bytes()
     }
@@ -56,7 +56,7 @@ impl CryptoBuf {
         self.extend(&s[i..]);
     }
 
-    
+
     pub fn extend_list<A: Bytes, I: Iterator<Item = A>>(&mut self, list: I) {
         let len0 = self.len();
         self.extend(&[0, 0, 0, 0]);

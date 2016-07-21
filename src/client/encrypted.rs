@@ -25,7 +25,7 @@ use key::PubKey;
 use negociation;
 use negociation::Select;
 
-const SSH_CONNECTION:&'static [u8] = b"ssh-connection";
+const SSH_CONNECTION: &'static [u8] = b"ssh-connection";
 
 impl super::Session {
     #[doc(hidden)]
@@ -47,16 +47,13 @@ impl super::Session {
                         try!(negociation::Client::read_kex(buf, &self.0.config.as_ref().preferred)),
                         &enc.session_id
                     );
-                    self.0.kex = Some(Kex::KexDhDone(
-                        try!(kexinit.client_parse(
-                            self.0.config.as_ref(),
-                            &mut self.0.cipher,
-                            buf,
-                            &mut self.0.write_buffer
-                        ))
-                    ));
+                    self.0.kex =
+                        Some(Kex::KexDhDone(try!(kexinit.client_parse(self.0.config.as_ref(),
+                                                                      &mut self.0.cipher,
+                                                                      buf,
+                                                                      &mut self.0.write_buffer))));
                 }
-                return Ok(())
+                return Ok(());
             }
         }
         // If we've successfully read a packet.
@@ -81,8 +78,9 @@ impl super::Session {
 
                             if let Some(ref meth) = self.0.auth_method {
                                 if enc.write_auth_request(meth) {
-                                    enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
-                                    return Ok(())
+                                    enc.state =
+                                        Some(EncryptedState::WaitingAuthRequest(auth_request));
+                                    return Ok(());
                                 }
                             }
                             enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
@@ -91,9 +89,9 @@ impl super::Session {
                         }
                     } else {
                         debug!("unknown message: {:?}", buf);
-                        return Err(Error::Inconsistent)
+                        return Err(Error::Inconsistent);
                     }
-                },
+                }
                 Some(EncryptedState::WaitingAuthRequest(mut auth_request)) => {
                     if buf[0] == msg::USERAUTH_SUCCESS {
 
@@ -120,14 +118,14 @@ impl super::Session {
                         enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
                     } else {
                         debug!("unknown message: {:?}", buf);
-                        return Err(Error::Inconsistent)
+                        return Err(Error::Inconsistent);
                     }
                 }
                 Some(EncryptedState::Authenticated) => {
                     enc.state = Some(EncryptedState::Authenticated);
                     is_authenticated = true
-                },
-                None => unreachable!()
+                }
+                None => unreachable!(),
             }
         }
         if is_authenticated {
@@ -143,7 +141,7 @@ impl super::Session {
                     if let Some(ref mut enc) = self.0.encrypted {
 
                         if let Some(parameters) = enc.channels.get_mut(&id_send) {
-                            
+
                             parameters.recipient_channel = id_recv;
                             parameters.recipient_window_size = window;
                             parameters.recipient_maximum_packet_size = max_packet;
@@ -151,7 +149,7 @@ impl super::Session {
 
                         } else {
                             // We've not requested this channel, close connection.
-                            return Err(Error::Inconsistent)
+                            return Err(Error::Inconsistent);
                         }
                     }
                     try!(client.channel_open_confirmation(id_send, self));
@@ -212,28 +210,31 @@ impl super::Session {
                             let c = try!(std::str::from_utf8(try!(r.read_string())));
                             let d = try!(r.read_u32());
                             client.channel_open_forwarded_tcpip(channel_num, a, b, c, d, self);
-                        },
+                        }
                         b"xon-xoff" => {
                             try!(r.read_byte()); // should be 0.
                             let client_can_do = try!(r.read_byte());
                             try!(client.xon_xoff(channel_num, client_can_do != 0, self));
-                        },
+                        }
                         b"exit-status" => {
                             try!(r.read_byte()); // should be 0.
                             let exit_status = try!(r.read_u32());
                             try!(client.exit_status(channel_num, exit_status, self));
-                        },
+                        }
                         b"exit-signal" => {
                             try!(r.read_byte()); // should be 0.
                             let signal_name = try!(Sig::from_name(try!(r.read_string())));
                             let core_dumped = try!(r.read_byte());
                             let error_message = try!(std::str::from_utf8(try!(r.read_string())));
                             let lang_tag = try!(std::str::from_utf8(try!(r.read_string())));
-                            try!(client.exit_signal(channel_num, signal_name, core_dumped!=0, error_message, lang_tag, self));
-                        },
-                        _ => {
-                            unimplemented!()
+                            try!(client.exit_signal(channel_num,
+                                                    signal_name,
+                                                    core_dumped != 0,
+                                                    error_message,
+                                                    lang_tag,
+                                                    self));
                         }
+                        _ => unimplemented!(),
                     }
                 }
                 msg::CHANNEL_WINDOW_ADJUST => {
@@ -244,7 +245,7 @@ impl super::Session {
                         if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
                             channel.recipient_window_size += amount
                         } else {
-                            return Err(Error::WrongChannel)
+                            return Err(Error::WrongChannel);
                         }
                     }
                     try!(client.window_adjusted(channel_num, self));
@@ -307,8 +308,8 @@ impl Encrypted {
                 push_packet!(self.write, {
                     self.write.extend(&buffer.as_slice()[i0..]);
                 })
-            },
-            _ => { }
+            }
+            _ => {}
         }
     }
 }

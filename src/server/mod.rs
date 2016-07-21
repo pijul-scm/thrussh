@@ -349,9 +349,8 @@ impl KexDh {
             assert!(buf[0] == msg::KEX_ECDH_INIT);
             let mut r = buf.reader(1);
             self.exchange.client_ephemeral.extend(try!(r.read_string()));
-            let kex = try!(super::kex::Algorithm::server_dh(self.names.kex,
-                                                            &mut self.exchange,
-                                                            buf));
+            let kex =
+                try!(super::kex::Algorithm::server_dh(self.names.kex, &mut self.exchange, buf));
             // Then, we fill the write buffer right away, so that we
             // can output it immediately when the time comes.
             let kexdhdone = KexDhDone {
@@ -362,9 +361,8 @@ impl KexDh {
                 session_id: self.session_id,
             };
 
-            let hash = try!(kexdhdone.kex.compute_exchange_hash(&config.keys[kexdhdone.key],
-                                                                &kexdhdone.exchange,
-                                                                buffer));
+            let hash = try!(kexdhdone.kex
+                .compute_exchange_hash(&config.keys[kexdhdone.key], &kexdhdone.exchange, buffer));
 
             buffer.clear();
             buffer.push(msg::KEX_ECDH_REPLY);
@@ -423,9 +421,8 @@ impl Connection {
                 Ok(false) => return Ok(at_least_one_was_read),
                 Err(Error::IO(e)) => {
                     match e.kind() {
-                        std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::WouldBlock => {
-                            return Ok(at_least_one_was_read)
-                        }
+                        std::io::ErrorKind::UnexpectedEof |
+                        std::io::ErrorKind::WouldBlock => return Ok(at_least_one_was_read),
                         _ => return Err(Error::IO(e)),
                     }
                 }

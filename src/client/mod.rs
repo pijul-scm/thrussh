@@ -322,9 +322,8 @@ impl Connection {
                 Ok(false) => return Ok(at_least_one_was_read),
                 Err(Error::IO(e)) => {
                     match e.kind() {
-                        std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::WouldBlock => {
-                            return Ok(at_least_one_was_read)
-                        }
+                        std::io::ErrorKind::UnexpectedEof |
+                        std::io::ErrorKind::WouldBlock => return Ok(at_least_one_was_read),
                         _ => return Err(Error::IO(e)),
                     }
                 }

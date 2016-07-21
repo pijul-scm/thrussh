@@ -16,7 +16,7 @@ use {Error, Disconnect};
 use std::io::{Read, BufRead};
 use std;
 use cryptobuf::CryptoBuf;
-use sshbuffer::{SSHBuffer};
+use sshbuffer::SSHBuffer;
 use rand::{thread_rng, Rng};
 pub mod chacha20poly1305;
 use msg;
@@ -31,7 +31,9 @@ pub enum Cipher {
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct Name(&'static str);
 impl AsRef<str> for Name {
-    fn as_ref(&self) -> &str { self.0 }
+    fn as_ref(&self) -> &str {
+        self.0
+    }
 }
 
 pub const CHACHA20POLY1305: Name = Name("chacha20-poly1305@openssh.com");
@@ -49,9 +51,9 @@ pub struct CipherPair {
     pub remote_to_local: Cipher,
 }
 
-pub const CLEAR_PAIR:CipherPair = CipherPair {
+pub const CLEAR_PAIR: CipherPair = CipherPair {
     local_to_remote: Cipher::Clear,
-    remote_to_local: Cipher::Clear
+    remote_to_local: Cipher::Clear,
 };
 
 pub trait CipherT {
@@ -109,7 +111,7 @@ impl CipherT for Clear {
             buffer.len = 0;
             buffer.seqn += 1;
             Ok(Some(result))
-            
+
         } else {
 
             Ok(None)
@@ -122,37 +124,39 @@ impl CipherT for Clear {
         // Unencrypted packets should be of lengths multiple of 8.
         let block_size = 8;
         let padding_len = block_size - ((5 + packet.len()) % block_size);
-        let padding_len =
-            if padding_len < 4 {
-                padding_len + block_size
-            } else {
-                padding_len
-            };
+        let padding_len = if padding_len < 4 {
+            padding_len + block_size
+        } else {
+            padding_len
+        };
 
         let packet_len = packet.len() + 1 + padding_len;
         buffer.buffer.push_u32_be(packet_len as u32);
         buffer.buffer.push(padding_len as u8);
         buffer.buffer.extend(packet);
-        thread_rng().fill_bytes( buffer.buffer.reserve(padding_len) );
+        thread_rng().fill_bytes(buffer.buffer.reserve(padding_len));
         debug!("write: {:?}", buffer.buffer.as_slice());
         buffer.seqn += 1;
     }
 }
 
 impl Clear {
-    pub fn disconnect(&self, reason:Disconnect, description:&str, language_tag:&str, buffer: &mut SSHBuffer) {
+    pub fn disconnect(&self,
+                      reason: Disconnect,
+                      description: &str,
+                      language_tag: &str,
+                      buffer: &mut SSHBuffer) {
 
         let payload_len = 13 + description.len() + language_tag.len();
-        
+
         // Unencrypted packets should be of lengths multiple of 8.
         let block_size = 8;
         let padding_len = block_size - ((5 + payload_len) % block_size);
-        let padding_len =
-            if padding_len < 4 {
-                padding_len + block_size
-            } else {
-                padding_len
-            };
+        let padding_len = if padding_len < 4 {
+            padding_len + block_size
+        } else {
+            padding_len
+        };
 
         let packet_len = payload_len + 1 + padding_len;
         buffer.buffer.push_u32_be(packet_len as u32);
@@ -165,7 +169,7 @@ impl Clear {
         buffer.buffer.extend_ssh_string(language_tag.as_bytes());
 
 
-        thread_rng().fill_bytes( buffer.buffer.reserve(padding_len) );
+        thread_rng().fill_bytes(buffer.buffer.reserve(padding_len));
         debug!("write: {:?}", buffer.buffer.as_slice());
         buffer.seqn += 1;
     }
