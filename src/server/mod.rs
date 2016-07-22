@@ -349,7 +349,7 @@ impl KexInit {
         self.exchange.server_kex_init.clear();
         negociation::write_kex(&config.preferred, &mut self.exchange.server_kex_init);
         self.sent = true;
-        cipher.write(self.exchange.server_kex_init.as_slice(), write_buffer)
+        cipher.write(&self.exchange.server_kex_init, write_buffer)
     }
 }
 
@@ -394,10 +394,10 @@ impl KexDh {
             buffer.push(msg::KEX_ECDH_REPLY);
             config.keys[kexdhdone.key].push_to(buffer);
             // Server ephemeral
-            buffer.extend_ssh_string(kexdhdone.exchange.server_ephemeral.as_slice());
+            buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
             // Hash signature
-            config.keys[kexdhdone.key].add_signature(buffer, hash.as_bytes());
-            cipher.write(buffer.as_slice(), write_buffer);
+            config.keys[kexdhdone.key].add_signature(buffer, &hash);
+            cipher.write(&buffer, write_buffer);
 
             cipher.write(&[msg::NEWKEYS], write_buffer);
 

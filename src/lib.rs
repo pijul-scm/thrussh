@@ -167,7 +167,8 @@ macro_rules! push_packet {
             $buffer.extend(b"\0\0\0\0");
             let x = $x;
             let i1 = $buffer.len();
-            let buf = $buffer.as_mut_slice();
+            use std::ops::DerefMut;
+            let buf = $buffer.deref_mut();
             BigEndian::write_u32(&mut buf[i0..], (i1-i0-4) as u32);
             x
         }
@@ -530,47 +531,5 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
         }
     } else {
         Err(Error::CouldNotReadKey)
-    }
-}
-
-
-#[cfg(test)]
-mod test {
-    extern crate tempdir;
-    use std::fs::File;
-    use std::io::Write;
-    use super::*;
-    #[test]
-    fn test_check_known_hosts() {
-        let dir = tempdir::TempDir::new("thrussh").unwrap();
-        let path = dir.path().join("known_hosts");
-        {
-            let mut f = File::create(&path).unwrap();
-            f.write(b"[localhost]:13265 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ\n#pijul.org,37.120.161.53 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G2sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X\npijul.org,37.120.161.53 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X\n").unwrap();
-        }
-
-        // Valid key, non-standard port.
-        let host = "localhost";
-        let port = 13265;
-        let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1e\
-                                               bz9/cu7/QEXn9OIeZJ")
-            .unwrap();
-        assert!(check_known_hosts_path(host, port, &hostkey, &path).unwrap());
-
-        // Valid key, several hosts, port 22
-        let host = "pijul.org";
-        let port = 22;
-        let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQ\
-                                               lj2P+jpNSOEWD9OJ3X")
-            .unwrap();
-        assert!(check_known_hosts_path(host, port, &hostkey, &path).unwrap());
-
-        // Now with the key in a comment above, check that it's not recognized
-        let host = "pijul.org";
-        let port = 22;
-        let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G2sz07DnfFlrouTcysQ\
-                                               lj2P+jpNSOEWD9OJ3X")
-            .unwrap();
-        assert!(check_known_hosts_path(host, port, &hostkey, &path).is_err());
     }
 }

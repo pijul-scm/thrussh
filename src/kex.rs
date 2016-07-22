@@ -31,10 +31,11 @@ use cipher;
 pub enum Digest {
     Sha256(sha256::Digest),
 }
-impl Digest {
-    pub fn as_bytes(&self) -> &[u8] {
+impl std::ops::Deref for Digest {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
         match self {
-            &Digest::Sha256(ref d) => d.as_bytes(),
+            &Digest::Sha256(ref d) => d,
         }
     }
 }
@@ -93,14 +94,14 @@ impl Algorithm {
 
                 // fill exchange.
                 exchange.server_ephemeral.clear();
-                exchange.server_ephemeral.extend(server_pubkey.as_bytes());
+                exchange.server_ephemeral.extend(&server_pubkey);
 
                 let mut shared_secret = curve25519::GroupElement::new_blank();
                 curve25519::scalarmult(&mut shared_secret, &server_secret, &client_pubkey);
                 debug!("server shared : {:?}", shared_secret);
 
                 // debug!("shared secret");
-                // super::hexdump(shared_secret.as_bytes());
+                // super::hexdump(&shared_secret);
 
                 Ok(Algorithm::Curve25519(Curve25519 {
                     local_pubkey: server_pubkey,
@@ -137,11 +138,11 @@ impl Algorithm {
 
                 // fill exchange.
                 client_ephemeral.clear();
-                client_ephemeral.extend(client_pubkey.as_bytes());
+                client_ephemeral.extend(&client_pubkey);
 
 
                 buf.push(msg::KEX_ECDH_INIT);
-                buf.extend_ssh_string(client_pubkey.as_bytes());
+                buf.extend_ssh_string(&client_pubkey);
 
 
                 Ok(Algorithm::Curve25519(Curve25519 {
@@ -185,32 +186,32 @@ impl Algorithm {
             &Algorithm::Curve25519(ref kex) => {
 
                 debug!("{:?} {:?}",
-                       std::str::from_utf8(exchange.client_id.as_slice()),
-                       std::str::from_utf8(exchange.server_id.as_slice()));
+                       std::str::from_utf8(&exchange.client_id),
+                       std::str::from_utf8(&exchange.server_id));
                 buffer.clear();
-                buffer.extend_ssh_string(exchange.client_id.as_slice());
-                buffer.extend_ssh_string(exchange.server_id.as_slice());
-                buffer.extend_ssh_string(exchange.client_kex_init.as_slice());
-                buffer.extend_ssh_string(exchange.server_kex_init.as_slice());
+                buffer.extend_ssh_string(&exchange.client_id);
+                buffer.extend_ssh_string(&exchange.server_id);
+                buffer.extend_ssh_string(&exchange.client_kex_init);
+                buffer.extend_ssh_string(&exchange.server_kex_init);
 
 
                 key.push_to(buffer);
                 debug!("client_ephemeral: {:?}",
-                       exchange.client_ephemeral.as_slice());
+                       &exchange.client_ephemeral);
                 debug_assert_eq!(exchange.client_ephemeral.len(), 32);
-                buffer.extend_ssh_string(exchange.client_ephemeral.as_slice());
+                buffer.extend_ssh_string(&exchange.client_ephemeral);
 
                 debug_assert_eq!(exchange.server_ephemeral.len(), 32);
-                buffer.extend_ssh_string(exchange.server_ephemeral.as_slice());
+                buffer.extend_ssh_string(&exchange.server_ephemeral);
 
                 if let Some(ref shared) = kex.shared_secret {
-                    buffer.extend_ssh_mpint(shared.as_bytes());
+                    buffer.extend_ssh_mpint(&shared);
                 }
                 debug!("buffer len = {:?}", buffer.len());
-                debug!("buffer: {:?}", buffer.as_slice());
+                debug!("buffer: {:?}", &buffer);
                 // super::hexdump(buffer);
                 let mut hash = sha256::Digest::new_blank();
-                sha256::hash(&mut hash, buffer.as_slice());
+                sha256::hash(&mut hash, &buffer);
                 debug!("hash: {:?}", hash);
                 Ok(Digest::Sha256(hash))
             }
@@ -236,27 +237,27 @@ impl Algorithm {
                     key.clear();
 
                     if let Some(ref shared) = kex.shared_secret {
-                        buffer.extend_ssh_mpint(shared.as_bytes());
+                        buffer.extend_ssh_mpint(&shared);
                     }
 
-                    buffer.extend(exchange_hash.as_bytes());
+                    buffer.extend(&exchange_hash);
                     buffer.push(c);
-                    buffer.extend(session_id.as_bytes());
+                    buffer.extend(&session_id);
                     let mut hash = sha256::Digest::new_blank();
-                    sha256::hash(&mut hash, buffer.as_slice());
-                    key.extend(hash.as_bytes());
+                    sha256::hash(&mut hash, &buffer);
+                    key.extend(&hash);
 
                     while key.len() < len {
                         // extend.
                         buffer.clear();
                         if let Some(ref shared) = kex.shared_secret {
-                            buffer.extend_ssh_mpint(shared.as_bytes());
+                            buffer.extend_ssh_mpint(&shared);
                         }
-                        buffer.extend(exchange_hash.as_bytes());
-                        buffer.extend(key.as_slice());
+                        buffer.extend(&exchange_hash);
+                        buffer.extend(key);
                         let mut hash = sha256::Digest::new_blank();
-                        sha256::hash(&mut hash, buffer.as_slice());
-                        key.extend(hash.as_bytes())
+                        sha256::hash(&mut hash, &buffer);
+                        key.extend(&hash)
                     }
                 };
 
@@ -266,13 +267,13 @@ impl Algorithm {
                         let client_to_server = {
                             compute_key(b'C', key, super::cipher::key_size(cipher));
                             super::cipher::Cipher::Chacha20Poly1305 (
-                                super::cipher::chacha20poly1305::Cipher::init(key.as_slice())
+                                super::cipher::chacha20poly1305::Cipher::init(&key)
                             )
                         };
                         let server_to_client = {
                             compute_key(b'D', key, super::cipher::key_size(cipher));
                             super::cipher::Cipher::Chacha20Poly1305 (
-                                super::cipher::chacha20poly1305::Cipher::init(key.as_slice())
+                                super::cipher::chacha20poly1305::Cipher::init(&key)
                             )
                         };
 

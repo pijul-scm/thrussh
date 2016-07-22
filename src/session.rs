@@ -95,10 +95,7 @@ impl<C> CommonSession<C> {
             enc.write.push_u32_be(reason as u32);
             enc.write.extend_ssh_string(description.as_bytes());
             enc.write.extend_ssh_string(language_tag.as_bytes());
-            {
-                let buf = enc.write.as_slice();
-                self.cipher.write(&buf[i0..], &mut self.write_buffer);
-            }
+            self.cipher.write(&enc.write[i0..], &mut self.write_buffer);
             enc.write.truncate(i0)
         } else {
             cipher::Clear.disconnect(reason, description, language_tag, &mut self.write_buffer)
@@ -180,7 +177,6 @@ impl Encrypted {
                  -> bool {
         // If there are pending packets (and we've not started to rekey), flush them.
         {
-            let packets = self.write.as_slice();
             while self.write_cursor < self.write.len() {
 
                 let now = std::time::Instant::now();
@@ -200,9 +196,9 @@ impl Encrypted {
 
                 } else {
                     // Read a single packet, selfrypt and send it.
-                    let len = BigEndian::read_u32(&packets[self.write_cursor..]) as usize;
+                    let len = BigEndian::read_u32(&self.write[self.write_cursor..]) as usize;
                     debug!("flushing len {:?}", len);
-                    let packet = &packets[(self.write_cursor + 4)..(self.write_cursor + 4 + len)];
+                    let packet = &self.write[(self.write_cursor + 4)..(self.write_cursor + 4 + len)];
                     cipher.write(packet, write_buffer);
                     self.write_cursor += 4 + len
                 }

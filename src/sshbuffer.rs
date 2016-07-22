@@ -63,7 +63,7 @@ impl SSHBuffer {
             }
         };
         stream.consume(i + 2);
-        Ok(Some(&self.buffer.as_slice()[0..i]))
+        Ok(Some(&self.buffer[0..i]))
     }
     pub fn send_ssh_id(&mut self, id: &[u8]) {
         self.buffer.extend(id);
@@ -73,7 +73,7 @@ impl SSHBuffer {
 
     /// Returns true iff the write buffer has been completely written.
     pub fn write_all<W: std::io::Write>(&mut self, stream: &mut W) -> Result<bool, Error> {
-        debug!("write_all, self = {:?}", self.buffer.as_slice());
+        // debug!("write_all, self = {:?}", &self.buffer);
         while self.len < self.buffer.len() {
             match self.buffer.write_all_from(self.len, stream) {
                 Ok(s) => {

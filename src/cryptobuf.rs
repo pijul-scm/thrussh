@@ -16,7 +16,7 @@ use std;
 
 use super::sodium;
 use super::libc::{malloc, free, c_void};
-
+use std::ops::{Index, IndexMut, Deref, DerefMut, Range, RangeFrom, RangeTo};
 /// A buffer which zeroes its memory on `.clear()`, `.truncate()` and
 /// reallocations, to avoid copying secrets around.
 #[derive(Debug)]
@@ -29,11 +29,58 @@ pub struct CryptoBuf {
 
 unsafe impl Send for CryptoBuf {}
 
-impl std::ops::Index<usize> for CryptoBuf {
+impl Deref for CryptoBuf {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.p, self.size) }
+    }
+}
+impl DerefMut for CryptoBuf {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.p, self.size) }
+    }
+}
+
+impl Index<RangeFrom<usize>> for CryptoBuf {
+    type Output = [u8];
+    fn index(&self, index: RangeFrom<usize>) -> &[u8] {
+        self.deref().index(index)
+    }
+}
+impl Index<RangeTo<usize>> for CryptoBuf {
+    type Output = [u8];
+    fn index(&self, index: RangeTo<usize>) -> &[u8] {
+        self.deref().index(index)
+    }
+}
+impl Index<Range<usize>> for CryptoBuf {
+    type Output = [u8];
+    fn index(&self, index: Range<usize>) -> &[u8] {
+        self.deref().index(index)
+    }
+}
+
+impl IndexMut<RangeFrom<usize>> for CryptoBuf {
+    fn index_mut(&mut self, index: RangeFrom<usize>) -> &mut [u8] {
+        self.deref_mut().index_mut(index)
+    }
+}
+impl IndexMut<RangeTo<usize>> for CryptoBuf {
+    fn index_mut(&mut self, index: RangeTo<usize>) -> &mut [u8] {
+        self.deref_mut().index_mut(index)
+    }
+}
+impl IndexMut<Range<usize>> for CryptoBuf {
+    fn index_mut(&mut self, index: Range<usize>) -> &mut [u8] {
+        self.deref_mut().index_mut(index)
+    }
+}
+
+
+impl Index<usize> for CryptoBuf {
     type Output = u8;
     fn index(&self, index: usize) -> &u8 {
-        assert!(index < self.size);
-        unsafe { &*self.p.offset(index as isize) }
+        self.deref().index(index)
     }
 }
 
@@ -179,29 +226,20 @@ impl CryptoBuf {
         }
     }
 
-    pub fn as_slice(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.p, self.size) }
-    }
-
-    pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.p, self.size) }
-    }
-
     pub fn hexdump(&self) {
-        let x = self.as_slice();
         let mut buf = Vec::new();
         let mut i = 0;
-        while i < x.len() {
+        while i < self.len() {
             if i % 16 == 0 {
                 print!("{:04}: ", i)
             }
-            print!("{:02x} ", x[i]);
-            if x[i] >= 0x20 && x[i] <= 0x7e {
-                buf.push(x[i]);
+            print!("{:02x} ", self[i]);
+            if self[i] >= 0x20 && self[i] <= 0x7e {
+                buf.push(self[i]);
             } else {
                 buf.push(b'.');
             }
-            if i % 16 == 15 || i == x.len() - 1 {
+            if i % 16 == 15 || i == self.len() - 1 {
                 while i % 16 != 15 {
                     print!("   ");
                     i += 1

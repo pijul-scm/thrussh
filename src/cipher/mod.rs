@@ -56,10 +56,12 @@ pub const CLEAR_PAIR: CipherPair = CipherPair {
 };
 
 pub trait CipherT {
+    /// Replace the buffer's content with the next deciphered packet from `stream`.
     fn read<'a, R: BufRead>(&self,
                             stream: &mut R,
                             buffer: &'a mut SSHBuffer)
                             -> Result<Option<&'a [u8]>, Error>;
+    /// Extend the buffer with the encrypted packet.
     fn write(&self, packet: &[u8], buffer: &mut SSHBuffer);
 }
 
@@ -98,15 +100,14 @@ impl CipherT for Clear {
             // setting the length
             buffer.buffer.clear();
             buffer.buffer.extend(b"\0\0\0\0");
-            try!(stream.read_exact(buffer.buffer.as_mut_slice()));
+            try!(stream.read_exact(&mut buffer.buffer));
             buffer.len = buffer.buffer.read_u32_be(0) as usize;
             debug!("clear buffer len: {:?}", buffer.len);
         }
         if try!(read(stream, &mut buffer.buffer, buffer.len, &mut buffer.bytes)) {
 
             let padding_length = buffer.buffer[4] as usize;
-            let buf = buffer.buffer.as_slice();
-            let result = &buf[5..(4 + buffer.len - padding_length)];
+            let result = &buffer.buffer[5..(4 + buffer.len - padding_length)];
             buffer.len = 0;
             buffer.seqn += 1;
             Ok(Some(result))
@@ -134,7 +135,7 @@ impl CipherT for Clear {
         buffer.buffer.push(padding_len as u8);
         buffer.buffer.extend(packet);
         thread_rng().fill_bytes(buffer.buffer.reserve(padding_len));
-        debug!("write: {:?}", buffer.buffer.as_slice());
+        debug!("write: {:?}", &buffer.buffer);
         buffer.seqn += 1;
     }
 }
@@ -169,7 +170,7 @@ impl Clear {
 
 
         thread_rng().fill_bytes(buffer.buffer.reserve(padding_len));
-        debug!("write: {:?}", buffer.buffer.as_slice());
+        debug!("write: {:?}", buffer.buffer);
         buffer.seqn += 1;
     }
 }

@@ -473,10 +473,10 @@ impl Encrypted {
                         let sig = try!(s.read_string());
 
                         buffer.clear();
-                        buffer.extend_ssh_string(self.session_id.as_bytes());
+                        buffer.extend_ssh_string(&self.session_id);
                         buffer.extend(&buf[0..pos0]);
                         // Verify signature.
-                        if pubkey.verify_detached(buffer.as_slice(), sig) {
+                        if pubkey.verify_detached(&buffer, sig) {
                             debug!("signature verified");
                             server_auth_request_success(&mut self.write);
                             self.state = Some(EncryptedState::Authenticated);
@@ -583,8 +583,8 @@ fn server_auth_request_success(buffer: &mut CryptoBuf) {
 fn server_send_pk_ok(buffer: &mut CryptoBuf, auth_request: &mut AuthRequest) {
     push_packet!(buffer, {
         buffer.push(msg::USERAUTH_PK_OK);
-        buffer.extend_ssh_string(auth_request.public_key_algorithm.as_slice());
-        buffer.extend_ssh_string(auth_request.public_key.as_slice());
+        buffer.extend_ssh_string(&auth_request.public_key_algorithm);
+        buffer.extend_ssh_string(&auth_request.public_key);
     });
     auth_request.sent_pk_ok = true;
 }

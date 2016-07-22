@@ -61,8 +61,9 @@ macro_rules! from_slice (($newtype:ident, $len:expr) => (
     }
 ));
 macro_rules! as_bytes (($newtype:ident) => (
-    impl $newtype {
-        pub fn as_bytes(&self) -> &[u8] {
+    impl std::ops::Deref for $newtype {
+        type Target = [u8];
+        fn deref(&self) -> &[u8] {
             &self.0
         }
     }
@@ -71,7 +72,7 @@ macro_rules! as_bytes (($newtype:ident) => (
 macro_rules! clone (($newtype:ident) => (
     impl Clone for $newtype {
         fn clone(&self) -> Self {
-            Self::copy_from_slice(self.as_bytes())
+            Self::copy_from_slice(self)
         }
     }
 ));
@@ -186,11 +187,8 @@ pub mod curve25519 {
     newtype!(GroupElement, GROUPELEMENTBYTES);
     from_slice!(GroupElement, GROUPELEMENTBYTES);
     new_blank!(GroupElement, GROUPELEMENTBYTES);
-    impl GroupElement {
-        pub fn as_bytes(&self) -> &[u8] {
-            &self.0
-        }
-    }
+    as_bytes!(GroupElement);
+
 
     pub fn scalarmult(q: &mut GroupElement,
                       &Scalar(ref n): &Scalar,

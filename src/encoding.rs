@@ -71,8 +71,7 @@ impl CryptoBuf {
         }
         let len = (self.len() - len0 - 4) as u32;
 
-        let buf = self.as_mut_slice();
-        BigEndian::write_u32(&mut buf[len0..], len);
+        BigEndian::write_u32(&mut self[len0..], len);
     }
 
     pub fn write_empty_list(&mut self) {
@@ -87,7 +86,7 @@ pub trait Reader {
 impl Reader for CryptoBuf {
     fn reader<'a>(&'a self, starting_at: usize) -> Position<'a> {
         Position {
-            s: self.as_slice(),
+            s: &self,
             position: starting_at,
         }
     }

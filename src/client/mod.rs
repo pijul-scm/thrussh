@@ -237,10 +237,8 @@ impl KexInit {
         let kex = try!(kex::Algorithm::client_dh(algo.kex,
                                                  &mut self.exchange.client_ephemeral,
                                                  &mut self.exchange.client_kex_init));
-        {
-            let buf = self.exchange.client_kex_init.as_slice();
-            cipher.write(&buf[i0..], write_buffer);
-        }
+
+        cipher.write(&self.exchange.client_kex_init[i0..], write_buffer);
         self.exchange.client_kex_init.truncate(i0);
 
 
@@ -260,7 +258,7 @@ impl KexInit {
         self.exchange.client_kex_init.clear();
         negociation::write_kex(&config.preferred, &mut self.exchange.client_kex_init);
         self.sent = true;
-        cipher.write(self.exchange.client_kex_init.as_slice(), write_buffer)
+        cipher.write(&self.exchange.client_kex_init, write_buffer)
     }
 }
 
@@ -282,7 +280,38 @@ impl KexDhDone {
             debug!("kexdhdone");
             // We've sent ECDH_INIT, waiting for ECDH_REPLY
             if buf[0] == msg::KEX_ECDH_REPLY {
-                let hash = try!(self.client_compute_exchange_hash(client, buf, buffer));
+                let hash = {
+                    let mut reader = buf.reader(1);
+                    let pubkey = try!(reader.read_string()); // server public key.
+                    let pubkey = try!(parse_public_key(pubkey));
+                    if !try!(client.check_server_key(&pubkey)) {
+                        return Err(Error::UnknownKey);
+                    }
+                    let server_ephemeral = try!(reader.read_string());
+                    self.exchange.server_ephemeral.extend(server_ephemeral);
+                    let signature = try!(reader.read_string());
+
+                    try!(self.kex.compute_shared_secret(&self.exchange.server_ephemeral));
+                    
+                    let hash = try!(self.kex.compute_exchange_hash(&pubkey, &self.exchange, buffer));
+
+                    let signature = {
+                        let mut sig_reader = signature.reader(0);
+                        let sig_type = try!(sig_reader.read_string());
+                        assert_eq!(sig_type, b"ssh-ed25519");
+                        let signature = try!(sig_reader.read_string());
+                        sodium::ed25519::Signature::copy_from_slice(signature)
+                    };
+
+                    match pubkey {
+                        key::PublicKey::Ed25519(ref pubkey) => {
+                            assert!(sodium::ed25519::verify_detached(&signature, &hash, pubkey))
+                        }
+                    };
+                    debug!("signature = {:?}", signature);
+                    debug!("exchange = {:?}", self.exchange);
+                    hash
+                };
                 let mut newkeys = try!(self.compute_keys(hash, buffer, buffer2, false));
                 cipher.write(&[msg::NEWKEYS], write_buffer);
                 newkeys.sent = true;
@@ -291,44 +320,6 @@ impl KexDhDone {
                 return Err(Error::Inconsistent);
             }
         }
-    }
-    pub fn client_compute_exchange_hash<C: Handler>(&mut self,
-                                                    client: &mut C,
-                                                    payload: &[u8],
-                                                    buffer: &mut CryptoBuf)
-                                                    -> Result<kex::Digest, Error> {
-        assert!(payload[0] == msg::KEX_ECDH_REPLY);
-        let mut reader = payload.reader(1);
-
-        let pubkey = try!(reader.read_string()); // server public key.
-        let pubkey = try!(parse_public_key(pubkey));
-        if !try!(client.check_server_key(&pubkey)) {
-            return Err(Error::UnknownKey);
-        }
-        let server_ephemeral = try!(reader.read_string());
-        self.exchange.server_ephemeral.extend(server_ephemeral);
-        let signature = try!(reader.read_string());
-
-        try!(self.kex.compute_shared_secret(self.exchange.server_ephemeral.as_slice()));
-
-        let hash = try!(self.kex.compute_exchange_hash(&pubkey, &self.exchange, buffer));
-
-        let signature = {
-            let mut sig_reader = signature.reader(0);
-            let sig_type = try!(sig_reader.read_string());
-            assert_eq!(sig_type, b"ssh-ed25519");
-            let signature = try!(sig_reader.read_string());
-            sodium::ed25519::Signature::copy_from_slice(signature)
-        };
-
-        match pubkey {
-            key::PublicKey::Ed25519(ref pubkey) => {
-                assert!(sodium::ed25519::verify_detached(&signature, hash.as_bytes(), pubkey))
-            }
-        };
-        debug!("signature = {:?}", signature);
-        debug!("exchange = {:?}", self.exchange);
-        Ok(hash)
     }
 }
 
@@ -520,6 +511,11 @@ impl Session {
     /// Retrieves the configuration of this session.
     pub fn config(&self) -> &Config {
         &self.0.config
+    }
+
+    /// Retrieves the current user.
+    pub fn auth_user(&self) -> &str {
+        &self.0.auth_user
     }
 
     /// Sends a disconnect message.

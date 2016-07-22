@@ -294,7 +294,7 @@ impl Encrypted {
             &auth::Method::PublicKey { ref key } => {
 
                 buffer.clear();
-                buffer.extend_ssh_string(self.session_id.as_bytes());
+                buffer.extend_ssh_string(&self.session_id);
                 let i0 = buffer.len();
                 buffer.push(msg::USERAUTH_REQUEST);
                 buffer.extend_ssh_string(user.as_bytes());
@@ -305,9 +305,9 @@ impl Encrypted {
                 key.push_to(buffer);
                 // Extend with self-signature.
                 key.add_self_signature(buffer);
-                debug!("packet : {:?}", &buffer.as_slice()[i0..]);
+                debug!("packet : {:?}", &buffer[i0..]);
                 push_packet!(self.write, {
-                    self.write.extend(&buffer.as_slice()[i0..]);
+                    self.write.extend(&buffer[i0..]);
                 })
             }
             _ => {}

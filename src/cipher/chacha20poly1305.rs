@@ -72,19 +72,14 @@ impl super::CipherT for Cipher {
             let poly_key = poly1305::Key::copy_from_slice(&poly_key);
 
             let mut tag = poly1305::Tag::new_blank();
-
-            let read_buffer_slice = read_buffer.buffer.as_mut_slice();
-            {
-                poly1305::authenticate(&mut tag,
-                                       &read_buffer_slice[0..4 + read_buffer.len -
-                                                             poly1305::TAGBYTES],
-                                       &poly_key);
-            }
+            let read_len = read_buffer.len;
+            poly1305::authenticate(&mut tag,
+                                   &mut read_buffer.buffer[0..4 + read_len - poly1305::TAGBYTES],
+                                   &poly_key);
 
             // - Constant-time-compare it with the Poly1305 at the end
             // of the packet (right after the 4+length first bytes).
-            if sodium::memcmp(tag.as_bytes(),
-                              &read_buffer_slice[4 + read_buffer.len - poly1305::TAGBYTES..]) {
+            if sodium::memcmp(&tag, &read_buffer.buffer[4 + read_buffer.len - poly1305::TAGBYTES..]) {
 
                 // - If the auth is correct, chacha20-xor the length
                 // bytes after the first 4 ones, with ic 1.
@@ -92,18 +87,15 @@ impl super::CipherT for Cipher {
                 // 1", which is different from the libsodium
                 // interface).
 
-                {
-                    chacha20::xor_inplace(&mut read_buffer_slice[4..(4 + read_buffer.len -
-                                                                     poly1305::TAGBYTES)],
-                                          &nonce,
-                                          1,
-                                          &self.k2);
-
-                }
-                let padding = read_buffer_slice[4] as usize;
-                let result = Some(&read_buffer_slice[5..(5 + read_buffer.len - poly1305::TAGBYTES -
-                                                         padding -
-                                                         1)]);
+                chacha20::xor_inplace(&mut read_buffer.buffer[4..(4 + read_buffer.len -
+                                                                  poly1305::TAGBYTES)],
+                                      &nonce,
+                                      1,
+                                      &self.k2);
+                let padding = read_buffer.buffer[4] as usize;
+                let result = Some(&read_buffer.buffer[5..(5 + read_buffer.len - poly1305::TAGBYTES -
+                                                          padding -
+                                                          1)]);
                 read_buffer.seqn += 1;
                 read_buffer.len = 0;
                 Ok(result)
@@ -142,10 +134,7 @@ impl super::CipherT for Cipher {
         BigEndian::write_u32(&mut nonce[4..], buffer.seqn as u32);
         let nonce = chacha20::Nonce::copy_from_slice(&nonce);
 
-        {
-            let buffer = buffer.buffer.as_mut_slice();
-            chacha20::stream_xor_inplace(&mut buffer[offset..(offset + 4)], &nonce, &self.k1);
-        }
+        chacha20::stream_xor_inplace(&mut buffer.buffer[offset..(offset + 4)], &nonce, &self.k1);
         // the first 4 bytes of buffer now contain the encrypted length.
         // - Append the encrypted packet
 
@@ -164,10 +153,8 @@ impl super::CipherT for Cipher {
 
         // println!("buffer before encryption: {:?}", &(buffer.as_slice())[offset..]);
 
-        {
-            let buffer = buffer.buffer.as_mut_slice();
-            chacha20::xor_inplace(&mut buffer[offset + 4..], &nonce, 1, &self.k2);
-        }
+        chacha20::xor_inplace(&mut buffer.buffer[offset + 4..], &nonce, 1, &self.k2);
+
         // println!("buffer before tag: {:?}", &(buffer.as_slice())[offset..]);
         // - Compute the Poly1305 auth on the first (4+length) first bytes of the packet.
 
@@ -176,12 +163,9 @@ impl super::CipherT for Cipher {
         let poly_key = poly1305::Key::copy_from_slice(&poly_key);
 
         let mut tag = poly1305::Tag::new_blank();
-        {
-            let buffer = buffer.buffer.as_slice();
-            poly1305::authenticate(&mut tag, &buffer[offset..], &poly_key);
-        }
+        poly1305::authenticate(&mut tag, &buffer.buffer[offset..], &poly_key);
 
-        buffer.buffer.extend(tag.as_bytes());
+        buffer.buffer.extend(&tag);
         buffer.seqn += 1;
     }
 }
