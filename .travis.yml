@@ -1,4 +1,8 @@
 language: rust
+before_install:
+  - sudo apt-get update -y
+  - sudo apt-get install pkg-config -y
+
 os:
   - linux
   - osx
