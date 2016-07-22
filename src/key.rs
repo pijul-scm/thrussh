@@ -18,7 +18,7 @@ use negociation::Named;
 use Error;
 use encoding::Reader;
 use std;
-#[doc(hidden)]
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct Name(&'static str);
 impl AsRef<str> for Name {
@@ -27,6 +27,16 @@ impl AsRef<str> for Name {
     }
 }
 pub const ED25519: Name = Name("ssh-ed25519");
+
+impl Name {
+    /// Base name of the private key file for a key name.
+    pub fn identity_file(&self) -> &'static str {
+        match *self {
+            ED25519 => "id_ed25519",
+            _ => unreachable!()
+        }
+    }
+}
 
 #[doc(hidden)]
 pub trait Verify {

@@ -26,7 +26,6 @@ use msg;
 use cipher::CipherT;
 
 use sshbuffer::*;
-use cipher;
 use negociation;
 use key::PubKey;
 use encoding::Reader;
@@ -580,6 +579,11 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Retrieves the configuration of this session.
+    pub fn config(&self) -> &Config {
+        &self.0.config
     }
 
     /// Sends a disconnect message.

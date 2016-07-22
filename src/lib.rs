@@ -150,7 +150,6 @@ use byteorder::ByteOrder;
 use rustc_serialize::base64::FromBase64;
 use std::path::Path;
 use std::fs::File;
-use std::borrow::Cow;
 
 mod sodium;
 mod cryptobuf;
@@ -262,9 +261,9 @@ pub use pty::Pty;
 mod msg;
 /// Key generation and use.
 pub mod key;
-mod kex;
+pub mod kex;
 
-mod cipher;
+pub mod cipher;
 
 // mod mac;
 // use mac::*;
@@ -532,73 +531,6 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
     } else {
         Err(Error::CouldNotReadKey)
     }
-}
-
-#[cfg(target_os = "windows")]
-pub fn check_known_hosts(host: &str, port: u16, pubkey: &key::PublicKey) -> Result<bool, Error> {
-    if let Some(mut known_host_file) = std::env::home_dir() {
-        known_host_file.push("ssh");
-        known_host_file.push("known_hosts");
-        check_known_hosts_path(host, port, pubkey, &known_host_file)
-    } else {
-        Err(Error::NoHomeDir)
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn check_known_hosts(host: &str, port: u16, pubkey: &key::PublicKey) -> Result<bool, Error> {
-    if let Some(mut known_host_file) = std::env::home_dir() {
-        known_host_file.push(".ssh");
-        known_host_file.push("known_hosts");
-        debug!("known_hosts file = {:?}", known_host_file);
-        check_known_hosts_path(host, port, pubkey, &known_host_file)
-    } else {
-        Err(Error::NoHomeDir)
-    }
-}
-
-
-pub fn check_known_hosts_path<P: AsRef<Path>>(host: &str,
-                                              port: u16,
-                                              pubkey: &key::PublicKey,
-                                              path: P)
-                                              -> Result<bool, Error> {
-    let mut f = BufReader::new(try!(File::open(path)));
-    let mut buffer = String::new();
-
-    let host_port = if port == 22 {
-        Cow::Borrowed(host)
-    } else {
-        Cow::Owned(format!("[{}]:{}", host, port))
-    };
-    while f.read_line(&mut buffer).unwrap() > 0 {
-        {
-            if buffer.as_bytes()[0] == b'#' {
-                buffer.clear();
-                continue;
-            }
-            let mut s = buffer.split(' ');
-            let hosts = s.next();
-            let _ = s.next();
-            let key = s.next();
-            match (hosts, key) {
-                (Some(h), Some(k)) => {
-                    let host_matches = h.split(',').any(|x| x == host_port);
-                    if host_matches {
-                        if &try!(parse_public_key_base64(k)) == pubkey {
-                            return Ok(true);
-                        } else {
-                            return Err(Error::KeyChanged);
-                        }
-                    }
-
-                }
-                _ => {}
-            }
-        }
-        buffer.clear();
-    }
-    Ok(false)
 }
 
 

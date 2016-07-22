@@ -27,7 +27,6 @@ pub enum Cipher {
     Chacha20Poly1305(chacha20poly1305::Cipher),
 }
 
-#[doc(hidden)]
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct Name(&'static str);
 impl AsRef<str> for Name {

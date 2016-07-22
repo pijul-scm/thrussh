@@ -17,7 +17,9 @@ use std::sync::Arc;
 use std::io::{Write, BufRead};
 use std;
 
-use {Disconnect, Error, Limits, Sig, ChannelOpenFailure};
+use {Disconnect, Error, Limits, Sig, ChannelOpenFailure, parse_public_key};
+use sodium;
+use encoding::Reader;
 use key;
 use msg;
 use auth;
@@ -290,6 +292,44 @@ impl KexDhDone {
             }
         }
     }
+    pub fn client_compute_exchange_hash<C: Handler>(&mut self,
+                                                    client: &mut C,
+                                                    payload: &[u8],
+                                                    buffer: &mut CryptoBuf)
+                                                    -> Result<kex::Digest, Error> {
+        assert!(payload[0] == msg::KEX_ECDH_REPLY);
+        let mut reader = payload.reader(1);
+
+        let pubkey = try!(reader.read_string()); // server public key.
+        let pubkey = try!(parse_public_key(pubkey));
+        if !try!(client.check_server_key(&pubkey)) {
+            return Err(Error::UnknownKey);
+        }
+        let server_ephemeral = try!(reader.read_string());
+        self.exchange.server_ephemeral.extend(server_ephemeral);
+        let signature = try!(reader.read_string());
+
+        try!(self.kex.compute_shared_secret(self.exchange.server_ephemeral.as_slice()));
+
+        let hash = try!(self.kex.compute_exchange_hash(&pubkey, &self.exchange, buffer));
+
+        let signature = {
+            let mut sig_reader = signature.reader(0);
+            let sig_type = try!(sig_reader.read_string());
+            assert_eq!(sig_type, b"ssh-ed25519");
+            let signature = try!(sig_reader.read_string());
+            sodium::ed25519::Signature::copy_from_slice(signature)
+        };
+
+        match pubkey {
+            key::PublicKey::Ed25519(ref pubkey) => {
+                assert!(sodium::ed25519::verify_detached(&signature, hash.as_bytes(), pubkey))
+            }
+        };
+        debug!("signature = {:?}", signature);
+        debug!("exchange = {:?}", self.exchange);
+        Ok(hash)
+    }
 }
 
 
@@ -438,24 +478,8 @@ impl Connection {
                     self.session.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
                     // Ok, NEWKEYS received, now encrypted.
                     // We can't use flush here, because self.buffers is borrowed.
-                    let p = [msg::SERVICE_REQUEST,
-                             0,
-                             0,
-                             0,
-                             12,
-                             b's',
-                             b's',
-                             b'h',
-                             b'-',
-                             b'u',
-                             b's',
-                             b'e',
-                             b'r',
-                             b'a',
-                             b'u',
-                             b't',
-                             b'h'];
-                    self.session.0.cipher.write(&p, &mut self.session.0.write_buffer);
+                    let p = b"\x05\0\0\0\x0Cssh-userauth";
+                    self.session.0.cipher.write(p, &mut self.session.0.write_buffer);
                 }
                 Some(kex) => self.session.0.kex = Some(kex),
                 None => {
@@ -491,6 +515,11 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Retrieves the configuration of this session.
+    pub fn config(&self) -> &Config {
+        &self.0.config
     }
 
     /// Sends a disconnect message.
@@ -539,8 +568,8 @@ impl Session {
     }
 
     /// Tests whether we need an authentication method (for instance if the last attempt failed).
-    pub fn needs_auth_method(&self) -> bool {
-        self.0.auth_method.is_none()
+    pub fn has_auth_method(&self) -> bool {
+        self.0.auth_method.is_some()
     }
 
     /// Returns the set of authentication methods that can continue, or None if this is not valid.

@@ -21,17 +21,15 @@ use kex;
 use cipher;
 use msg;
 use key;
-use sodium;
-use {parse_public_key, Error, Channel, Disconnect};
+use {Error, Channel, Disconnect};
 use cryptobuf::CryptoBuf;
 use std::collections::HashMap;
-use encoding::Reader;
 use Limits;
 use sshbuffer::SSHBuffer;
 use byteorder::{BigEndian, ByteOrder};
 use cipher::CipherT;
 use std::sync::Arc;
-use client;
+
 
 #[derive(Debug)]
 pub struct Encrypted {
@@ -51,13 +49,13 @@ pub struct Encrypted {
 
 #[derive(Debug)]
 pub struct CommonSession<Config> {
-    pub encrypted: Option<Encrypted>,
     pub auth_user: String,
+    pub config: Arc<Config>,
+    pub encrypted: Option<Encrypted>,
     pub auth_method: Option<auth::Method<key::Algorithm>>,
     pub write_buffer: SSHBuffer,
     pub kex: Option<Kex>,
     pub cipher: cipher::CipherPair,
-    pub config: Arc<Config>,
     pub wants_reply: bool,
     pub disconnected: bool,
 }
@@ -363,44 +361,6 @@ impl KexDhDone {
         })
     }
 
-    pub fn client_compute_exchange_hash<C: client::Handler>(&mut self,
-                                                            client: &mut C,
-                                                            payload: &[u8],
-                                                            buffer: &mut CryptoBuf)
-                                                            -> Result<kex::Digest, Error> {
-        assert!(payload[0] == msg::KEX_ECDH_REPLY);
-        let mut reader = payload.reader(1);
-
-        let pubkey = try!(reader.read_string()); // server public key.
-        let pubkey = try!(parse_public_key(pubkey));
-        if !try!(client.check_server_key(&pubkey)) {
-            return Err(Error::UnknownKey);
-        }
-        let server_ephemeral = try!(reader.read_string());
-        self.exchange.server_ephemeral.extend(server_ephemeral);
-        let signature = try!(reader.read_string());
-
-        try!(self.kex.compute_shared_secret(self.exchange.server_ephemeral.as_slice()));
-
-        let hash = try!(self.kex.compute_exchange_hash(&pubkey, &self.exchange, buffer));
-
-        let signature = {
-            let mut sig_reader = signature.reader(0);
-            let sig_type = try!(sig_reader.read_string());
-            assert_eq!(sig_type, b"ssh-ed25519");
-            let signature = try!(sig_reader.read_string());
-            sodium::ed25519::Signature::copy_from_slice(signature)
-        };
-
-        match pubkey {
-            key::PublicKey::Ed25519(ref pubkey) => {
-                assert!(sodium::ed25519::verify_detached(&signature, hash.as_bytes(), pubkey))
-            }
-        };
-        debug!("signature = {:?}", signature);
-        debug!("exchange = {:?}", self.exchange);
-        Ok(hash)
-    }
 }
 
 #[derive(Debug)]
