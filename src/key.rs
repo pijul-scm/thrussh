@@ -41,7 +41,6 @@ impl Name {
 
 #[doc(hidden)]
 pub trait Verify {
-    fn fingerprint(&self) -> String;
     fn verify_detached(&self, buffer: &[u8], sig: &[u8]) -> bool;
 }
 
@@ -49,6 +48,15 @@ pub trait Verify {
 pub enum PublicKey {
     #[doc(hidden)]
     Ed25519(ed25519::PublicKey),
+}
+
+impl std::ops::Deref for PublicKey {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match *self {
+            PublicKey::Ed25519(ref k) => k
+        }
+    }
 }
 
 #[doc(hidden)]
@@ -65,8 +73,8 @@ impl PublicKey {
     }
 }
 
-impl Verify for PublicKey {
-    fn fingerprint(&self) -> String {
+impl PublicKey {
+    pub fn fingerprint(&self) -> String {
         match self {
             &PublicKey::Ed25519(ref public) => {
                 let mut digest = sha256::Digest::new_blank();
@@ -75,6 +83,8 @@ impl Verify for PublicKey {
             }
         }
     }
+}
+impl Verify for PublicKey {
     fn verify_detached(&self, buffer: &[u8], sig: &[u8]) -> bool {
         match self {
             &PublicKey::Ed25519(ref public) => {

@@ -146,10 +146,11 @@ extern crate rustc_serialize; // config: read base 64.
 
 use std::sync::{Once, ONCE_INIT};
 use std::io::{Read, BufRead, BufReader};
-use byteorder::ByteOrder;
-use rustc_serialize::base64::FromBase64;
+use byteorder::{BigEndian, WriteBytesExt, ByteOrder};
+use rustc_serialize::base64::{FromBase64, ToBase64, STANDARD};
 use std::path::Path;
 use std::fs::File;
+use std::ops::Deref;
 
 mod sodium;
 mod cryptobuf;
@@ -256,6 +257,7 @@ impl From<rustc_serialize::base64::FromBase64Error> for Error {
 }
 
 mod negociation;
+use negociation::Named;
 pub use negociation::Preferred;
 mod pty;
 pub use pty::Pty;
@@ -449,6 +451,18 @@ pub fn parse_public_key(p: &[u8]) -> Result<key::PublicKey, Error> {
     Err(Error::CouldNotReadKey)
 }
 
+pub fn write_public_key_base64<W:std::io::Write>(mut w:W, publickey:&key::PublicKey) -> Result<(), Error> {
+    try!(w.write_all(publickey.name().as_bytes()));
+    try!(w.write_all(b" "));
+    let mut s = Vec::new();
+    let name = publickey.name().as_bytes();
+    s.write_u32::<BigEndian>(name.len() as u32);
+    s.extend(name);
+    try!(s.write_u32::<BigEndian>(publickey.len() as u32));
+    s.extend(publickey.deref());
+    try!(w.write_all(s.to_base64(STANDARD).as_bytes()));
+    Ok(())
+}
 
 /// Load a secret key from a file. Only ed25519 keys are currently supported.
 pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
