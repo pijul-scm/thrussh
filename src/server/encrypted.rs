@@ -406,6 +406,7 @@ impl Session {
     }
 }
 
+
 impl Encrypted {
     pub fn server_read_auth_request<S: Handler>(&mut self,
                                                 config: &Config,
@@ -426,6 +427,7 @@ impl Encrypted {
                std::str::from_utf8(service_name),
                std::str::from_utf8(method));
 
+        let t0 = std::time::Instant::now();
         if service_name == b"ssh-connection" {
 
             if method == b"password" {
@@ -437,20 +439,15 @@ impl Encrypted {
                 let password = try!(r.read_string());
                 let password = try!(std::str::from_utf8(password));
 
-                let t0 = std::time::Instant::now();
-
                 if server.auth_password(user, password) {
                     server_auth_request_success(&mut self.write);
                     self.state = Some(EncryptedState::Authenticated);
                 } else {
 
-                    let t1 = std::time::Instant::now();
-                    let dur = t1.duration_since(t0);
-                    std::thread::sleep(config.auth_rejection_time - dur);
-
+                    auth_user.clear();
                     auth_request.methods = auth_request.methods - auth::PASSWORD;
                     auth_request.partial_success = false;
-                    self.reject_auth_request(auth_request);
+                    self.reject_auth_request(config, t0, auth_request);
                 }
 
             } else if method == b"publickey" {
@@ -464,8 +461,10 @@ impl Encrypted {
                 if is_real != 0 {
 
                     let pos0 = r.position;
-                    // Check that the user is still authorized (the client may have changed user since we accepted).
-                    if server.auth_publickey(user, &pubkey) || (auth_request.sent_pk_ok && user == auth_user) {
+
+                    let t0 = std::time::Instant::now();
+
+                    if (auth_request.sent_pk_ok && user == auth_user) || (auth_user.len() == 0 && server.auth_publickey(user, &pubkey)) {
 
                         let signature = try!(r.read_string());
                         let mut s = signature.reader(0);
@@ -483,15 +482,18 @@ impl Encrypted {
                             self.state = Some(EncryptedState::Authenticated);
                         } else {
                             debug!("wrong signature");
-                            self.reject_auth_request(auth_request);
+                            auth_user.clear();
+                            self.reject_auth_request(config, t0, auth_request);
                         }
                     } else {
                         debug!("rejected");
-                        self.reject_auth_request(auth_request)
+                        auth_user.clear();
+                        self.reject_auth_request(config, t0, auth_request)
                     }
 
                 } else {
 
+                    let t0 = std::time::Instant::now();
                     if server.auth_publickey(user, &pubkey) {
 
                         auth_user.clear();
@@ -503,12 +505,13 @@ impl Encrypted {
                     } else {
                         auth_request.methods -= auth::PUBLICKEY;
                         auth_request.partial_success = false;
-                        self.reject_auth_request(auth_request);
+                        auth_user.clear();
+                        self.reject_auth_request(config, t0, auth_request);
                     }
                 }
             } else {
                 // Other methods of the base specification are insecure or optional.
-                self.reject_auth_request(auth_request);
+                self.reject_auth_request(config, t0, auth_request);
             }
             Ok(())
         } else {
@@ -517,7 +520,8 @@ impl Encrypted {
         }
     }
 
-    fn reject_auth_request(&mut self, mut auth_request: AuthRequest) {
+    fn reject_auth_request(&mut self, config:&Config, t0:std::time::Instant, mut auth_request: AuthRequest) {
+
         debug!("rejecting {:?}", auth_request);
         push_packet!(self.write, {
             self.write.push(msg::USERAUTH_FAILURE);
@@ -531,6 +535,11 @@ impl Encrypted {
         auth_request.sent_pk_ok = false;
         debug!("packet pushed");
         self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+        let t1 = std::time::Instant::now();
+        let dur = t1.duration_since(t0);
+        if dur < config.auth_rejection_time {
+            std::thread::sleep(config.auth_rejection_time - dur);
+        }
     }
 }
 

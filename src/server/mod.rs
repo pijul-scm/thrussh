@@ -99,16 +99,28 @@ impl std::ops::DerefMut for Connection {
 }
 
 pub trait Handler {
+
+    /// Check authentication using the "none" method. Thrussh makes
+    /// sure rejection happens in time `config.auth_rejection_time`,
+    /// except if this method takes more than that.
     #[allow(unused_variables)]
     fn auth_none(&mut self, user: &str) -> bool {
         false
     }
 
+    /// Check authentication using the "password" method. Thrussh
+    /// makes sure rejection happens in time
+    /// `config.auth_rejection_time`, except if this method takes more
+    /// than that.
     #[allow(unused_variables)]
     fn auth_password(&mut self, user: &str, password: &str) -> bool {
         false
     }
 
+    /// Check authentication using the "publickey" method. Thrussh
+    /// makes sure rejection happens in time
+    /// `config.auth_rejection_time`, except if this method takes more
+    /// than that.
     #[allow(unused_variables)]
     fn auth_publickey(&mut self, user: &str, public_key: &key::PublicKey) -> bool {
         false
