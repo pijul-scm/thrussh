@@ -145,12 +145,14 @@ extern crate rustc_serialize; // config: read base 64.
 
 
 use std::sync::{Once, ONCE_INIT};
-use std::io::{Read, BufRead, BufReader};
+use std::io::{Read, BufRead, BufReader, Seek, SeekFrom, Write};
 use byteorder::{BigEndian, WriteBytesExt, ByteOrder};
 use rustc_serialize::base64::{FromBase64, ToBase64, STANDARD};
 use std::path::Path;
 use std::fs::File;
 use std::ops::Deref;
+use std::borrow::Cow;
+use std::fs::OpenOptions;
 
 mod sodium;
 mod cryptobuf;
@@ -456,9 +458,9 @@ pub fn write_public_key_base64<W:std::io::Write>(mut w:W, publickey:&key::Public
     try!(w.write_all(b" "));
     let mut s = Vec::new();
     let name = publickey.name().as_bytes();
-    s.write_u32::<BigEndian>(name.len() as u32);
+    s.write_u32::<BigEndian>(name.len() as u32).unwrap();
     s.extend(name);
-    try!(s.write_u32::<BigEndian>(publickey.len() as u32));
+    s.write_u32::<BigEndian>(publickey.len() as u32).unwrap();
     s.extend(publickey.deref());
     try!(w.write_all(s.to_base64(STANDARD).as_bytes()));
     Ok(())
@@ -545,5 +547,125 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
         }
     } else {
         Err(Error::CouldNotReadKey)
+    }
+}
+
+/// Record a host's public key into a nonstandard location.
+pub fn learn_known_hosts_path<P:AsRef<Path>>(host:&str, port:u16, pubkey:&key::PublicKey, path:P) -> Result<(), Error> {
+
+
+    let mut file = try!(OpenOptions::new()
+                        .read(true)
+                        .append(true)
+                        .create(true)
+                        .open(path));
+
+    // Test whether the known_hosts file ends with a \n
+    let mut buf = [0;1];
+    try!(file.seek(SeekFrom::End(-1)));
+    try!(file.read_exact(&mut buf));
+    let ends_in_newline = buf[0] == b'\n';
+
+    // Write the key.
+    try!(file.seek(SeekFrom::Start(0)));
+    let mut file = std::io::BufWriter::new(file);
+    if !ends_in_newline {
+        try!(write!(file, "\n"));
+    }
+    if port != 22 {
+        try!(write!(file, "[{}]:{} ", host, port))
+    } else {
+        try!(write!(file, "{} ", host))
+    }
+    try!(write_public_key_base64(&mut file, pubkey));
+    try!(write!(file, "\n"));
+    Ok(())
+}
+
+
+pub fn check_known_hosts_path<P: AsRef<Path>>(host: &str,
+                                              port: u16,
+                                              pubkey: &key::PublicKey,
+                                              path: P)
+                                              -> Result<bool, Error> {
+    let mut f = BufReader::new(try!(File::open(path)));
+    let mut buffer = String::new();
+
+    let host_port = if port == 22 {
+        Cow::Borrowed(host)
+    } else {
+        Cow::Owned(format!("[{}]:{}", host, port))
+    };
+    while f.read_line(&mut buffer).unwrap() > 0 {
+        {
+            if buffer.as_bytes()[0] == b'#' {
+                buffer.clear();
+                continue;
+            }
+            let mut s = buffer.split(' ');
+            let hosts = s.next();
+            let _ = s.next();
+            let key = s.next();
+            match (hosts, key) {
+                (Some(h), Some(k)) => {
+                    let host_matches = h.split(',').any(|x| x == host_port);
+                    if host_matches {
+                        if &try!(parse_public_key_base64(k)) == pubkey {
+                            return Ok(true);
+                        } else {
+                            return Err(Error::KeyChanged);
+                        }
+                    }
+
+                }
+                _ => {}
+            }
+        }
+        buffer.clear();
+    }
+    Ok(false)
+}
+
+
+
+#[cfg(test)]
+mod test {
+    extern crate tempdir;
+    use std::fs::File;
+    use std::io::Write;
+    use super::*;
+
+    #[test]
+    fn test_check_known_hosts() {
+        let dir = tempdir::TempDir::new("thrussh").unwrap();
+        let path = dir.path().join("known_hosts");
+        {
+            let mut f = File::create(&path).unwrap();
+            f.write(b"[localhost]:13265 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ\n#pijul.org,37.120.161.53 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G2sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X\npijul.org,37.120.161.53 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X\n").unwrap();
+        }
+
+        // Valid key, non-standard port.
+        let host = "localhost";
+        let port = 13265;
+        let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1e\
+                                               bz9/cu7/QEXn9OIeZJ")
+            .unwrap();
+        assert!(check_known_hosts_path(host, port, &hostkey, &path).unwrap());
+
+        // Valid key, several hosts, port 22
+        let host = "pijul.org";
+        let port = 22;
+        let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQ\
+                                               lj2P+jpNSOEWD9OJ3X")
+            .unwrap();
+        assert!(check_known_hosts_path(host, port, &hostkey, &path).unwrap());
+
+        // Now with the key in a comment above, check that it's not recognized
+        let host = "pijul.org";
+        let port = 22;
+        let hostkey = parse_public_key_base64("AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G2sz07DnfFlrouTcysQ\
+                                               lj2P+jpNSOEWD9OJ3X")
+            .unwrap();
+        assert!(check_known_hosts_path(host, port, &hostkey, &path).is_err());
     }
 }
