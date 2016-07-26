@@ -455,62 +455,65 @@ impl Encrypted {
                 let is_real = try!(r.read_byte());
                 let pubkey_algo = try!(r.read_string());
                 let pubkey_key = try!(r.read_string());
-                let pubkey = try!(key::PublicKey::parse(pubkey_algo, pubkey_key));
-                debug!("is_real = {:?}", is_real);
+                if let Ok(pubkey) = key::PublicKey::parse(pubkey_algo, pubkey_key) {
+                    debug!("is_real = {:?}", is_real);
 
-                if is_real != 0 {
+                    if is_real != 0 {
 
-                    let pos0 = r.position;
+                        let pos0 = r.position;
 
-                    let t0 = std::time::Instant::now();
+                        let t0 = std::time::Instant::now();
 
-                    if (auth_request.sent_pk_ok && user == auth_user) || (auth_user.len() == 0 && server.auth_publickey(user, &pubkey)) {
+                        if (auth_request.sent_pk_ok && user == auth_user) || (auth_user.len() == 0 && server.auth_publickey(user, &pubkey)) {
 
-                        let signature = try!(r.read_string());
-                        let mut s = signature.reader(0);
-                        // let algo_ =
-                        try!(s.read_string());
-                        let sig = try!(s.read_string());
+                            let signature = try!(r.read_string());
+                            let mut s = signature.reader(0);
+                            // let algo_ =
+                            try!(s.read_string());
+                            let sig = try!(s.read_string());
 
-                        buffer.clear();
-                        buffer.extend_ssh_string(&self.session_id);
-                        buffer.extend(&buf[0..pos0]);
-                        // Verify signature.
-                        if pubkey.verify_detached(&buffer, sig) {
-                            debug!("signature verified");
-                            server_auth_request_success(&mut self.write);
-                            self.state = Some(EncryptedState::Authenticated);
+                            buffer.clear();
+                            buffer.extend_ssh_string(&self.session_id);
+                            buffer.extend(&buf[0..pos0]);
+                            // Verify signature.
+                            if pubkey.verify_detached(&buffer, sig) {
+                                debug!("signature verified");
+                                server_auth_request_success(&mut self.write);
+                                self.state = Some(EncryptedState::Authenticated);
+                            } else {
+                                debug!("wrong signature");
+                                auth_user.clear();
+                                self.reject_auth_request(config, t0, auth_request);
+                            }
                         } else {
-                            debug!("wrong signature");
+                            debug!("rejected");
+                            auth_user.clear();
+                            self.reject_auth_request(config, t0, auth_request)
+                        }
+
+                    } else {
+
+                        let t0 = std::time::Instant::now();
+                        if server.auth_publickey(user, &pubkey) {
+
+                            auth_user.clear();
+                            auth_user.push_str(user);
+                            auth_request.public_key.extend(pubkey_key);
+                            auth_request.public_key_algorithm.extend(pubkey_algo);
+                            server_send_pk_ok(&mut self.write, &mut auth_request);
+                            self.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
+                        } else {
+                            auth_request.methods -= auth::PUBLICKEY;
+                            auth_request.partial_success = false;
                             auth_user.clear();
                             self.reject_auth_request(config, t0, auth_request);
                         }
-                    } else {
-                        debug!("rejected");
-                        auth_user.clear();
-                        self.reject_auth_request(config, t0, auth_request)
                     }
-
                 } else {
-
-                    let t0 = std::time::Instant::now();
-                    if server.auth_publickey(user, &pubkey) {
-
-                        auth_user.clear();
-                        auth_user.push_str(user);
-                        auth_request.public_key.extend(pubkey_key);
-                        auth_request.public_key_algorithm.extend(pubkey_algo);
-                        server_send_pk_ok(&mut self.write, &mut auth_request);
-                        self.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
-                    } else {
-                        auth_request.methods -= auth::PUBLICKEY;
-                        auth_request.partial_success = false;
-                        auth_user.clear();
-                        self.reject_auth_request(config, t0, auth_request);
-                    }
+                    self.reject_auth_request(config, t0, auth_request);
                 }
-            } else {
                 // Other methods of the base specification are insecure or optional.
+            } else {
                 self.reject_auth_request(config, t0, auth_request);
             }
             Ok(())
