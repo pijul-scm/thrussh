@@ -74,6 +74,7 @@ impl super::Session {
                                 public_key_algorithm: CryptoBuf::new(),
                                 public_key_is_ok: false,
                                 sent_pk_ok: false,
+                                rejection_count: 0,
                             };
 
                             if let Some(ref meth) = self.0.auth_method {

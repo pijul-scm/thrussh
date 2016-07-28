@@ -55,6 +55,8 @@ pub struct Config {
     pub maximum_packet_size: u32,
     /// Lists of preferred algorithms.
     pub preferred: Preferred,
+    /// Maximal number of allowed authentication attempts.
+    pub max_auth_attempts: usize,
 }
 
 impl Default for Config {
@@ -67,10 +69,11 @@ impl Default for Config {
             auth_banner: None,
             auth_rejection_time: std::time::Duration::from_secs(1),
             keys: Vec::new(),
-            window_size: 100,
-            maximum_packet_size: 100,
+            window_size: 1 << 30,
+            maximum_packet_size: 1 << 20,
             limits: Limits::default(),
             preferred: Default::default(),
+            max_auth_attempts: 10
         }
     }
 }

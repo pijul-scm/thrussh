@@ -93,4 +93,5 @@ pub struct AuthRequest {
     pub public_key_algorithm: CryptoBuf,
     pub public_key_is_ok: bool,
     pub sent_pk_ok: bool,
+    pub rejection_count: usize
 }

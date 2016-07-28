@@ -546,6 +546,7 @@ impl Encrypted {
             });
         });
         auth_request.sent_pk_ok = false;
+        auth_request.rejection_count += 1;
         debug!("packet pushed");
         self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
         let t1 = std::time::Instant::now();
@@ -582,6 +583,7 @@ fn server_accept_service(banner: Option<&str>,
         public_key_algorithm: CryptoBuf::new(),
         sent_pk_ok: false,
         public_key_is_ok: false,
+        rejection_count: 0,
     }
 }
 
