@@ -47,7 +47,7 @@ pub const DEFAULT: Preferred = Preferred {
     kex: &[kex::CURVE25519],
     key: &[key::ED25519],
     cipher: &[cipher::CHACHA20POLY1305],
-    mac: &["hmac-sha2-256"],
+    mac: &["none"],
     compression: &["none"],
 };
 
