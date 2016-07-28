@@ -12,15 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
+use std;
+use byteorder::{ByteOrder, BigEndian};
+use rand::{thread_rng, Rng};
+
 use super::*;
 use super::super::*;
 use session::*;
 use msg;
 use encoding::Reader;
 use auth::*;
-use std;
-use byteorder::{ByteOrder, BigEndian};
-use rand::{thread_rng, Rng};
 use key::Verify;
 use negociation;
 use negociation::Select;
@@ -28,11 +29,12 @@ use auth;
 
 impl Session {
     #[doc(hidden)]
+    /// Returns false iff a request was rejected.
     pub fn server_read_encrypted<S: Handler>(&mut self,
                                              server: &mut S,
                                              buf: &[u8],
                                              buffer: &mut CryptoBuf)
-                                             -> Result<(), Error> {
+                                             -> Result<bool, Error> {
 
         // Either this packet is a KEXINIT, in which case we start a key re-exchange.
         if buf[0] == msg::KEXINIT {
@@ -51,7 +53,7 @@ impl Session {
                                                                 buf,
                                                                 &mut self.0.write_buffer)));
                 }
-                return Ok(());
+                return Ok(true);
             }
         }
         // If we've successfully read a packet.
@@ -82,12 +84,11 @@ impl Session {
                 }
                 Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                     if buf[0] == msg::USERAUTH_REQUEST {
-                        try!(enc.server_read_auth_request(self.0.config.as_ref(),
-                                                          server,
-                                                          buf,
-                                                          buffer,
-                                                          &mut self.0.auth_user,
-                                                          auth_request));
+                        return enc.server_read_auth_request(server,
+                                                            buf,
+                                                            buffer,
+                                                            &mut self.0.auth_user,
+                                                            auth_request);
                     } else {
                         // Wrong request
                         enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
@@ -103,10 +104,9 @@ impl Session {
             }
         }
         if is_authenticated {
-            self.server_read_authenticated(server, buf)
-        } else {
-            Ok(())
+            try!(self.server_read_authenticated(server, buf))
         }
+        Ok(true)
     }
 
     fn server_read_authenticated<S: Handler>(&mut self,
@@ -410,14 +410,14 @@ impl Session {
 
 
 impl Encrypted {
+    /// Returns false iff the request was rejected.
     pub fn server_read_auth_request<S: Handler>(&mut self,
-                                                config: &Config,
                                                 server: &mut S,
                                                 buf: &[u8],
                                                 buffer: &mut CryptoBuf,
                                                 auth_user: &mut String,
                                                 mut auth_request: AuthRequest)
-                                                -> Result<(), Error> {
+                                                -> Result<bool, Error> {
         // https://tools.ietf.org/html/rfc4252#section-5
         let mut r = buf.reader(1);
         let user = try!(r.read_string());
@@ -429,7 +429,6 @@ impl Encrypted {
                std::str::from_utf8(service_name),
                std::str::from_utf8(method));
 
-        let t0 = std::time::Instant::now();
         if service_name == b"ssh-connection" {
 
             if method == b"password" {
@@ -444,12 +443,14 @@ impl Encrypted {
                 if server.auth_password(user, password) {
                     server_auth_request_success(&mut self.write);
                     self.state = Some(EncryptedState::Authenticated);
+                    Ok(true)
                 } else {
 
                     auth_user.clear();
                     auth_request.methods = auth_request.methods - auth::PASSWORD;
                     auth_request.partial_success = false;
-                    self.reject_auth_request(config, t0, auth_request);
+                    self.reject_auth_request(auth_request);
+                    Ok(false)
                 }
 
             } else if method == b"publickey" {
@@ -464,8 +465,6 @@ impl Encrypted {
                         if is_real != 0 {
 
                             let pos0 = r.position;
-
-                            let t0 = std::time::Instant::now();
 
                             if (auth_request.sent_pk_ok && user == auth_user) ||
                                (auth_user.len() == 0 && server.auth_publickey(user, &pubkey)) {
@@ -484,20 +483,22 @@ impl Encrypted {
                                     debug!("signature verified");
                                     server_auth_request_success(&mut self.write);
                                     self.state = Some(EncryptedState::Authenticated);
+                                    Ok(true)
                                 } else {
                                     debug!("wrong signature");
                                     auth_user.clear();
-                                    self.reject_auth_request(config, t0, auth_request);
+                                    self.reject_auth_request(auth_request);
+                                    Ok(false)
                                 }
                             } else {
                                 debug!("rejected");
                                 auth_user.clear();
-                                self.reject_auth_request(config, t0, auth_request)
+                                self.reject_auth_request(auth_request);
+                                Ok(false)
                             }
 
                         } else {
 
-                            let t0 = std::time::Instant::now();
                             if server.auth_publickey(user, &pubkey) {
 
                                 auth_user.clear();
@@ -505,36 +506,36 @@ impl Encrypted {
                                 auth_request.public_key.extend(pubkey_key);
                                 auth_request.public_key_algorithm.extend(pubkey_algo);
                                 server_send_pk_ok(&mut self.write, &mut auth_request);
-                                self.state = Some(EncryptedState::WaitingAuthRequest(auth_request))
+                                self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+                                Ok(true)
                             } else {
                                 auth_request.methods -= auth::PUBLICKEY;
                                 auth_request.partial_success = false;
                                 auth_user.clear();
-                                self.reject_auth_request(config, t0, auth_request);
+                                self.reject_auth_request(auth_request);
+                                Ok(false)
                             }
                         }
                     }
                     Err(Error::UnknownKey) => {
-                        self.reject_auth_request(config, t0, auth_request);
+                        self.reject_auth_request(auth_request);
+                        Ok(false)
                     }
                     Err(e) => return Err(e),
                 }
                 // Other methods of the base specification are insecure or optional.
             } else {
-                self.reject_auth_request(config, t0, auth_request);
+                let count = auth_request.rejection_count;
+                self.reject_auth_request(auth_request);
+                Ok(count <= 1)
             }
-            Ok(())
         } else {
             // Unknown service
             Err(Error::Inconsistent)
         }
     }
 
-    fn reject_auth_request(&mut self,
-                           config: &Config,
-                           t0: std::time::Instant,
-                           mut auth_request: AuthRequest) {
-
+    fn reject_auth_request(&mut self, mut auth_request: AuthRequest) {
         debug!("rejecting {:?}", auth_request);
         push_packet!(self.write, {
             self.write.push(msg::USERAUTH_FAILURE);
@@ -549,11 +550,6 @@ impl Encrypted {
         auth_request.rejection_count += 1;
         debug!("packet pushed");
         self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
-        let t1 = std::time::Instant::now();
-        let dur = t1.duration_since(t0);
-        if dur < config.auth_rejection_time {
-            std::thread::sleep(config.auth_rejection_time - dur);
-        }
     }
 }
 

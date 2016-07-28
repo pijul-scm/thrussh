@@ -40,7 +40,7 @@ libsodium-sys = "0.0.10"
 log = "0.3"
 rand = "0.3"
 rustc-serialize = "0.3"
-
+time = "0.1"
 
 [dev-dependencies]
 tempdir="0.3"

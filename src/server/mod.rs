@@ -18,6 +18,7 @@ use std::sync::Arc;
 use byteorder::ByteOrder;
 use rand;
 use rand::Rng;
+use time;
 
 use super::*;
 
@@ -43,8 +44,8 @@ pub struct Config {
     pub methods: auth::MethodSet,
     /// The authentication banner, usually a warning message shown to the client.
     pub auth_banner: Option<&'static str>,
-    /// Authentication rejections must happen in constant time for security reasons.
-    pub auth_rejection_time: std::time::Duration,
+    /// Authentication rejections must happen in constant time for security reasons. Thrussh does not handle this by default.
+    pub auth_rejection_time: time::Duration,
     /// The server's keys. The first key pair in the client's preference order will be chosen.
     pub keys: Vec<key::Algorithm>,
     /// The bytes and time limits before key re-exchange.
@@ -67,7 +68,7 @@ impl Default for Config {
                                env!("CARGO_PKG_VERSION")),
             methods: auth::MethodSet::all(),
             auth_banner: None,
-            auth_rejection_time: std::time::Duration::from_secs(1),
+            auth_rejection_time: time::Duration::seconds(1),
             keys: Vec::new(),
             window_size: 1 << 30,
             maximum_packet_size: 1 << 20,
@@ -410,6 +411,14 @@ impl KexDh {
 }
 
 
+bitflags! {
+    pub flags ReadFlags: u32 {
+        const AT_LEAST_ONE_PACKET = 1,
+        const AUTH_REJECTED = 2,
+    }
+}
+
+
 
 impl Connection {
     pub fn new(config: Arc<Config>) -> Self {
@@ -443,16 +452,28 @@ impl Connection {
                                         stream: &mut R,
                                         buffer: &mut CryptoBuf,
                                         buffer2: &mut CryptoBuf)
-                                        -> Result<bool, Error> {
-        let mut at_least_one_was_read = false;
+                                        -> Result<ReadFlags, Error> {
+
+        let mut flags = ReadFlags::empty();
+
         loop {
+            if flags.contains(AUTH_REJECTED) {
+                // We have to wait.
+                return Ok(flags)
+            }
             match self.read_one_packet(server, stream, buffer, buffer2) {
-                Ok(true) => at_least_one_was_read = true,
-                Ok(false) => return Ok(at_least_one_was_read),
+
+                Ok(one_packet_flags) => {
+                    flags |= one_packet_flags;
+                    if !one_packet_flags.contains(AT_LEAST_ONE_PACKET) {
+                        // We don't have a full packet.
+                        return Ok(flags)
+                    }
+                },
                 Err(Error::IO(e)) => {
                     match e.kind() {
                         std::io::ErrorKind::UnexpectedEof |
-                        std::io::ErrorKind::WouldBlock => return Ok(at_least_one_was_read),
+                        std::io::ErrorKind::WouldBlock => return Ok(flags),
                         _ => return Err(Error::IO(e)),
                     }
                 }
@@ -467,7 +488,7 @@ impl Connection {
                                                stream: &mut R,
                                                buffer: &mut CryptoBuf,
                                                buffer2: &mut CryptoBuf)
-                                               -> Result<bool, Error> {
+                                               -> Result<ReadFlags, Error> {
         debug!("read {:?}", self.session);
         // Special case for the beginning.
         if self.session.0.encrypted.is_none() && self.session.0.kex.is_none() {
@@ -480,7 +501,7 @@ impl Connection {
                     exchange.client_id.extend(client_id);
                     debug!("client id, exchange = {:?}", exchange);
                 } else {
-                    return Ok(false);
+                    return Ok(ReadFlags::empty());
                 }
             }
             // Preparing the response
@@ -495,7 +516,7 @@ impl Connection {
                                  &mut self.session.0.cipher,
                                  &mut self.session.0.write_buffer);
             self.session.0.kex = Some(Kex::KexInit(kexinit));
-            return Ok(true);
+            return Ok(AT_LEAST_ONE_PACKET);
 
         }
 
@@ -510,7 +531,7 @@ impl Connection {
                 return Err(Error::Disconnect);
             }
             if buf[0] <= 4 {
-                return Ok(true);
+                return Ok(AT_LEAST_ONE_PACKET);
             }
 
             // Handle key exchange/re-exchange.
@@ -526,14 +547,14 @@ impl Connection {
                         match next_kex {
                             Ok(next_kex) => {
                                 self.session.0.kex = Some(next_kex);
-                                return Ok(true);
+                                return Ok(AT_LEAST_ONE_PACKET);
                             }
                             Err(e) => return Err(e),
                         }
-                    } else {
-                        // If the other side has not started the key exchange, process its packets.
-                        try!(self.session.server_read_encrypted(server, buf, buffer))
                     }
+                    // Else, i.e. if the other side has not started
+                    // the key exchange, process its packets by simple
+                    // not returning.
                 }
 
                 Some(Kex::KexDh(kexdh)) => {
@@ -546,7 +567,7 @@ impl Connection {
                     match next_kex {
                         Ok(next_kex) => {
                             self.session.0.kex = Some(next_kex);
-                            return Ok(true);
+                            return Ok(AT_LEAST_ONE_PACKET);
                         }
                         Err(e) => return Err(e),
                     }
@@ -558,18 +579,23 @@ impl Connection {
                     }
                     // Ok, NEWKEYS received, now encrypted.
                     self.session.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
-                    return Ok(true);
+                    return Ok(AT_LEAST_ONE_PACKET);
                 }
                 Some(kex) => {
                     self.session.0.kex = Some(kex);
-                    return Ok(true);
+                    return Ok(AT_LEAST_ONE_PACKET);
                 }
-                None => try!(self.session.server_read_encrypted(server, buf, buffer)),
+                None => {}
             }
-            self.session.flush();
-            Ok(true)
+            if ! try!(self.session.server_read_encrypted(server, buf, buffer)) {
+                self.session.flush();
+                Ok(AT_LEAST_ONE_PACKET | AUTH_REJECTED)
+            } else {
+                self.session.flush();
+                Ok(AT_LEAST_ONE_PACKET)
+            }
         } else {
-            Ok(false)
+            Ok(ReadFlags::empty())
         }
     }
 

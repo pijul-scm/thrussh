@@ -84,7 +84,7 @@ impl SSHBuffer {
                 }
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::WouldBlock {
-                        return Ok(false); // need more bytes
+                        return Ok(false);
                     } else {
                         return Err(Error::IO(e));
                     }

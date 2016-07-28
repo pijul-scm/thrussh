@@ -133,7 +133,7 @@
 extern crate libc;
 extern crate libsodium_sys;
 extern crate rand;
-
+extern crate time;
 #[macro_use]
 extern crate bitflags;
 
