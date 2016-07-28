@@ -216,6 +216,11 @@ pub mod ed25519 {
 
     #[derive(Debug, PartialEq, Eq)]
     pub struct PublicKey([u8; PUBLICKEYBYTES]);
+    impl std::cmp::PartialEq<[u8]> for PublicKey {
+        fn eq(&self, x:&[u8]) -> bool {
+            &self.0 == x
+        }
+    }
     // newtype!(PublicKey, PUBLICKEYBYTES);
     as_bytes!(PublicKey);
     from_slice!(PublicKey, PUBLICKEYBYTES);
