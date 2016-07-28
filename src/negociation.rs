@@ -29,7 +29,7 @@ pub struct Names {
     pub kex: kex::Name,
     pub key: key::Name,
     pub cipher: cipher::Name,
-    pub mac: &'static str,
+    pub mac: Option<&'static str>,
     pub ignore_guessed: bool,
 }
 
@@ -90,7 +90,7 @@ pub trait Select {
 
         try!(r.read_string()); // SERVER_TO_CLIENT
         let mac = Self::select(pref.mac, try!(r.read_string()));
-
+        let mac = mac.and_then(|(_,x)| Some(x));
         try!(r.read_string()); // SERVER_TO_CLIENT
         try!(r.read_string()); //
         try!(r.read_string()); //
@@ -98,7 +98,7 @@ pub trait Select {
 
         let follows = try!(r.read_byte()) != 0;
         match (cipher, mac, follows) {
-            (Some((_, cip)), Some((_, mac)), fol) => {
+            (Some((_, cip)), mac, fol) => {
                 Ok(Names {
                     kex: kex_algorithm,
                     key: key_algorithm,

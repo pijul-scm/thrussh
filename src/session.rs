@@ -37,7 +37,7 @@ pub struct Encrypted {
     pub exchange: Option<Exchange>, // It's always Some, except when we std::mem::replace it temporarily.
     pub kex: kex::Algorithm,
     pub key: usize,
-    pub mac: &'static str,
+    pub mac: Option<&'static str>,
     pub session_id: kex::Digest,
     pub rekey: Option<Kex>,
     pub channels: HashMap<u32, Channel>,
