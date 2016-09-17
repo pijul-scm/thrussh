@@ -14,7 +14,6 @@
 //
 use std;
 
-use super::sodium;
 use super::libc::{malloc, free, c_void};
 use std::ops::{Index, IndexMut, Deref, DerefMut, Range, RangeFrom, RangeTo};
 /// A buffer which zeroes its memory on `.clear()`, `.truncate()` and
@@ -134,11 +133,11 @@ impl CryptoBuf {
                 let next_capacity = size.next_power_of_two();
                 let old_ptr = self.p;
                 self.p = malloc(next_capacity) as *mut u8;
-                sodium::sodium_mlock(self.p as *mut c_void, next_capacity);
+                // TODO: mlock(self.p as *mut c_void, next_capacity);
 
                 if self.capacity > 0 {
                     std::ptr::copy_nonoverlapping(old_ptr, self.p, self.size);
-                    sodium::sodium_munlock(old_ptr as *mut c_void, self.size);
+                    // TOOD: munlock(old_ptr as *mut c_void, self.size);
                     free(old_ptr as *mut c_void);
                 }
 
@@ -256,7 +255,7 @@ impl Drop for CryptoBuf {
     fn drop(&mut self) {
         if self.capacity > 0 {
             unsafe {
-                sodium::sodium_munlock(self.p as *mut c_void, self.size);
+                // TODO: munlock(self.p as *mut c_void, self.size);
                 free(self.p as *mut c_void)
             }
         }

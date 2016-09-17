@@ -1,6 +1,6 @@
 [package]
 name = "thrussh"
-description = "A client and server SSH library. Memory-safe, doesn't do its own crypto (based on libsodium)."
+description = "A client and server SSH library. Memory-safe, doesn't do its own crypto (based on *ring*)."
 keywords = ["ssh"]
 version = "0.6.0"
 authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
@@ -10,7 +10,6 @@ documentation = "https://pijul.org/thrussh/doc/thrussh"
 license = "Apache-2.0"
 include = [
         "Cargo.toml",
-        "src/sodium.rs",
         "src/server/mod.rs",
         "src/server/encrypted.rs",
         "src/negociation.rs",
@@ -36,7 +35,6 @@ include = [
 byteorder = "0.5"
 bitflags = "0.7"
 libc = "0.2"
-libsodium-sys = "0.0.10"
 log = "0.3"
 rand = "0.3"
 ring = { git = "https://github.com/briansmith/ring", branch = "chacha" }

@@ -131,7 +131,6 @@
 
 
 extern crate libc;
-extern crate libsodium_sys;
 extern crate rand;
 extern crate ring;
 extern crate time;
@@ -145,7 +144,6 @@ extern crate byteorder;
 extern crate rustc_serialize; // config: read base 64.
 extern crate untrusted;
 
-use std::sync::{Once, ONCE_INIT};
 use std::io::{Read, BufRead, BufReader, Seek, SeekFrom, Write};
 use byteorder::{BigEndian, WriteBytesExt};
 use ring::signature;
@@ -157,13 +155,10 @@ use std::borrow::Cow;
 use std::fs::OpenOptions;
 use std::sync::Arc;
 
-mod sodium;
 mod cryptobuf;
 pub use cryptobuf::CryptoBuf;
 
 mod sshbuffer;
-
-static SODIUM_INIT: Once = ONCE_INIT;
 
 macro_rules! push_packet {
     ( $buffer:expr, $x:expr ) => {

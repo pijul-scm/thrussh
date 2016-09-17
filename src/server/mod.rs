@@ -421,9 +421,6 @@ bitflags! {
 
 impl Connection {
     pub fn new(config: Arc<Config>) -> Self {
-        super::SODIUM_INIT.call_once(|| {
-            super::sodium::init();
-        });
         let mut write_buffer = SSHBuffer::new();
         write_buffer.send_ssh_id(config.as_ref().server_id.as_bytes());
 
