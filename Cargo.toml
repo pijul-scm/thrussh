@@ -39,6 +39,7 @@ libc = "0.2"
 libsodium-sys = "0.0.10"
 log = "0.3"
 rand = "0.3"
+ring = { git = "https://github.com/briansmith/ring", branch = "chacha" }
 rustc-serialize = "0.3"
 time = "0.1"
 

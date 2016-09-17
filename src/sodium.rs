@@ -20,12 +20,6 @@ pub fn init() -> bool {
     unsafe { libsodium_sys::sodium_init() != -1 }
 }
 
-pub fn memcmp(x: &[u8], y: &[u8]) -> bool {
-    if x.len() != y.len() {
-        return false;
-    }
-    unsafe { libsodium_sys::sodium_memcmp(x.as_ptr(), y.as_ptr(), x.len()) == 0 }
-}
 use super::libc::{size_t, c_void};
 
 extern "C" {
@@ -76,74 +70,6 @@ macro_rules! clone (($newtype:ident) => (
         }
     }
 ));
-
-
-pub mod chacha20 {
-    use super::super::libc::{c_ulonglong, c_int};
-    use super::super::libsodium_sys;
-    pub const KEYBYTES: usize = libsodium_sys::crypto_stream_chacha20_KEYBYTES;
-    pub const NONCEBYTES: usize = libsodium_sys::crypto_stream_chacha20_NONCEBYTES;
-    use std;
-    newtype!(Key,KEYBYTES);
-    from_slice!(Key,KEYBYTES);
-    newtype!(Nonce,NONCEBYTES);
-    from_slice!(Nonce,NONCEBYTES);
-
-    pub fn stream_xor_inplace(m: &mut [u8], &Nonce(ref n): &Nonce, &Key(ref k): &Key) {
-        unsafe {
-            libsodium_sys::crypto_stream_chacha20_xor(m.as_mut_ptr(),
-                                                      m.as_ptr(),
-                                                      m.len() as c_ulonglong,
-                                                      n,
-                                                      k);
-        }
-    }
-
-    extern "C" {
-        fn crypto_stream_chacha20_xor_ic(c: *mut u8,
-                                         m: *mut u8,
-                                         mlen: c_ulonglong,
-                                         n: *const u8,
-                                         ic: u64,
-                                         k: *const u8)
-                                         -> c_int;
-    }
-
-    pub fn xor_inplace(x: &mut [u8], nonce: &Nonce, ic: u64, key: &Key) {
-        unsafe {
-            let p = x.as_mut_ptr();
-            crypto_stream_chacha20_xor_ic(p,
-                                          p,
-                                          x.len() as c_ulonglong,
-                                          nonce.0.as_ptr(),
-                                          ic,
-                                          key.0.as_ptr());
-        }
-    }
-}
-pub mod poly1305 {
-    use super::super::libsodium_sys;
-    use super::super::libc::c_ulonglong;
-    pub const KEYBYTES: usize = libsodium_sys::crypto_onetimeauth_poly1305_KEYBYTES;
-    pub const TAGBYTES: usize = libsodium_sys::crypto_onetimeauth_poly1305_BYTES;
-    use std;
-
-    newtype!(Key,KEYBYTES);
-    from_slice!(Key,KEYBYTES);
-
-    pub struct Tag([u8; TAGBYTES]);
-    new_blank!(Tag,TAGBYTES);
-    as_bytes!(Tag);
-
-    pub fn authenticate(tag: &mut Tag, m: &[u8], k: &Key) {
-        unsafe {
-            libsodium_sys::crypto_onetimeauth_poly1305(&mut tag.0,
-                                                       m.as_ptr(),
-                                                       m.len() as c_ulonglong,
-                                                       &(k.0));
-        }
-    }
-}
 
 pub mod randombytes {
     use super::super::libsodium_sys;
