@@ -18,26 +18,25 @@ use super::Error;
 use super::msg;
 use std;
 
-use super::sodium::curve25519;
 use super::cryptobuf::CryptoBuf;
 use session::Exchange;
 use key;
 use cipher;
-use ring::{digest, rand};
+use ring::{agreement, digest, rand};
+use untrusted;
 
 #[doc(hidden)]
-#[derive(Debug)]
-pub struct Curve25519 {
-    local_pubkey: curve25519::GroupElement,
-    local_secret: curve25519::Scalar,
-    remote_pubkey: Option<curve25519::GroupElement>,
-    shared_secret: Option<curve25519::GroupElement>,
+pub struct Algorithm {
+    local_secret: Option<agreement::EphemeralPrivateKey>,
+    local_pubkey: Option<Vec<u8>>,
+    remote_pubkey: Option<Vec<u8>>,
+    shared_secret: Option<Vec<u8>>,
 }
 
-#[doc(hidden)]
-#[derive(Debug)]
-pub enum Algorithm {
-    Curve25519(Curve25519), // "curve25519-sha256@libssh.org"
+impl std::fmt::Debug for Algorithm {
+    fn fmt(&self, _f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        unimplemented!() // TODO
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -56,112 +55,85 @@ impl Algorithm {
                      -> Result<Algorithm, Error> {
         let rng = rand::SystemRandom::new(); // TODO: make a parameter.
 
-        match name {
-
-            CURVE25519 if payload[0] == msg::KEX_ECDH_INIT => {
-
-                let client_pubkey = {
-                    let pubkey_len = BigEndian::read_u32(&payload[1..]) as usize;
-                    curve25519::GroupElement::copy_from_slice(&payload[5..(5 + pubkey_len)])
-                };
-                let server_secret = {
-                    let mut server_secret = [0; curve25519::SCALARBYTES];
-                    rng.fill(&mut server_secret).unwrap();
-
-                    // https://cr.yp.to/ecdh.html
-                    server_secret[0] &= 248;
-                    server_secret[31] &= 127;
-                    server_secret[31] |= 64;
-                    curve25519::Scalar::copy_from_slice(&server_secret)
-                };
-
-                let mut server_pubkey = curve25519::GroupElement::new_blank();
-                curve25519::scalarmult_base(&mut server_pubkey, &server_secret);
-
-                // fill exchange.
-                exchange.server_ephemeral.clear();
-                exchange.server_ephemeral.extend(&server_pubkey);
-
-                let mut shared_secret = curve25519::GroupElement::new_blank();
-                curve25519::scalarmult(&mut shared_secret, &server_secret, &client_pubkey);
-                debug!("server shared : {:?}", shared_secret);
-
-                // debug!("shared secret");
-                // super::hexdump(&shared_secret);
-
-                Ok(Algorithm::Curve25519(Curve25519 {
-                    local_pubkey: server_pubkey,
-                    local_secret: server_secret,
-                    remote_pubkey: Some(client_pubkey),
-                    shared_secret: Some(shared_secret),
-                }))
-            }
+        let alg = match name {
+            CURVE25519 => &agreement::X25519,
             _ => unreachable!(),
-        }
+        };
+
+        assert_eq!(payload[0], msg::KEX_ECDH_INIT);
+        let client_pubkey = {
+            let pubkey_len = BigEndian::read_u32(&payload[1..]) as usize;
+            untrusted::Input::from(&payload[5..(5 + pubkey_len)])
+        };
+
+        let server_secret = try!(agreement::EphemeralPrivateKey::generate(alg, &rng)
+                                    .map_err(|_| Error::Inconsistent/*XXX*/));
+        let mut server_pubkey = vec![0; server_secret.public_key_len()];
+        try!(server_secret.compute_public_key(&mut server_pubkey[..])
+                          .map_err(|_| Error::Inconsistent/*XXX*/));
+
+        // fill exchange.
+        exchange.server_ephemeral.clear();
+        exchange.server_ephemeral.extend(&server_pubkey);
+
+        // XXX: There is no assertion that the peer is using the same key exchange algorithm.
+        agreement::agree_ephemeral(server_secret, &agreement::X25519, client_pubkey,
+                                   Error::Inconsistent/*XXX*/, |shared_secret| {
+            Ok(Algorithm {
+                local_secret: None,
+                local_pubkey: Some(server_pubkey),
+                remote_pubkey: Some(Vec::from(client_pubkey.as_slice_less_safe())),
+                shared_secret: Some(Vec::from(shared_secret)),
+            })
+        })
     }
+
     pub fn client_dh(name: Name,
                      client_ephemeral: &mut CryptoBuf,
                      buf: &mut CryptoBuf)
                      -> Result<Algorithm, Error> {
         let rng = rand::SystemRandom::new(); // TODO: make a parameter.
 
-
-        match name {
-
-            CURVE25519 => {
-
-                let client_secret = {
-                    let mut secret = [0; curve25519::SCALARBYTES];
-                    rng.fill(&mut secret).unwrap();
-
-                    // https://cr.yp.to/ecdh.html
-                    secret[0] &= 248;
-                    secret[31] &= 127;
-                    secret[31] |= 64;
-                    curve25519::Scalar::copy_from_slice(&secret)
-                };
-
-                let mut client_pubkey = curve25519::GroupElement::new_blank();
-                curve25519::scalarmult_base(&mut client_pubkey, &client_secret);
-
-                // fill exchange.
-                client_ephemeral.clear();
-                client_ephemeral.extend(&client_pubkey);
-
-
-                buf.push(msg::KEX_ECDH_INIT);
-                buf.extend_ssh_string(&client_pubkey);
-
-
-                Ok(Algorithm::Curve25519(Curve25519 {
-                    local_pubkey: client_pubkey,
-                    local_secret: client_secret,
-                    remote_pubkey: None,
-                    shared_secret: None,
-                }))
-            }
+        let alg = match name {
+            CURVE25519 => &agreement::X25519,
             _ => unreachable!(),
-        }
+        };
+
+        let client_secret = try!(agreement::EphemeralPrivateKey::generate(alg, &rng)
+                                    .map_err(|_| Error::Inconsistent/*XXX*/));
+
+        let mut client_pubkey = vec![0; client_secret.public_key_len()];
+        try!(client_secret.compute_public_key(&mut client_pubkey)
+                .map_err(|_| Error::Inconsistent/*XXX*/));
+
+        // fill exchange.
+        client_ephemeral.clear();
+        client_ephemeral.extend(&client_pubkey);
+
+        buf.push(msg::KEX_ECDH_INIT);
+        buf.extend_ssh_string(&client_pubkey);
+
+        Ok(Algorithm {
+            local_secret: Some(client_secret),
+            local_pubkey: Some(client_pubkey),
+            remote_pubkey: None,
+            shared_secret: None,
+        })
     }
 
-
-
     pub fn compute_shared_secret(&mut self, remote_pubkey: &[u8]) -> Result<(), Error> {
+        let local_secret = std::mem::replace(&mut self.local_secret, None).unwrap();
 
-        match self {
-            &mut Algorithm::Curve25519(ref mut kex) => {
+        // XXX: There is no assertion that the peer is using the same key exchange algorithm.
+        let peer_alg = local_secret.algorithm();
 
-                let server_public = curve25519::GroupElement::copy_from_slice(remote_pubkey);
-                let mut shared_secret = curve25519::GroupElement::new_blank();
-                curve25519::scalarmult(&mut shared_secret, &kex.local_secret, &server_public);
-
-                debug!("client shared : {:?}", shared_secret);
-
-                kex.shared_secret = Some(shared_secret);
-                Ok(())
-            }
-        }
-
+        agreement::agree_ephemeral(local_secret, peer_alg,
+                                   untrusted::Input::from(remote_pubkey), Error::Inconsistent/*XXX*/,
+                                   |shared_secret| {
+            debug!("client shared : {:?}", shared_secret);
+            self.shared_secret = Some(Vec::from(shared_secret));
+            Ok(())
+        })
     }
 
     pub fn compute_exchange_hash<K: key::PubKey>(&self,
@@ -170,39 +142,35 @@ impl Algorithm {
                                                  buffer: &mut CryptoBuf)
                                                  -> Result<digest::Digest, Error> {
         // Computing the exchange hash, see page 7 of RFC 5656.
-        match self {
-            &Algorithm::Curve25519(ref kex) => {
 
-                debug!("{:?} {:?}",
-                       std::str::from_utf8(&exchange.client_id),
-                       std::str::from_utf8(&exchange.server_id));
-                buffer.clear();
-                buffer.extend_ssh_string(&exchange.client_id);
-                buffer.extend_ssh_string(&exchange.server_id);
-                buffer.extend_ssh_string(&exchange.client_kex_init);
-                buffer.extend_ssh_string(&exchange.server_kex_init);
+        debug!("{:?} {:?}",
+                std::str::from_utf8(&exchange.client_id),
+                std::str::from_utf8(&exchange.server_id));
+        buffer.clear();
+        buffer.extend_ssh_string(&exchange.client_id);
+        buffer.extend_ssh_string(&exchange.server_id);
+        buffer.extend_ssh_string(&exchange.client_kex_init);
+        buffer.extend_ssh_string(&exchange.server_kex_init);
 
 
-                key.push_to(buffer);
-                debug!("client_ephemeral: {:?}",
-                       &exchange.client_ephemeral);
-                debug_assert_eq!(exchange.client_ephemeral.len(), 32);
-                buffer.extend_ssh_string(&exchange.client_ephemeral);
+        key.push_to(buffer);
+        debug!("client_ephemeral: {:?}",
+                &exchange.client_ephemeral);
+        debug_assert_eq!(exchange.client_ephemeral.len(), 32);
+        buffer.extend_ssh_string(&exchange.client_ephemeral);
 
-                debug_assert_eq!(exchange.server_ephemeral.len(), 32);
-                buffer.extend_ssh_string(&exchange.server_ephemeral);
+        debug_assert_eq!(exchange.server_ephemeral.len(), 32);
+        buffer.extend_ssh_string(&exchange.server_ephemeral);
 
-                if let Some(ref shared) = kex.shared_secret {
-                    buffer.extend_ssh_mpint(&shared);
-                }
-                debug!("buffer len = {:?}", buffer.len());
-                debug!("buffer: {:?}", &buffer);
-                // super::hexdump(buffer);
-                let hash = digest::digest(&digest::SHA256, &buffer);
-                debug!("hash: {:?}", hash);
-                Ok(hash)
-            }
+        if let Some(ref shared) = self.shared_secret {
+            buffer.extend_ssh_mpint(&shared);
         }
+        debug!("buffer len = {:?}", buffer.len());
+        debug!("buffer: {:?}", &buffer);
+        // super::hexdump(buffer);
+        let hash = digest::digest(&digest::SHA256, &buffer);
+        debug!("hash: {:?}", hash);
+        Ok(hash)
     }
 
 
@@ -214,67 +182,62 @@ impl Algorithm {
                         cipher: cipher::Name,
                         is_server: bool)
                         -> Result<super::cipher::CipherPair, Error> {
-        match self {
-            &Algorithm::Curve25519(ref kex) => {
+        // https://tools.ietf.org/html/rfc4253#section-7.2
+        let mut compute_key = |c, key: &mut CryptoBuf, len| {
+            buffer.clear();
+            key.clear();
 
-                // https://tools.ietf.org/html/rfc4253#section-7.2
-                let mut compute_key = |c, key: &mut CryptoBuf, len| {
+            if let Some(ref shared) = self.shared_secret {
+                buffer.extend_ssh_mpint(&shared);
+            }
 
-                    buffer.clear();
-                    key.clear();
+            buffer.extend(exchange_hash.as_ref());
+            buffer.push(c);
+            buffer.extend(session_id.as_ref());
+            let hash = digest::digest(&digest::SHA256, &buffer);
+            key.extend(hash.as_ref());
 
-                    if let Some(ref shared) = kex.shared_secret {
-                        buffer.extend_ssh_mpint(&shared);
-                    }
+            while key.len() < len {
+                // extend.
+                buffer.clear();
+                if let Some(ref shared) = self.shared_secret {
+                    buffer.extend_ssh_mpint(&shared);
+                }
+                buffer.extend(exchange_hash.as_ref());
+                buffer.extend(key);
+                key.extend(digest::digest(&digest::SHA256, &buffer).as_ref());
+            }
+        };
 
-                    buffer.extend(&exchange_hash.as_ref());
-                    buffer.push(c);
-                    buffer.extend(&session_id.as_ref());
-                    key.extend(digest::digest(&digest::SHA256, &buffer).as_ref());
+        match cipher {
+            super::cipher::CHACHA20POLY1305 => {
 
-                    while key.len() < len {
-                        // extend.
-                        buffer.clear();
-                        if let Some(ref shared) = kex.shared_secret {
-                            buffer.extend_ssh_mpint(&shared);
-                        }
-                        buffer.extend(exchange_hash.as_ref());
-                        buffer.extend(key);
-                        key.extend(digest::digest(&digest::SHA256, &buffer).as_ref());
-                    }
+                let client_to_server = {
+                    compute_key(b'C', key, super::cipher::key_size(cipher));
+                    super::cipher::Cipher::Chacha20Poly1305 (
+                        super::cipher::chacha20poly1305::Cipher::init(&key)
+                    )
+                };
+                let server_to_client = {
+                    compute_key(b'D', key, super::cipher::key_size(cipher));
+                    super::cipher::Cipher::Chacha20Poly1305 (
+                        super::cipher::chacha20poly1305::Cipher::init(&key)
+                    )
                 };
 
-                match cipher {
-                    super::cipher::CHACHA20POLY1305 => {
-
-                        let client_to_server = {
-                            compute_key(b'C', key, super::cipher::key_size(cipher));
-                            super::cipher::Cipher::Chacha20Poly1305 (
-                                super::cipher::chacha20poly1305::Cipher::init(&key)
-                            )
-                        };
-                        let server_to_client = {
-                            compute_key(b'D', key, super::cipher::key_size(cipher));
-                            super::cipher::Cipher::Chacha20Poly1305 (
-                                super::cipher::chacha20poly1305::Cipher::init(&key)
-                            )
-                        };
-
-                        Ok(if is_server {
-                            super::cipher::CipherPair {
-                                local_to_remote: server_to_client,
-                                remote_to_local: client_to_server,
-                            }
-                        } else {
-                            super::cipher::CipherPair {
-                                local_to_remote: client_to_server,
-                                remote_to_local: server_to_client,
-                            }
-                        })
+                Ok(if is_server {
+                    super::cipher::CipherPair {
+                        local_to_remote: server_to_client,
+                        remote_to_local: client_to_server,
                     }
-                    _ => unreachable!(),
-                }
+                } else {
+                    super::cipher::CipherPair {
+                        local_to_remote: client_to_server,
+                        remote_to_local: server_to_client,
+                    }
+                })
             }
+            _ => unreachable!(),
         }
     }
 }
