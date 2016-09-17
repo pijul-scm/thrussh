@@ -12,12 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-use sodium::ed25519;
 use cryptobuf::CryptoBuf;
 use negociation::Named;
 use Error;
 use encoding::Reader;
-use ring::{digest, signature};
+use ring::{digest, rand, signature};
 use std;
 use rustc_serialize::base64::{ToBase64, STANDARD};
 use untrusted;
@@ -104,18 +103,18 @@ impl Verify for PublicKey {
 
 #[derive(Clone)]
 pub enum Algorithm {
+    // `Arc` is used so that `Algorithm` can be `Clone` given `Ed25519KeyPair`
+    // isn't.
     #[doc(hidden)]
-    Ed25519 {
-        public: Vec<u8>,
-        secret: ed25519::SecretKey,
-    },
+    Ed25519(std::sync::Arc<signature::Ed25519KeyPair>),
 }
 
 impl std::fmt::Debug for Algorithm {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match *self {
-            Algorithm::Ed25519 { ref public, .. } => {
-                write!(f, "Ed25519 {{ public: {:?}, secret: (hidden) }}", public)
+            Algorithm::Ed25519(ref key_pair) => {
+                write!(f, "Ed25519 {{ public: {:?}, secret: (hidden) }}",
+                       key_pair.public_key_bytes())
             }
         }
     }
@@ -141,8 +140,8 @@ impl PubKey for PublicKey {
 impl PubKey for Algorithm {
     fn push_to(&self, buffer: &mut CryptoBuf) {
         match self {
-            &Algorithm::Ed25519 { ref public, .. } => {
-
+            &Algorithm::Ed25519(ref key_pair) => {
+                let public = key_pair.public_key_bytes();
                 buffer.push_u32_be((ED25519.0.len() + public.len() + 8) as u32);
                 buffer.extend_ssh_string(ED25519.0.as_bytes());
                 buffer.extend_ssh_string(public);
@@ -163,7 +162,7 @@ impl Named for PublicKey {
 impl Named for Algorithm {
     fn name(&self) -> &'static str {
         match self {
-            &Algorithm::Ed25519 { .. } => ED25519.0,
+            &Algorithm::Ed25519(..) => ED25519.0,
         }
     }
 }
@@ -172,7 +171,8 @@ impl Algorithm {
     /// Copy the public key of this algorithm.
     pub fn clone_public_key(&self) -> PublicKey {
         match self {
-            &Algorithm::Ed25519 { ref public, .. } => PublicKey::Ed25519(public.clone()),
+            &Algorithm::Ed25519(ref key_pair) =>
+                PublicKey::Ed25519(Vec::from(key_pair.public_key_bytes()))
         }
     }
 
@@ -180,15 +180,10 @@ impl Algorithm {
     pub fn generate_keypair(t: Name) -> Option<Self> {
         match t {
             ED25519 => {
-                if let Some((pk, sk)) = super::sodium::ed25519::generate_keypair() {
-                    let pk: &[u8] = &pk;
-                    Some(Algorithm::Ed25519 {
-                        public: Vec::from(pk),
-                        secret: sk,
-                    })
-                } else {
-                    None
-                }
+                // TODO: take `rng` as a parameter.
+                let rng = rand::SystemRandom::new();
+                signature::Ed25519KeyPair::generate(&rng)
+                    .map(|key_pair| Algorithm::Ed25519(std::sync::Arc::new(key_pair))).ok()
             }
             _ => None,
         }
@@ -197,14 +192,16 @@ impl Algorithm {
     #[doc(hidden)]
     pub fn add_signature(&self, buffer: &mut CryptoBuf, hash: &digest::Digest) {
         match self {
-            &Algorithm::Ed25519 { ref secret, .. } => {
+            &Algorithm::Ed25519(ref key_pair) => {
+                // XXX: Is this right? We use Ed25519 to sign a digest, so that
+                // there is an extra level of digesting, to simulate a prehash
+                // variant?
+                let signature = key_pair.sign(hash.as_ref());
+                let signature = signature.as_slice();
 
-                let mut sign = ed25519::Signature::new_blank();
-                ed25519::sign_detached(&mut sign, hash.as_ref(), secret);
-
-                buffer.push_u32_be((ED25519.0.len() + ed25519::SIGNATUREBYTES + 8) as u32);
+                buffer.push_u32_be((ED25519.0.len() + signature.len() + 8) as u32);
                 buffer.extend_ssh_string(ED25519.0.as_bytes());
-                buffer.extend_ssh_string(&sign);
+                buffer.extend_ssh_string(signature);
             }
         }
     }
@@ -212,14 +209,15 @@ impl Algorithm {
     #[doc(hidden)]
     pub fn add_self_signature(&self, buffer: &mut CryptoBuf) {
         match self {
-            &Algorithm::Ed25519 { ref secret, .. } => {
+            &Algorithm::Ed25519(ref key_pair) => {
+                // XXX: Is this right? Above, we do a double hashing, but here
+                // we're doing single hashing!
+                let signature = key_pair.sign(&buffer);
+                let signature = signature.as_slice();
 
-                let mut sign = ed25519::Signature::new_blank();
-                ed25519::sign_detached(&mut sign, &buffer, secret);
-
-                buffer.push_u32_be((ED25519.0.len() + ed25519::SIGNATUREBYTES + 8) as u32);
+                buffer.push_u32_be((ED25519.0.len() + signature.len() + 8) as u32);
                 buffer.extend_ssh_string(ED25519.0.as_bytes());
-                buffer.extend_ssh_string(&sign);
+                buffer.extend_ssh_string(signature);
             }
         }
     }

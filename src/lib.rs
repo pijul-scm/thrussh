@@ -148,12 +148,14 @@ extern crate untrusted;
 use std::sync::{Once, ONCE_INIT};
 use std::io::{Read, BufRead, BufReader, Seek, SeekFrom, Write};
 use byteorder::{BigEndian, WriteBytesExt};
+use ring::signature;
 use rustc_serialize::base64::{FromBase64, ToBase64, STANDARD};
 use std::path::Path;
 use std::fs::File;
 use std::ops::Deref;
 use std::borrow::Cow;
 use std::fs::OpenOptions;
+use std::sync::Arc;
 
 mod sodium;
 mod cryptobuf;
@@ -529,11 +531,9 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
                     let seckey = try!(position.read_string());
                     let comment = try!(position.read_string());
                     debug!("comment = {:?}", comment);
-                    let secret = sodium::ed25519::SecretKey::copy_from_slice(seckey);
-                    return Ok(key::Algorithm::Ed25519 {
-                        public: Vec::from(pubkey),
-                        secret: secret,
-                    });
+                    return signature::Ed25519KeyPair::from_bytes(seckey, pubkey)
+                            .map(|key_pair| key::Algorithm::Ed25519(Arc::new(key_pair)))
+                            .map_err(|_| Error::CouldNotReadKey)
                 } else {
                     info!("unsupported key type {:?}", std::str::from_utf8(key_type));
                 }
