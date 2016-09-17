@@ -143,7 +143,7 @@ extern crate log;
 extern crate byteorder;
 
 extern crate rustc_serialize; // config: read base 64.
-
+extern crate untrusted;
 
 use std::sync::{Once, ONCE_INIT};
 use std::io::{Read, BufRead, BufReader, Seek, SeekFrom, Write};

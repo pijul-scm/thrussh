@@ -18,7 +18,6 @@ use std::io::{Write, BufRead};
 use std;
 
 use {Disconnect, Error, Limits, Sig, ChannelOpenFailure, parse_public_key};
-use sodium;
 use encoding::Reader;
 use key;
 use msg;
@@ -33,7 +32,9 @@ use cipher;
 use kex;
 use rand;
 use rand::Rng;
+use ring::signature;
 use pty::Pty;
+use untrusted;
 
 mod encrypted;
 
@@ -299,15 +300,15 @@ impl KexDhDone {
                         let mut sig_reader = signature.reader(0);
                         let sig_type = try!(sig_reader.read_string());
                         assert_eq!(sig_type, b"ssh-ed25519");
-                        let signature = try!(sig_reader.read_string());
-                        sodium::ed25519::Signature::copy_from_slice(signature)
+                        try!(sig_reader.read_string())
                     };
 
                     match pubkey {
                         key::PublicKey::Ed25519(ref pubkey) => {
-                            assert!(sodium::ed25519::verify_detached(&signature,
-                                                                     &hash.as_ref(),
-                                                                     pubkey))
+                            assert!(signature::verify(&signature::ED25519,
+                                                      untrusted::Input::from(&pubkey),
+                                                      untrusted::Input::from(hash.as_ref()),
+                                                      untrusted::Input::from(signature)).is_ok());
                         }
                     };
                     debug!("signature = {:?}", signature);
