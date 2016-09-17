@@ -156,18 +156,4 @@ pub mod ed25519 {
             assert_eq!(siglen, SIGNATUREBYTES as c_ulonglong);
         }
     }
-
-    pub fn verify_detached(signature: &Signature,
-                           m: &[u8],
-                           &PublicKey(ref pk): &PublicKey)
-                           -> bool {
-        unsafe {
-            let ret = libsodium_sys::crypto_sign_ed25519_verify_detached(&signature.0,
-                                                                         m.as_ptr(),
-                                                                         m.len() as c_ulonglong,
-                                                                         pk);
-            ret == 0
-        }
-    }
-
 }

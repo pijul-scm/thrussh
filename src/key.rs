@@ -17,9 +17,10 @@ use cryptobuf::CryptoBuf;
 use negociation::Named;
 use Error;
 use encoding::Reader;
-use ring::digest;
+use ring::{digest, signature};
 use std;
 use rustc_serialize::base64::{ToBase64, STANDARD};
+use untrusted;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct Name(&'static str);
@@ -48,7 +49,7 @@ pub trait Verify {
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub enum PublicKey {
     #[doc(hidden)]
-    Ed25519(ed25519::PublicKey),
+    Ed25519(Vec<u8>),
 }
 
 impl std::ops::Deref for PublicKey {
@@ -66,8 +67,12 @@ impl PublicKey {
         match algo {
             b"ssh-ed25519" => {
                 let mut p = pubkey.reader(0);
-                try!(p.read_string());
-                Ok(PublicKey::Ed25519(ed25519::PublicKey::copy_from_slice(try!(p.read_string()))))
+                try!(p.read_string()); // XXX: don't we need to compare this to something or something?
+                let key_bytes = try!(p.read_string());
+                if key_bytes.len() != 32 /*XXX*/ {
+                    return Err(Error::Inconsistent/*XXX*/);
+                }
+                Ok(PublicKey::Ed25519(Vec::from(key_bytes)))
             }
             _ => Err(Error::UnknownKey),
         }
@@ -88,8 +93,10 @@ impl Verify for PublicKey {
     fn verify_detached(&self, buffer: &[u8], sig: &[u8]) -> bool {
         match self {
             &PublicKey::Ed25519(ref public) => {
-                let sig = ed25519::Signature::copy_from_slice(sig);
-                ed25519::verify_detached(&sig, buffer, public)
+                signature::verify(&signature::ED25519,
+                                  untrusted::Input::from(public),
+                                  untrusted::Input::from(buffer),
+                                  untrusted::Input::from(sig)).is_ok()
             }
         }
     }
@@ -99,7 +106,7 @@ impl Verify for PublicKey {
 pub enum Algorithm {
     #[doc(hidden)]
     Ed25519 {
-        public: ed25519::PublicKey,
+        public: Vec<u8>,
         secret: ed25519::SecretKey,
     },
 }
@@ -123,7 +130,7 @@ impl PubKey for PublicKey {
         match self {
             &PublicKey::Ed25519(ref public) => {
 
-                buffer.push_u32_be((ED25519.0.len() + ed25519::PUBLICKEYBYTES + 8) as u32);
+                buffer.push_u32_be((ED25519.0.len() + public.len() + 8) as u32);
                 buffer.extend_ssh_string(ED25519.0.as_bytes());
                 buffer.extend_ssh_string(public);
             }
@@ -136,7 +143,7 @@ impl PubKey for Algorithm {
         match self {
             &Algorithm::Ed25519 { ref public, .. } => {
 
-                buffer.push_u32_be((ED25519.0.len() + ed25519::PUBLICKEYBYTES + 8) as u32);
+                buffer.push_u32_be((ED25519.0.len() + public.len() + 8) as u32);
                 buffer.extend_ssh_string(ED25519.0.as_bytes());
                 buffer.extend_ssh_string(public);
             }
@@ -174,8 +181,9 @@ impl Algorithm {
         match t {
             ED25519 => {
                 if let Some((pk, sk)) = super::sodium::ed25519::generate_keypair() {
+                    let pk: &[u8] = &pk;
                     Some(Algorithm::Ed25519 {
-                        public: pk,
+                        public: Vec::from(pk),
                         secret: sk,
                     })
                 } else {

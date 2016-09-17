@@ -448,7 +448,7 @@ pub fn parse_public_key(p: &[u8]) -> Result<key::PublicKey, Error> {
     let mut pos = p.reader(0);
     if try!(pos.read_string()) == b"ssh-ed25519" {
         if let Ok(pubkey) = pos.read_string() {
-            return Ok(key::PublicKey::Ed25519(sodium::ed25519::PublicKey::copy_from_slice(pubkey)));
+            return Ok(key::PublicKey::Ed25519(Vec::from(pubkey)));
         }
     }
     Err(Error::CouldNotReadKey)
@@ -506,8 +506,7 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
             let mut pos = public_string.reader(0);
             if try!(pos.read_string()) == KEYTYPE_ED25519 {
                 if let Ok(pubkey) = pos.read_string() {
-                    let public = sodium::ed25519::PublicKey::copy_from_slice(pubkey);
-                    info!("public: {:?}", public);
+                    info!("public: ED25519:{:?}", pubkey);
                 } else {
                     info!("warning: no public key");
                 }
@@ -530,10 +529,9 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
                     let seckey = try!(position.read_string());
                     let comment = try!(position.read_string());
                     debug!("comment = {:?}", comment);
-                    let public = sodium::ed25519::PublicKey::copy_from_slice(pubkey);
                     let secret = sodium::ed25519::SecretKey::copy_from_slice(seckey);
                     return Ok(key::Algorithm::Ed25519 {
-                        public: public,
+                        public: Vec::from(pubkey),
                         secret: secret,
                     });
                 } else {
