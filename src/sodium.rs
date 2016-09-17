@@ -71,17 +71,6 @@ macro_rules! clone (($newtype:ident) => (
     }
 ));
 
-pub mod randombytes {
-    use super::super::libsodium_sys;
-
-    pub fn into(buf: &mut [u8]) {
-        unsafe {
-            libsodium_sys::randombytes_buf(buf.as_mut_ptr(), buf.len());
-        }
-    }
-}
-
-
 pub mod curve25519 {
     use super::super::libsodium_sys;
 

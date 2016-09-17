@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-use super::sodium::randombytes;
-
 use super::Error;
 use super::key;
 use super::kex;
@@ -23,6 +21,7 @@ use super::msg;
 // use super::compression; // unimplemented
 use cryptobuf::CryptoBuf;
 use super::encoding::Reader;
+use ring::rand;
 
 #[derive(Debug)]
 pub struct Names {
@@ -148,11 +147,13 @@ impl Select for Client {
 
 
 pub fn write_kex(prefs: &Preferred, buf: &mut CryptoBuf) {
+    let rng = rand::SystemRandom::new(); // TODO: make a parameter.
+
     // buf.clear();
     buf.push(msg::KEXINIT);
 
     let mut cookie = [0; 16];
-    randombytes::into(&mut cookie);
+    rng.fill(&mut cookie).unwrap(); // XXX: unwrap
 
     buf.extend(&cookie); // cookie
     buf.extend_list(prefs.kex.iter()); // kex algo

@@ -18,13 +18,12 @@ use super::Error;
 use super::msg;
 use std;
 
-use super::sodium::randombytes;
 use super::sodium::curve25519;
 use super::cryptobuf::CryptoBuf;
 use session::Exchange;
 use key;
 use cipher;
-use ring::digest;
+use ring::{digest, rand};
 
 #[doc(hidden)]
 #[derive(Debug)]
@@ -55,6 +54,7 @@ impl Algorithm {
                      exchange: &mut Exchange,
                      payload: &[u8])
                      -> Result<Algorithm, Error> {
+        let rng = rand::SystemRandom::new(); // TODO: make a parameter.
 
         match name {
 
@@ -66,7 +66,7 @@ impl Algorithm {
                 };
                 let server_secret = {
                     let mut server_secret = [0; curve25519::SCALARBYTES];
-                    randombytes::into(&mut server_secret);
+                    rng.fill(&mut server_secret).unwrap();
 
                     // https://cr.yp.to/ecdh.html
                     server_secret[0] &= 248;
@@ -103,6 +103,8 @@ impl Algorithm {
                      client_ephemeral: &mut CryptoBuf,
                      buf: &mut CryptoBuf)
                      -> Result<Algorithm, Error> {
+        let rng = rand::SystemRandom::new(); // TODO: make a parameter.
+
 
         match name {
 
@@ -110,7 +112,7 @@ impl Algorithm {
 
                 let client_secret = {
                     let mut secret = [0; curve25519::SCALARBYTES];
-                    randombytes::into(&mut secret);
+                    rng.fill(&mut secret).unwrap();
 
                     // https://cr.yp.to/ecdh.html
                     secret[0] &= 248;
