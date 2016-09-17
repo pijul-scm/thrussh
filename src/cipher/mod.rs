@@ -13,7 +13,7 @@
 // limitations under the License.
 //
 use {Error, Disconnect};
-use std::io::{Read, BufRead};
+use std::io::BufRead;
 use std;
 use cryptobuf::CryptoBuf;
 use sshbuffer::SSHBuffer;

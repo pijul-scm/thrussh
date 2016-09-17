@@ -146,7 +146,7 @@ extern crate rustc_serialize; // config: read base 64.
 
 use std::sync::{Once, ONCE_INIT};
 use std::io::{Read, BufRead, BufReader, Seek, SeekFrom, Write};
-use byteorder::{BigEndian, WriteBytesExt, ByteOrder};
+use byteorder::{BigEndian, WriteBytesExt};
 use rustc_serialize::base64::{FromBase64, ToBase64, STANDARD};
 use std::path::Path;
 use std::fs::File;

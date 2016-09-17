@@ -15,7 +15,6 @@
 use std::io::{Write, BufRead};
 use std;
 use std::sync::Arc;
-use byteorder::ByteOrder;
 use rand;
 use rand::Rng;
 use time;
