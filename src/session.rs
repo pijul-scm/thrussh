@@ -29,7 +29,7 @@ use sshbuffer::SSHBuffer;
 use byteorder::{BigEndian, ByteOrder};
 use cipher::CipherT;
 use std::sync::Arc;
-
+use ring::digest;
 
 #[derive(Debug)]
 pub struct Encrypted {
@@ -38,7 +38,7 @@ pub struct Encrypted {
     pub kex: kex::Algorithm,
     pub key: usize,
     pub mac: Option<&'static str>,
-    pub session_id: kex::Digest,
+    pub session_id: digest::Digest,
     pub rekey: Option<Kex>,
     pub channels: HashMap<u32, Channel>,
     pub wants_reply: bool,
@@ -271,7 +271,7 @@ pub enum Kex {
 pub struct KexInit {
     pub algo: Option<negociation::Names>,
     pub exchange: Exchange,
-    pub session_id: Option<kex::Digest>,
+    pub session_id: Option<digest::Digest>,
     pub sent: bool,
 }
 
@@ -279,7 +279,7 @@ pub struct KexInit {
 impl KexInit {
     pub fn received_rekey(ex: Exchange,
                           algo: negociation::Names,
-                          session_id: &kex::Digest)
+                          session_id: &digest::Digest)
                           -> Self {
         let mut kexinit = KexInit {
             exchange: ex,
@@ -294,7 +294,7 @@ impl KexInit {
         kexinit
     }
 
-    pub fn initiate_rekey(ex: Exchange, session_id: &kex::Digest) -> Self {
+    pub fn initiate_rekey(ex: Exchange, session_id: &digest::Digest) -> Self {
         let mut kexinit = KexInit {
             exchange: ex,
             algo: None,
@@ -314,7 +314,7 @@ pub struct KexDh {
     pub exchange: Exchange,
     pub names: negociation::Names,
     pub key: usize,
-    pub session_id: Option<kex::Digest>,
+    pub session_id: Option<digest::Digest>,
 }
 
 #[derive(Debug)]
@@ -322,13 +322,13 @@ pub struct KexDhDone {
     pub exchange: Exchange,
     pub kex: kex::Algorithm,
     pub key: usize,
-    pub session_id: Option<kex::Digest>,
+    pub session_id: Option<digest::Digest>,
     pub names: negociation::Names,
 }
 
 impl KexDhDone {
     pub fn compute_keys(self,
-                        hash: kex::Digest,
+                        hash: digest::Digest,
                         buffer: &mut CryptoBuf,
                         buffer2: &mut CryptoBuf,
                         is_server: bool)
@@ -366,7 +366,7 @@ pub struct NewKeys {
     pub kex: kex::Algorithm,
     pub key: usize,
     pub cipher: cipher::CipherPair,
-    pub session_id: kex::Digest,
+    pub session_id: digest::Digest,
     pub received: bool,
     pub sent: bool,
 }

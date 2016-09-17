@@ -19,26 +19,12 @@ use super::msg;
 use std;
 
 use super::sodium::randombytes;
-use super::sodium::sha256;
 use super::sodium::curve25519;
 use super::cryptobuf::CryptoBuf;
 use session::Exchange;
 use key;
 use cipher;
-
-#[doc(hidden)]
-#[derive(Debug,Clone)]
-pub enum Digest {
-    Sha256(sha256::Digest),
-}
-impl std::ops::Deref for Digest {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
-        match self {
-            &Digest::Sha256(ref d) => d,
-        }
-    }
-}
+use ring::digest;
 
 #[doc(hidden)]
 #[derive(Debug)]
@@ -180,7 +166,7 @@ impl Algorithm {
                                                  key: &K,
                                                  exchange: &Exchange,
                                                  buffer: &mut CryptoBuf)
-                                                 -> Result<Digest, Error> {
+                                                 -> Result<digest::Digest, Error> {
         // Computing the exchange hash, see page 7 of RFC 5656.
         match self {
             &Algorithm::Curve25519(ref kex) => {
@@ -210,18 +196,17 @@ impl Algorithm {
                 debug!("buffer len = {:?}", buffer.len());
                 debug!("buffer: {:?}", &buffer);
                 // super::hexdump(buffer);
-                let mut hash = sha256::Digest::new_blank();
-                sha256::hash(&mut hash, &buffer);
+                let hash = digest::digest(&digest::SHA256, &buffer);
                 debug!("hash: {:?}", hash);
-                Ok(Digest::Sha256(hash))
+                Ok(hash)
             }
         }
     }
 
 
     pub fn compute_keys(&self,
-                        session_id: &Digest,
-                        exchange_hash: &Digest,
+                        session_id: &digest::Digest,
+                        exchange_hash: &digest::Digest,
                         buffer: &mut CryptoBuf,
                         key: &mut CryptoBuf,
                         cipher: cipher::Name,
@@ -240,12 +225,10 @@ impl Algorithm {
                         buffer.extend_ssh_mpint(&shared);
                     }
 
-                    buffer.extend(&exchange_hash);
+                    buffer.extend(&exchange_hash.as_ref());
                     buffer.push(c);
-                    buffer.extend(&session_id);
-                    let mut hash = sha256::Digest::new_blank();
-                    sha256::hash(&mut hash, &buffer);
-                    key.extend(&hash);
+                    buffer.extend(&session_id.as_ref());
+                    key.extend(digest::digest(&digest::SHA256, &buffer).as_ref());
 
                     while key.len() < len {
                         // extend.
@@ -253,11 +236,9 @@ impl Algorithm {
                         if let Some(ref shared) = kex.shared_secret {
                             buffer.extend_ssh_mpint(&shared);
                         }
-                        buffer.extend(&exchange_hash);
+                        buffer.extend(exchange_hash.as_ref());
                         buffer.extend(key);
-                        let mut hash = sha256::Digest::new_blank();
-                        sha256::hash(&mut hash, &buffer);
-                        key.extend(&hash)
+                        key.extend(digest::digest(&digest::SHA256, &buffer).as_ref());
                     }
                 };
 

@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-use sodium::{ed25519, sha256};
+use sodium::ed25519;
 use cryptobuf::CryptoBuf;
 use negociation::Named;
 use Error;
 use encoding::Reader;
+use ring::digest;
 use std;
 use rustc_serialize::base64::{ToBase64, STANDARD};
 
@@ -77,9 +78,8 @@ impl PublicKey {
     pub fn fingerprint(&self) -> String {
         match self {
             &PublicKey::Ed25519(ref public) => {
-                let mut digest = sha256::Digest::new_blank();
-                sha256::hash(&mut digest, &public);
-                "SHA256: ".to_string() + &digest.to_base64(STANDARD)
+                let digest = digest::digest(&digest::SHA256, &public);
+                "SHA256: ".to_string() + &digest.as_ref().to_base64(STANDARD)
             }
         }
     }
@@ -187,12 +187,12 @@ impl Algorithm {
     }
 
     #[doc(hidden)]
-    pub fn add_signature(&self, buffer: &mut CryptoBuf, hash: &[u8]) {
+    pub fn add_signature(&self, buffer: &mut CryptoBuf, hash: &digest::Digest) {
         match self {
             &Algorithm::Ed25519 { ref secret, .. } => {
 
                 let mut sign = ed25519::Signature::new_blank();
-                ed25519::sign_detached(&mut sign, hash, secret);
+                ed25519::sign_detached(&mut sign, hash.as_ref(), secret);
 
                 buffer.push_u32_be((ED25519.0.len() + ed25519::SIGNATUREBYTES + 8) as u32);
                 buffer.extend_ssh_string(ED25519.0.as_bytes());

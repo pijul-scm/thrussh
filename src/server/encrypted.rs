@@ -476,7 +476,7 @@ impl Encrypted {
                                 let sig = try!(s.read_string());
 
                                 buffer.clear();
-                                buffer.extend_ssh_string(&self.session_id);
+                                buffer.extend_ssh_string(self.session_id.as_ref());
                                 buffer.extend(&buf[0..pos0]);
                                 // Verify signature.
                                 if pubkey.verify_detached(&buffer, sig) {

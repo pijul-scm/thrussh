@@ -295,7 +295,7 @@ impl Encrypted {
             &auth::Method::PublicKey { ref key } => {
 
                 buffer.clear();
-                buffer.extend_ssh_string(&self.session_id);
+                buffer.extend_ssh_string(self.session_id.as_ref());
                 let i0 = buffer.len();
                 buffer.push(msg::USERAUTH_REQUEST);
                 buffer.extend_ssh_string(user.as_bytes());

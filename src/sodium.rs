@@ -82,25 +82,6 @@ pub mod randombytes {
 }
 
 
-pub mod sha256 {
-    use super::super::libsodium_sys;
-    use super::super::libc::c_ulonglong;
-    use std;
-    pub const DIGESTBYTES: usize = libsodium_sys::crypto_hash_sha256_BYTES;
-
-    newtype!(Digest, DIGESTBYTES);
-    as_bytes!(Digest);
-    from_slice!(Digest, DIGESTBYTES);
-    clone!(Digest);
-    new_blank!(Digest, DIGESTBYTES);
-
-    pub fn hash(digest: &mut Digest, m: &[u8]) {
-        unsafe {
-            libsodium_sys::crypto_hash_sha256(&mut digest.0, m.as_ptr(), m.len() as c_ulonglong);
-        }
-    }
-}
-
 pub mod curve25519 {
     use super::super::libsodium_sys;
 

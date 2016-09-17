@@ -292,7 +292,7 @@ impl KexDhDone {
                     let signature = try!(reader.read_string());
 
                     try!(self.kex.compute_shared_secret(&self.exchange.server_ephemeral));
-                    
+
                     let hash = try!(self.kex.compute_exchange_hash(&pubkey, &self.exchange, buffer));
 
                     let signature = {
@@ -305,7 +305,9 @@ impl KexDhDone {
 
                     match pubkey {
                         key::PublicKey::Ed25519(ref pubkey) => {
-                            assert!(sodium::ed25519::verify_detached(&signature, &hash, pubkey))
+                            assert!(sodium::ed25519::verify_detached(&signature,
+                                                                     &hash.as_ref(),
+                                                                     pubkey))
                         }
                     };
                     debug!("signature = {:?}", signature);
