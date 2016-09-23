@@ -131,18 +131,20 @@
 
 
 extern crate libc;
+extern crate mio;
 extern crate rand;
 extern crate ring;
 extern crate time;
 #[macro_use]
 extern crate bitflags;
-
+extern crate user;
 #[macro_use]
 extern crate log;
 extern crate byteorder;
 
 extern crate rustc_serialize; // config: read base 64.
 extern crate untrusted;
+extern crate regex;
 
 use std::io::{Read, BufRead, BufReader, Seek, SeekFrom, Write};
 use byteorder::{BigEndian, WriteBytesExt};
@@ -199,6 +201,11 @@ pub enum Error {
     NoHomeDir,
     KeyChanged,
     HUP,
+    Ring(ring::error::Unspecified),
+    NoSSHConfig,
+    NoHostName,
+    AuthFailed,
+    User(user::Error)
 }
 
 use std::error::Error as StdError;
@@ -229,6 +236,11 @@ impl std::error::Error for Error {
             Error::NoHomeDir => "Home directory not found",
             Error::KeyChanged => "Server key changed",
             Error::HUP => "Connection closed by the remote side",
+            Error::Ring(ref e) => e.description(),
+            Error::User(ref e) => e.description(),
+            Error::NoSSHConfig => "The SSH config file was not found.",
+            Error::NoHostName => "No host name was given",
+            Error::AuthFailed => "Authentication failed",
         }
     }
     fn cause(&self) -> Option<&std::error::Error> {
@@ -236,6 +248,8 @@ impl std::error::Error for Error {
             Error::Base64(ref e) => Some(e),
             Error::Utf8(ref e) => Some(e),
             Error::IO(ref e) => Some(e),
+            Error::Ring(ref e) => Some(e),
+            Error::User(ref e) => Some(e),
             _ => None,
         }
     }
@@ -243,6 +257,11 @@ impl std::error::Error for Error {
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Error {
         Error::IO(e)
+    }
+}
+impl From<ring::error::Unspecified> for Error {
+    fn from(e: ring::error::Unspecified) -> Error {
+        Error::Ring(e)
     }
 }
 impl From<std::str::Utf8Error> for Error {
@@ -253,6 +272,11 @@ impl From<std::str::Utf8Error> for Error {
 impl From<rustc_serialize::base64::FromBase64Error> for Error {
     fn from(e: rustc_serialize::base64::FromBase64Error) -> Error {
         Error::Base64(e)
+    }
+}
+impl From<user::Error> for Error {
+    fn from(e: user::Error) -> Error {
+        Error::User(e)
     }
 }
 
@@ -442,6 +466,7 @@ pub fn parse_public_key_base64(key: &str) -> Result<key::PublicKey, Error> {
 }
 
 pub fn parse_public_key(p: &[u8]) -> Result<key::PublicKey, Error> {
+    debug!("parse_public_key {:?}", p);
     let mut pos = p.reader(0);
     if try!(pos.read_string()) == b"ssh-ed25519" {
         if let Ok(pubkey) = pos.read_string() {
@@ -526,9 +551,12 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
                     let seckey = try!(position.read_string());
                     let comment = try!(position.read_string());
                     debug!("comment = {:?}", comment);
-                    return signature::Ed25519KeyPair::from_bytes(seckey, pubkey)
-                            .map(|key_pair| key::Algorithm::Ed25519(Arc::new(key_pair)))
-                            .map_err(|_| Error::CouldNotReadKey)
+                    println!("{:?} {:?} {:?}", seckey, seckey.len(), pubkey);
+                    let (a,b) = seckey.split_at(32);
+                    assert_eq!(pubkey, b);
+                    let keypair = try!(signature::Ed25519KeyPair::from_bytes(a, pubkey));
+                    let keypair = key::Algorithm::Ed25519(Arc::new(keypair));
+                    return Ok(keypair)
                 } else {
                     info!("unsupported key type {:?}", std::str::from_utf8(key_type));
                 }

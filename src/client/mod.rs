@@ -68,6 +68,7 @@ impl std::default::Default for Config {
 
 /// Client connection.
 #[derive(Debug)]
+#[doc(hidden)]
 pub struct Connection {
     read_buffer: SSHBuffer,
     pub session: Session,
@@ -969,5 +970,436 @@ impl Session {
             });
         }
         self.flush();
+    }
+}
+
+
+
+
+use mio::{Token, Events, Ready, Poll, PollOpt};
+use mio::tcp::TcpStream;
+
+use std::default::Default;
+
+use regex::Regex;
+use std::net::ToSocketAddrs;
+use std::fs::File;
+// use std::ascii::AsciiExt; // case-insensitive equality.
+
+use std::io::{BufReader};
+
+use std::path::{Path, PathBuf};
+
+#[derive(Debug)]
+enum RunUntil {
+    ChannelOpened(u32),
+    ChannelClosed(u32),
+}
+
+pub struct Client {
+    poll: Poll,
+    events: Events,
+    host: String,
+    port: u16,
+    buffer0: CryptoBuf,
+    buffer1: CryptoBuf,
+    pub connection: Connection,
+}
+
+pub struct Connected {
+    client: Client,
+    stream:BufReader<TcpStream>
+}
+
+struct C<'s> {
+    host: &'s str,
+    port: u16,
+    key_is_known: Option<bool>,
+    key: Option<key::PublicKey>
+}
+
+impl<'s> Handler for C<'s> {
+    fn check_server_key(&mut self, pubkey: &key::PublicKey) -> Result<bool, Error> {
+        let known = try!(check_known_hosts(&self.host, self.port, pubkey));
+        self.key_is_known = Some(known);
+        debug!("Is key known? {:?}", known);
+        if !known {
+            self.key = Some(pubkey.clone())
+        }
+        Ok(true)
+    }
+}
+
+fn ssh_path() -> Option<PathBuf> {
+    if cfg!(target_os = "windows") {
+        if let Some(mut dir) = std::env::home_dir() {
+            dir.push("ssh");
+            return Some(dir);
+        }
+    } else {
+        if let Some(mut dir) = std::env::home_dir() {
+            dir.push(".ssh");
+            return Some(dir);
+        }
+    }
+    None
+}
+
+use user;
+
+impl Client {
+    /// Create a client, allocating a `Poll` and an SSH client configuration.
+    pub fn new() -> Self {
+        let poll = Poll::new().unwrap();
+        Client {
+            poll: poll,
+            events: Events::with_capacity(1024),
+            host: "".to_string(),
+            port: 22,
+            buffer0: CryptoBuf::new(),
+            buffer1: CryptoBuf::new(),
+            connection: Connection::new(Arc::new(Default::default())),
+        }
+    }
+
+
+    /// Parse the ssh config file, from its default location (`~/.ssh/config` on Unix, and `%USERPROFILE%/ssh/config` on Windows.
+    ///
+    /// ```
+    /// use thrussh_client::*;
+    /// Client::new().default_ssh_config().unwrap();
+    /// ```
+    pub fn default_ssh_config(&mut self) -> Result<Option<std::net::SocketAddr>, Error> {
+        if let Some(mut path) = ssh_path() {
+            path.push("config");
+            let addr = try!(self.ssh_config(&path));
+
+            if !self.connection.has_auth_method() {
+
+                for i in self.connection.config().preferred.key {
+                    path.pop();
+                    path.push(i.identity_file());
+                    debug!("identity file: {:?}", path);
+                    if let Ok(sec) = super::load_secret_key(&path) {
+                        self.connection.set_auth_public_key(sec)
+                    }
+                }
+            }
+            if self.connection.auth_user().len() == 0 {
+                self.connection.set_auth_user(&try!(user::get_user_name()))
+            }
+            Ok(addr)
+        } else {
+            Err(Error::NoSSHConfig)
+        }
+    }
+
+    /// Read an SSH configuration file from a custom path.
+    pub fn ssh_config<P: AsRef<Path>>
+        (&mut self,
+         path: P)
+         -> Result<Option<std::net::SocketAddr>, Error> {
+
+            let mut f = try!(File::open(path));
+
+            let mut bufr = BufReader::new(&mut f);
+            let mut buffer = String::new();
+            let re = Regex::new(r#"^\s*([A-Za-z]+)\s*(=|\s)\s*("([^"]*)"|([^\s]*))\s*$"#).unwrap();
+
+            // let mut has_canonical_match = false;
+            let mut is_on = false;
+            // First pass.
+            loop {
+                buffer.clear();
+                if try!(bufr.read_line(&mut buffer)) == 0 {
+                    break;
+                }
+                if let Some(cap) = re.captures(&buffer) {
+                    if is_on {
+                        match (cap.at(1), cap.at(4).or(cap.at(5))) {
+                            (Some("Host"), _) => is_on = false,
+                            (Some("Match"), _) => is_on = false,
+
+                            //
+                            (Some("HostName"), Some(hostname)) => {
+                                self.host.clear();
+                                self.host.push_str(hostname)
+                            }
+                            (Some("IdentityFile"), Some(path)) => {
+                                debug!("identity file: {:?}", path);
+                                self.connection.set_auth_public_key(try!(super::load_secret_key(path)))
+                            }
+                            (Some("Port"), Some(port_)) => self.port = port_.parse().unwrap_or(0),
+                            (Some("User"), Some(user_)) => self.connection.set_auth_user(user_),
+                            (Some(a),Some(b)) => println!("unsupported option: {:?} {:?}", a,b),
+                            _ => {}
+                        }
+                    } else {
+                        match (cap.at(1), cap.at(4).or(cap.at(5))) {
+                            (Some("Host"), Some(h)) if h == self.host => is_on = true,
+                            // (Some("Match"), Some(h))  => break,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            /*if has_canonical_match {
+                // Second pass, looking only for canonical matches.
+                try!(bufr.seek(std::io::SeekFrom::Start(0)));
+            }*/
+            Ok(None)
+        }
+
+    /// Set the host name, replacing any previously set name. This can be a name from the config file.
+    pub fn set_host(&mut self, host: &str) {
+        self.host.clear();
+        self.host.push_str(host)
+    }
+
+    /// Set the port.
+    pub fn set_port(&mut self, port: u16) {
+        self.port = port
+    }
+
+    /// Connect this client.
+    pub fn connect(self) -> Result<Connected, Error> {
+        let addr = try!((&self.host[..], self.port).to_socket_addrs()).next().unwrap();
+        let sock = try!(TcpStream::connect(&addr));
+        try!(self.poll
+             .register(&sock, Token(0), Ready::all(), PollOpt::edge()));
+        Ok(Connected {
+            client: self,
+            stream: BufReader::new(sock)
+        })
+    }
+}
+
+
+
+
+impl Connected {
+
+    /// Attempt (or re-attempt) authentication. Returns `Ok(Some(…))`
+    /// if the server's host key is unknown, `Ok(None)` if
+    /// authentication succeeded, and errors in all other cases.
+    pub fn authenticate(&mut self) -> Result<Option<key::PublicKey>, Error> {
+        try!(self.client.poll
+             .reregister(self.stream.get_ref(),
+                         Token(0),
+                         Ready::all(),
+                         PollOpt::edge()));
+        let mut d = C {
+            host: &self.client.host,
+            port: self.client.port,
+            key_is_known: None,
+            key: None
+        };
+
+
+        try!(self.client.connection.write(self.stream.get_mut()));
+        loop {
+            match self.client.poll.poll(&mut self.client.events, None) {
+                Ok(n) if n > 0 => {
+                    for events in self.client.events.into_iter() {
+                        let kind = events.kind();
+                        if kind.is_error() || kind.is_hup() {
+                            return Err(From::from(Error::HUP));
+                        } else {
+                            if kind.is_readable() {
+                                try!(self.client.connection.read(&mut d,
+                                                                 &mut self.stream,
+                                                                 &mut self.client.buffer0,
+                                                                 &mut self.client.buffer1));
+                                if d.key_is_known == Some(false) {
+                                    return Ok(Some(d.key.unwrap()))
+                                }
+
+                                if self.client.connection
+                                    .session
+                                    .is_authenticated() {
+                                        return Ok(None)
+                                    }
+                                if !self.client.connection
+                                    .session
+                                    .has_auth_method() {
+                                        return Err(Error::AuthFailed)
+                                    }
+                            }
+                            if kind.is_writable() {
+                                try!(self.client.connection.write(self.stream.get_mut()));
+                            }
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+        if self.client.connection.session.is_authenticated() {
+            Ok(None)
+        } else {
+            Err(Error::AuthFailed)
+        }
+    }
+    /// Write the host into the known_hosts file.
+    pub fn learn_host(&self, key: &key::PublicKey) -> Result<(), Error> {
+        try!(learn_known_hosts(&self.client.host, self.client.port, key));
+        Ok(())
+    }
+
+    /// Waiting until the given channel is open.
+    pub fn wait_channel_open<C: Handler>(&mut self,
+                                                          c: &mut C,
+                                                          channel: u32)
+                                                          -> Result<(), Error> {
+        try!(self.client.poll
+             .reregister(self.stream.get_ref(),
+                         Token(0),
+                         Ready::all(),
+                         PollOpt::edge()));
+        try!(self.run(c, Some(RunUntil::ChannelOpened(channel))));
+        Ok(())
+    }
+
+    /// Waiting until the given channel is closed by the remote side.
+    pub fn wait_channel_close<C: Handler>(&mut self,
+                                                           c: &mut C,
+                                                           channel: u32)
+                                                           -> Result<(), Error> {
+        try!(self.client.poll
+             .reregister(self.stream.get_ref(),
+                         Token(0),
+                         Ready::all(),
+                         PollOpt::edge()));
+        try!(self.run(c, Some(RunUntil::ChannelClosed(channel))));
+        Ok(())
+    }
+
+    fn run<R: Handler>(&mut self,
+                                        client: &mut R,
+                                        until: Option<RunUntil>)
+                                        -> Result<(), Error> {
+
+        try!(self.client.connection.write(self.stream.get_mut()));
+        loop {
+            match self.client.poll.poll(&mut self.client.events, None) {
+                Ok(n) if n > 0 => {
+
+                    for events in self.client.events.into_iter() {
+                        let kind = events.kind();
+                        if kind.is_error() || kind.is_hup() {
+                            return Err(From::from(Error::HUP));
+                        } else {
+                            if kind.is_readable() {
+                                try!(self.client.connection.read(client,
+                                                          &mut self.stream,
+                                                          &mut self.client.buffer0,
+                                                          &mut self.client.buffer1));
+                                match until {
+                                    Some(RunUntil::ChannelOpened(x)) if self.client.connection
+                                        .session
+                                        .channel_is_open(x) => {
+                                            return Ok(());
+                                        }
+                                    Some(RunUntil::ChannelClosed(x)) if !self.client.connection
+                                        .session
+                                        .channel_is_open(x) => {
+                                            return Ok(());
+                                        }
+                                    _ => {}
+                                }
+                            }
+                            if kind.is_writable() {
+                                try!(self.client.connection.write(self.stream.get_mut()));
+                            }
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+
+    /// Run the protocol until some condition is satisfied on the client.
+    pub fn run_until<R: Handler, F: Fn(&mut R) -> bool>
+        (&mut self,
+         client: &mut R,
+         until: F)
+         -> Result<(), Error> {
+            try!(self.client.connection.write(self.stream.get_mut()));
+            while !until(client) {
+                match self.client.poll.poll(&mut self.client.events, None) {
+                    Ok(n) if n > 0 => {
+                        for events in self.client.events.into_iter() {
+                            let kind = events.kind();
+                            if kind.is_error() || kind.is_hup() {
+                                return Err(From::from(Error::HUP));
+                            } else {
+                                if kind.is_readable() {
+                                    try!(self.client.connection.read(client,
+                                                                     &mut self.stream,
+                                                                     &mut self.client.buffer0,
+                                                                     &mut self.client.buffer1));
+                                }
+                                if kind.is_writable() {
+                                    try!(self.client.connection.write(self.stream.get_mut()));
+                                }
+                            }
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            Ok(())
+        }
+}
+
+
+/// Record a host's public key into the user's known_hosts file.
+#[cfg(target_os = "windows")]
+pub fn learn_known_hosts(host: &str, port: u16, pubkey: &key::PublicKey) -> Result<(), Error> {
+    if let Some(mut known_host_file) = std::env::home_dir() {
+        known_host_file.push("ssh");
+        known_host_file.push("known_hosts");
+        learn_known_hosts_path(host, port, pubkey, &known_host_file)
+    } else {
+        Err(Error::NoHomeDir)
+    }
+}
+
+/// Record a host's public key into the user's known_hosts file.
+#[cfg(not(target_os = "windows"))]
+pub fn learn_known_hosts(host: &str, port: u16, pubkey: &key::PublicKey) -> Result<(), Error> {
+    if let Some(mut known_host_file) = std::env::home_dir() {
+        known_host_file.push(".ssh");
+        known_host_file.push("known_hosts");
+        super::learn_known_hosts_path(host, port, pubkey, &known_host_file)
+    } else {
+        Err(Error::NoHomeDir)
+    }
+}
+
+/// Check whether the host is known, from its standard location.
+#[cfg(target_os = "windows")]
+pub fn check_known_hosts(host: &str, port: u16, pubkey: &key::PublicKey) -> Result<bool, Error> {
+    if let Some(mut known_host_file) = std::env::home_dir() {
+        known_host_file.push("ssh");
+        known_host_file.push("known_hosts");
+        super::check_known_hosts_path(host, port, pubkey, &known_host_file)
+    } else {
+        Err(Error::NoHomeDir)
+    }
+}
+
+/// Check whether the host is known, from its standard location.
+#[cfg(not(target_os = "windows"))]
+pub fn check_known_hosts(host: &str, port: u16, pubkey: &key::PublicKey) -> Result<bool, Error> {
+    if let Some(mut known_host_file) = std::env::home_dir() {
+        known_host_file.push(".ssh");
+        known_host_file.push("known_hosts");
+        debug!("known_hosts file = {:?}", known_host_file);
+        super::check_known_hosts_path(host, port, pubkey, &known_host_file)
+    } else {
+        Err(Error::NoHomeDir)
     }
 }

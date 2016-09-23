@@ -78,6 +78,7 @@ impl Default for Config {
     }
 }
 
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct Connection {
     read_buffer: SSHBuffer,
@@ -325,6 +326,7 @@ impl KexInit {
                 self.server_write(config, cipher, write_buffer)
             }
             let mut key = 0;
+            debug!("config {:?} algo {:?}", config.keys, algo.key);
             while key < config.keys.len() && config.keys[key].name() != algo.key.as_ref() {
                 key += 1
             }
@@ -409,17 +411,12 @@ impl KexDh {
     }
 }
 
-
-bitflags! {
-    pub flags ReadFlags: u32 {
-        const AT_LEAST_ONE_PACKET = 1,
-        const AUTH_REJECTED = 2,
-    }
-}
-
+const AT_LEAST_ONE_PACKET:u8 = 1;
+const AUTH_REJECTED:u8 = 2;
 
 
 impl Connection {
+    #[doc(hidden)]
     pub fn new(config: Arc<Config>) -> Self {
         let mut write_buffer = SSHBuffer::new();
         write_buffer.send_ssh_id(config.as_ref().server_id.as_bytes());
@@ -443,17 +440,18 @@ impl Connection {
 
     /// Process all packets available in the buffer, and returns
     /// whether at least one complete packet was read. `buffer` and `buffer2` are work spaces mostly used to compute keys. They are cleared before using, hence nothing is expected from them.
+    #[doc(hidden)]
     pub fn read<R: BufRead, S: Handler>(&mut self,
                                         server: &mut S,
                                         stream: &mut R,
                                         buffer: &mut CryptoBuf,
                                         buffer2: &mut CryptoBuf)
-                                        -> Result<ReadFlags, Error> {
+                                        -> Result<u8, Error> {
 
-        let mut flags = ReadFlags::empty();
+        let mut flags = 0;
 
         loop {
-            if flags.contains(AUTH_REJECTED) {
+            if flags & AUTH_REJECTED != 0 {
                 // We have to wait.
                 return Ok(flags)
             }
@@ -461,7 +459,7 @@ impl Connection {
 
                 Ok(one_packet_flags) => {
                     flags |= one_packet_flags;
-                    if !one_packet_flags.contains(AT_LEAST_ONE_PACKET) {
+                    if one_packet_flags & AT_LEAST_ONE_PACKET == 0 {
                         // We don't have a full packet.
                         return Ok(flags)
                     }
@@ -484,7 +482,7 @@ impl Connection {
                                                stream: &mut R,
                                                buffer: &mut CryptoBuf,
                                                buffer2: &mut CryptoBuf)
-                                               -> Result<ReadFlags, Error> {
+                                               -> Result<u8, Error> {
         debug!("read {:?}", self.session);
         // Special case for the beginning.
         if self.session.0.encrypted.is_none() && self.session.0.kex.is_none() {
@@ -497,7 +495,7 @@ impl Connection {
                     exchange.client_id.extend(client_id);
                     debug!("client id, exchange = {:?}", exchange);
                 } else {
-                    return Ok(ReadFlags::empty());
+                    return Ok(0)
                 }
             }
             // Preparing the response
@@ -591,7 +589,7 @@ impl Connection {
                 Ok(AT_LEAST_ONE_PACKET)
             }
         } else {
-            Ok(ReadFlags::empty())
+            Ok(0)
         }
     }
 
@@ -828,5 +826,189 @@ impl Session {
         };
         self.flush();
         result
+    }
+}
+
+use std::io::{ BufReader };
+use std::collections::{HashMap, VecDeque};
+use std::collections::hash_map::Entry;
+
+use std::net::ToSocketAddrs;
+use mio::{Token, Poll, PollOpt, Ready, Events};
+use mio::tcp::{TcpStream, TcpListener};
+use std::time::Duration;
+const SERVER_TOKEN:Token = Token(0);
+
+struct ClientRecord<H> {
+    stream: BufReader<TcpStream>,
+    addr: std::net::SocketAddr,
+    is_parked: bool,
+    connection: Connection,
+    handler:H
+}
+
+
+pub struct Server<H:Handler> {
+    config: Arc<Config>,
+    events: Events,
+    handler: H,
+    socket: TcpListener,
+    sessions: Sessions<H>
+}
+
+struct Sessions<H> {
+    poll: Poll,
+    sessions: HashMap<Token, ClientRecord<H>>,
+    parked: VecDeque<(Token, time::SteadyTime)>,
+}
+
+impl<H:Handler+Clone> Server<H> {
+
+    pub fn new(config:Config, addr:&str, handler:H) -> Self {
+
+        let addr = addr.to_socket_addrs().unwrap().next().unwrap();
+        let socket = TcpListener::bind(&addr).unwrap();
+        
+        let poll = Poll::new().unwrap();
+
+        poll.register(&socket, Token(0), Ready::all(), PollOpt::edge()).unwrap();
+
+        Server {
+            config: Arc::new(config),
+            events: Events::with_capacity(1024),
+            handler: handler,
+            socket: socket,
+            sessions: Sessions {
+                poll: poll,
+                parked: VecDeque::new(),
+                sessions: HashMap::new(),
+            }
+        }
+    }
+
+    pub fn run(&mut self) {
+
+        let mut buffer0 = CryptoBuf::new();
+        let mut buffer1 = CryptoBuf::new();
+        
+        loop {
+            match self.sessions.poll.poll(&mut self.events, Some(Duration::from_secs(1))) {
+                Ok(n) if n > 0 => {
+                    for events in self.events.into_iter() {
+                        if events.token() == SERVER_TOKEN {
+
+                            if let Ok((client_socket, addr)) = self.socket.accept() {
+                                let mut id = Token(0);
+                                while self.sessions.sessions.contains_key(&id) || id.0 == 0 {
+                                    id = Token(rand::thread_rng().gen())
+                                }
+                                self.sessions.poll.register(&client_socket, id, Ready::all(), PollOpt::edge()).unwrap();
+                                let co = server::Connection::new(self.config.clone());
+
+                                let rec = ClientRecord {
+                                    stream: BufReader::new(client_socket),
+                                    addr: addr, is_parked: false, connection:co, handler: self.handler.clone()
+                                };
+                                
+                                self.sessions.sessions.insert(id, rec);
+                            }
+                        } else {
+                            let id = events.token();
+                            if events.kind().is_error() || events.kind().is_hup() {
+                                match self.sessions.sessions.entry(id) {
+                                    Entry::Occupied(e) => {
+                                        let rec = e.remove();
+                                        self.sessions.poll.deregister(rec.stream.get_ref()).unwrap();
+                                    },
+                                    _ => {}
+                                };
+
+                            } else {
+                                if events.kind().is_readable() {
+                                    self.sessions.read(id, false, &mut buffer0, &mut buffer1)
+                                }
+                                if events.kind().is_writable() {
+                                    self.sessions.write(id)
+                                }
+                            }
+                        }
+                    }
+                },
+                Ok(_) => {
+                    let parking_time = self.config.as_ref().auth_rejection_time;
+                    self.sessions.unpark(parking_time, &mut buffer0, &mut buffer1)
+                }
+                Err(e) => {
+                    debug!("{:?}", e);
+                }
+            }
+        }
+    }
+}
+
+impl<H:Handler> Sessions<H> {
+    fn read(&mut self, id:Token, unpark: bool, buffer0: &mut CryptoBuf, buffer1:&mut CryptoBuf) {
+
+        match self.sessions.entry(id) {
+            Entry::Occupied(mut e) => {
+
+                let time = time::SteadyTime::now();
+                {
+                    let rec = e.get_mut();
+
+                    if !rec.is_parked || unpark {
+                        debug!("reading from: {:?}", rec.addr);
+                        rec.is_parked = false;
+                        match rec.connection.read(&mut rec.handler, &mut rec.stream, buffer0, buffer1) {
+
+                            Ok(r) => {
+                                if r & AUTH_REJECTED != 0 {
+                                    debug!("parking");
+                                    self.parked.push_back((id, time));
+                                    rec.is_parked = true;
+                                    return
+                                }
+                            },
+                            Err(err) => debug!("error: {:?}", err)
+                        }
+                    }
+                }
+                let rec = e.remove();
+                self.poll.deregister(rec.stream.get_ref()).unwrap();
+            },
+            _ => {}
+        };        
+    }
+
+    fn write(&mut self, id:Token) {
+
+        match self.sessions.entry(id) {
+            Entry::Occupied(mut e) => {
+
+                let result = {
+                    let rec = e.get_mut();
+                    rec.connection.write(rec.stream.get_mut())
+                };
+                if result.is_err() {
+                    let rec = e.remove();
+                    self.poll.deregister(rec.stream.get_ref()).unwrap();                            
+                }
+
+            },
+            _ => {}
+        }
+
+    }
+    
+    fn unpark(&mut self, parking_time:time::Duration, buffer0:&mut CryptoBuf, buffer1:&mut CryptoBuf) {
+        if let Some((id, time)) = self.parked.pop_front() {
+            if time + parking_time < time::SteadyTime::now() {
+                // We can go.
+                self.read(id, true, buffer0, buffer1);
+                self.write(id)
+            } else {
+                self.parked.push_front((id,time))
+            }
+        }
     }
 }

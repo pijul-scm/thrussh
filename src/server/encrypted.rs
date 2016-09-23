@@ -213,7 +213,12 @@ impl Session {
                                     break;
                                 }
                                 let num = BigEndian::read_u32(&mode_string[5 * i + 1..]);
-                                modes[i] = (Pty::from_u8(code).unwrap(), num);
+                                debug!("code = {:?}", code);
+                                if let Some(code) = Pty::from_u8(code) {
+                                    modes[i] = (code, num);
+                                } else {
+                                    info!("pty-req: unknown pty code {:?}", code);
+                                }
                                 i += 1
                             }
                         }

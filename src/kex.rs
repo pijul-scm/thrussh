@@ -29,13 +29,14 @@ use untrusted;
 pub struct Algorithm {
     local_secret: Option<agreement::EphemeralPrivateKey>,
     local_pubkey: Option<Vec<u8>>,
-    remote_pubkey: Option<Vec<u8>>,
+    // remote_pubkey: Option<Vec<u8>>,
     shared_secret: Option<Vec<u8>>,
 }
 
 impl std::fmt::Debug for Algorithm {
-    fn fmt(&self, _f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        unimplemented!() // TODO
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "Algorithm {{ local_secret: [hidden], local_pubkey: {:?}, shared_secret: [hidden] }}",
+               self.local_pubkey)
     }
 }
 
@@ -82,7 +83,7 @@ impl Algorithm {
             Ok(Algorithm {
                 local_secret: None,
                 local_pubkey: Some(server_pubkey),
-                remote_pubkey: Some(Vec::from(client_pubkey.as_slice_less_safe())),
+                // remote_pubkey: Some(Vec::from(client_pubkey.as_slice_less_safe())),
                 shared_secret: Some(Vec::from(shared_secret)),
             })
         })
@@ -116,7 +117,7 @@ impl Algorithm {
         Ok(Algorithm {
             local_secret: Some(client_secret),
             local_pubkey: Some(client_pubkey),
-            remote_pubkey: None,
+            // remote_pubkey: None,
             shared_secret: None,
         })
     }

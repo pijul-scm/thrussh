@@ -2,8 +2,8 @@
 name = "thrussh"
 description = "A client and server SSH library. Memory-safe, doesn't do its own crypto (based on *ring*)."
 keywords = ["ssh"]
-version = "0.6.0"
-authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
+version = "0.7.0"
+authors = ["Pierre-Étienne Meunier <pe@pijul.org>", "Brian Smith <brian@briansmith.org>"]
 repository = "https://pijul.org/thrussh"
 homepage = "https://pijul.org/thrussh"
 documentation = "https://pijul.org/thrussh/doc/thrussh"
@@ -41,6 +41,9 @@ ring = { git = "https://github.com/briansmith/ring", branch = "chacha" }
 rustc-serialize = "0.3"
 time = "0.1"
 untrusted = "0.3.1"
+mio = "0.6"
+regex = "0.1"
+user = "0.1.1"
 
 [dev-dependencies]
 tempdir="0.3"
