@@ -1066,7 +1066,7 @@ impl Client {
     /// Parse the ssh config file, from its default location (`~/.ssh/config` on Unix, and `%USERPROFILE%/ssh/config` on Windows.
     ///
     /// ```
-    /// use thrussh_client::*;
+    /// use thrussh::client::*;
     /// Client::new().default_ssh_config().unwrap();
     /// ```
     pub fn default_ssh_config(&mut self) -> Result<Option<std::net::SocketAddr>, Error> {

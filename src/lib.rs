@@ -13,10 +13,7 @@
 // limitations under the License.
 //
 
-//! Server and client SSH library. See the two example crates
-//! [thrussh_client](https://crates.io/crates/thrussh_server) and
-//! [thrussh_client](https://crates.io/crates/thrussh_client) on
-//! crates.io. More information [here](https://pijul.org/thrussh).
+//! Server and client SSH library. More information [here](https://pijul.org/thrussh).
 //!
 //! Here is an example, using `Vec`s as instances of `Read` and `Write`, instead of network sockets.
 //!
