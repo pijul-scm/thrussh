@@ -23,8 +23,8 @@ use msg;
 
 #[derive(Debug)]
 pub enum Cipher {
-    Clear,
-    Chacha20Poly1305(chacha20poly1305::Cipher),
+    WrappedClear(Clear),
+    WrappedChacha20Poly1305(chacha20poly1305::Cipher),
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -51,8 +51,8 @@ pub struct CipherPair {
 }
 
 pub const CLEAR_PAIR: CipherPair = CipherPair {
-    local_to_remote: Cipher::Clear,
-    remote_to_local: Cipher::Clear,
+    local_to_remote: Cipher::WrappedClear(Clear),
+    remote_to_local: Cipher::WrappedClear(Clear),
 };
 
 pub trait CipherT {
@@ -64,24 +64,16 @@ pub trait CipherT {
 }
 
 
-impl CipherT for Cipher {
-    fn read<'a>(&self, stream: &mut BufRead, buffer: &'a mut SSHBuffer)
-                -> Result<Option<&'a [u8]>, Error> {
+impl<'a> Cipher {
+    fn key(&'a self) -> &'a CipherT {
         match *self {
-            Cipher::Clear => Clear.read(stream, buffer),
-            Cipher::Chacha20Poly1305(ref cipher) => cipher.read(stream, buffer),
-        }
-    }
-
-    fn write(&self, packet: &[u8], buffer: &mut SSHBuffer) {
-
-        match *self {
-            Cipher::Clear => Clear.write(packet, buffer),
-            Cipher::Chacha20Poly1305(ref cipher) => cipher.write(packet, buffer),
+            Cipher::WrappedClear(ref key) => key,
+            Cipher::WrappedChacha20Poly1305(ref key) => key,
         }
     }
 }
 
+#[derive(Debug)]
 pub struct Clear;
 
 impl CipherT for Clear {
@@ -212,10 +204,10 @@ fn read(stream: &mut BufRead,
 impl CipherT for CipherPair {
     fn read<'a>(&self, stream: &mut BufRead, buffer: &'a mut SSHBuffer)
                 -> Result<Option<&'a [u8]>, Error> {
-        self.remote_to_local.read(stream, buffer)
+        self.remote_to_local.key().read(stream, buffer)
     }
 
     fn write(&self, packet: &[u8], buffer: &mut SSHBuffer) {
-        self.local_to_remote.write(packet, buffer)
+        self.local_to_remote.key().write(packet, buffer)
     }
 }

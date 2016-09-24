@@ -215,13 +215,13 @@ impl Algorithm {
 
                 let client_to_server = {
                     compute_key(b'C', key, super::cipher::key_size(cipher));
-                    super::cipher::Cipher::Chacha20Poly1305 (
+                    super::cipher::Cipher::WrappedChacha20Poly1305 (
                         super::cipher::chacha20poly1305::Cipher::init(&key)
                     )
                 };
                 let server_to_client = {
                     compute_key(b'D', key, super::cipher::key_size(cipher));
-                    super::cipher::Cipher::Chacha20Poly1305 (
+                    super::cipher::Cipher::WrappedChacha20Poly1305 (
                         super::cipher::chacha20poly1305::Cipher::init(&key)
                     )
                 };
