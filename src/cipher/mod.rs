@@ -57,26 +57,22 @@ pub const CLEAR_PAIR: CipherPair = CipherPair {
 
 pub trait CipherT {
     /// Replace the buffer's content with the next deciphered packet from `stream`.
-    fn read<'a, R: BufRead>(&self,
-                            stream: &mut R,
-                            buffer: &'a mut SSHBuffer)
-                            -> Result<Option<&'a [u8]>, Error>;
+    fn read<'a>(&self, stream: &mut BufRead, buffer: &'a mut SSHBuffer)
+                -> Result<Option<&'a [u8]>, Error>;
     /// Extend the buffer with the encrypted packet.
     fn write(&self, packet: &[u8], buffer: &mut SSHBuffer);
 }
 
 
 impl CipherT for Cipher {
-    fn read<'a, R: BufRead>(&self,
-                            stream: &mut R,
-                            buffer: &'a mut SSHBuffer)
-                            -> Result<Option<&'a [u8]>, Error> {
-
+    fn read<'a>(&self, stream: &mut BufRead, buffer: &'a mut SSHBuffer)
+                -> Result<Option<&'a [u8]>, Error> {
         match *self {
             Cipher::Clear => Clear.read(stream, buffer),
             Cipher::Chacha20Poly1305(ref cipher) => cipher.read(stream, buffer),
         }
     }
+
     fn write(&self, packet: &[u8], buffer: &mut SSHBuffer) {
 
         match *self {
@@ -89,10 +85,8 @@ impl CipherT for Cipher {
 pub struct Clear;
 
 impl CipherT for Clear {
-    fn read<'a, R: BufRead>(&self,
-                            stream: &mut R,
-                            buffer: &'a mut SSHBuffer)
-                            -> Result<Option<&'a [u8]>, Error> {
+    fn read<'a>(&self, stream: &mut BufRead, buffer: &'a mut SSHBuffer)
+                -> Result<Option<&'a [u8]>, Error> {
 
         debug!("clear buffer: {:?}", buffer);
         if buffer.len == 0 {
@@ -178,11 +172,11 @@ impl Clear {
 
 
 /// Fills the read buffer, and returns whether a complete message has been read.
-fn read<R: BufRead>(stream: &mut R,
-                    read_buffer: &mut CryptoBuf,
-                    read_len: usize,
-                    bytes_read: &mut usize)
-                    -> Result<bool, Error> {
+fn read(stream: &mut BufRead,
+        read_buffer: &mut CryptoBuf,
+        read_len: usize,
+        bytes_read: &mut usize)
+        -> Result<bool, Error> {
     // This loop consumes something or returns, it cannot loop forever.
     loop {
         let consumed_len = match stream.fill_buf() {
@@ -216,16 +210,12 @@ fn read<R: BufRead>(stream: &mut R,
 
 
 impl CipherT for CipherPair {
-    fn read<'a, R: BufRead>(&self,
-                            stream: &mut R,
-                            buffer: &'a mut SSHBuffer)
-                            -> Result<Option<&'a [u8]>, Error> {
-
+    fn read<'a>(&self, stream: &mut BufRead, buffer: &'a mut SSHBuffer)
+                -> Result<Option<&'a [u8]>, Error> {
         self.remote_to_local.read(stream, buffer)
     }
+
     fn write(&self, packet: &[u8], buffer: &mut SSHBuffer) {
-
         self.local_to_remote.write(packet, buffer)
-
     }
 }

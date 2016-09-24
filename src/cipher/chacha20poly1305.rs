@@ -34,10 +34,8 @@ impl Cipher {
 }
 
 impl super::CipherT for Cipher {
-    fn read<'a, R: BufRead>(&self,
-                            stream: &mut R,
-                            read_buffer: &'a mut SSHBuffer)
-                            -> Result<Option<&'a [u8]>, Error> {
+    fn read<'a>(&self, stream: &mut BufRead, read_buffer: &'a mut SSHBuffer)
+                -> Result<Option<&'a [u8]>, Error> {
 
         // http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD
         let mut nonce = [0; chacha::NONCE_LEN];
