@@ -27,7 +27,6 @@ use std::collections::HashMap;
 use Limits;
 use sshbuffer::SSHBuffer;
 use byteorder::{BigEndian, ByteOrder};
-use cipher::CipherT;
 use std::sync::Arc;
 use ring::digest;
 use encoding::Encoding;

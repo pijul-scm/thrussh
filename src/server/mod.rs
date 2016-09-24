@@ -21,7 +21,7 @@ use super::*;
 
 use negociation::{Select, Named};
 use msg;
-use cipher::CipherT;
+use cipher::CipherPair;
 
 use sshbuffer::*;
 use negociation;
@@ -312,12 +312,12 @@ pub trait Handler {
 }
 
 impl KexInit {
-    pub fn server_parse<C: CipherT>(mut self,
-                                    config: &Config,
-                                    cipher: &mut C,
-                                    buf: &[u8],
-                                    write_buffer: &mut SSHBuffer)
-                                    -> Result<Kex, Error> {
+    pub fn server_parse(mut self,
+                        config: &Config,
+                        cipher: &mut cipher::CipherPair,
+                        buf: &[u8],
+                        write_buffer: &mut SSHBuffer)
+                        -> Result<Kex, Error> {
 
         if buf[0] == msg::KEXINIT {
             debug!("server parse");
@@ -353,10 +353,10 @@ impl KexInit {
         }
     }
 
-    pub fn server_write<'k, C: CipherT>(&mut self,
-                                        config: &'k Config,
-                                        cipher: &mut C,
-                                        write_buffer: &mut SSHBuffer) {
+    pub fn server_write(&mut self,
+                        config: &Config,
+                        cipher: &mut cipher::CipherPair,
+                        write_buffer: &mut SSHBuffer) {
         self.exchange.server_kex_init.clear();
         negociation::write_kex(&config.preferred, &mut self.exchange.server_kex_init);
         self.sent = true;
@@ -365,14 +365,14 @@ impl KexInit {
 }
 
 impl KexDh {
-    pub fn parse<C: CipherT>(mut self,
-                             config: &Config,
-                             buffer: &mut CryptoVec,
-                             buffer2: &mut CryptoVec,
-                             cipher: &mut C,
-                             buf: &[u8],
-                             write_buffer: &mut SSHBuffer)
-                             -> Result<Kex, Error> {
+    pub fn parse(mut self,
+                 config: &Config,
+                 buffer: &mut CryptoVec,
+                 buffer2: &mut CryptoVec,
+                 cipher: &mut CipherPair,
+                 buf: &[u8],
+                 write_buffer: &mut SSHBuffer)
+                 -> Result<Kex, Error> {
 
         if self.names.ignore_guessed {
             // If we need to ignore this packet.

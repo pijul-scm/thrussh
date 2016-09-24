@@ -223,15 +223,13 @@ fn read(stream: &mut BufRead,
 }
 
 
-impl CipherT for CipherPair {
-    fn read<'a>(&self,
-                stream: &mut BufRead,
-                buffer: &'a mut SSHBuffer)
-                -> Result<Option<&'a [u8]>, Error> {
+impl CipherPair {
+    pub fn read<'a>(&self, stream: &mut BufRead, buffer: &'a mut SSHBuffer)
+                    -> Result<Option<&'a [u8]>, Error> {
         self.remote_to_local.key().read(stream, buffer)
     }
 
-    fn write(&self, packet: &[u8], buffer: &mut SSHBuffer) {
+    pub fn write(&self, packet: &[u8], buffer: &mut SSHBuffer) {
         self.local_to_remote.key().write(packet, buffer)
     }
 }

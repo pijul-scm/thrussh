@@ -22,7 +22,7 @@ use encoding::Reader;
 use key;
 use msg;
 use auth;
-use cipher::CipherT;
+use cipher::CipherPair;
 use negociation;
 use cryptovec::CryptoVec;
 use negociation::Select;
@@ -219,12 +219,12 @@ pub trait Handler {
 
 
 impl KexInit {
-    pub fn client_parse<C: CipherT>(mut self,
-                                    config: &Config,
-                                    cipher: &mut C,
-                                    buf: &[u8],
-                                    write_buffer: &mut SSHBuffer)
-                                    -> Result<KexDhDone, Error> {
+    pub fn client_parse(mut self,
+                        config: &Config,
+                        cipher: &mut CipherPair,
+                        buf: &[u8],
+                        write_buffer: &mut SSHBuffer)
+                        -> Result<KexDhDone, Error> {
 
         let algo = if self.algo.is_none() {
             // read algorithms from packet.
@@ -261,10 +261,10 @@ impl KexInit {
         })
     }
 
-    pub fn client_write<'k, C: CipherT>(&mut self,
-                                        config: &'k Config,
-                                        cipher: &mut C,
-                                        write_buffer: &mut SSHBuffer) {
+    pub fn client_write(&mut self,
+                        config: &Config,
+                        cipher: &mut CipherPair,
+                        write_buffer: &mut SSHBuffer) {
         self.exchange.client_kex_init.clear();
         negociation::write_kex(&config.preferred, &mut self.exchange.client_kex_init);
         self.sent = true;
@@ -274,14 +274,14 @@ impl KexInit {
 
 
 impl KexDhDone {
-    pub fn client_parse<C: CipherT, H: Handler>(mut self,
-                                                buffer: &mut CryptoVec,
-                                                buffer2: &mut CryptoVec,
-                                                client: &mut H,
-                                                cipher: &mut C,
-                                                buf: &[u8],
-                                                write_buffer: &mut SSHBuffer)
-                                                -> Result<Kex, Error> {
+    pub fn client_parse<H: Handler>(mut self,
+                                    buffer: &mut CryptoVec,
+                                    buffer2: &mut CryptoVec,
+                                    client: &mut H,
+                                    cipher: &mut CipherPair,
+                                    buf: &[u8],
+                                    write_buffer: &mut SSHBuffer)
+                                    -> Result<Kex, Error> {
 
         if self.names.ignore_guessed {
             self.names.ignore_guessed = false;
