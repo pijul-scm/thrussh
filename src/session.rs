@@ -29,9 +29,7 @@ use sshbuffer::SSHBuffer;
 use byteorder::{BigEndian, ByteOrder};
 use cipher::CipherT;
 use std::sync::Arc;
-use rand;
-use rand::Rng;
-use ring::digest;
+use ring::{digest, rand};
 use encoding::Encoding;
 use std::num::Wrapping;
 
@@ -219,8 +217,11 @@ impl Encrypted {
     }
 
     pub fn new_channel(&mut self, window_size: u32, maxpacket: u32) -> u32 {
+        let rng = rand::SystemRandom::new();
         loop {
-            let sender_channel = rand::thread_rng().gen();
+            let mut sender_channel_bytes = [0u8; 4];
+            rng.fill(&mut sender_channel_bytes).unwrap();
+            let sender_channel = BigEndian::read_u32(&sender_channel_bytes);
             if sender_channel == 0 {
                 continue;
             }

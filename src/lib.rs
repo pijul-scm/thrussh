@@ -78,7 +78,6 @@
 extern crate arrayref;
 extern crate libc;
 extern crate mio;
-extern crate rand;
 extern crate ring;
 extern crate time;
 #[macro_use]

@@ -15,8 +15,6 @@
 use std::io::{Write, BufRead};
 use std;
 use std::sync::Arc;
-use rand;
-use rand::Rng;
 use time;
 
 use super::*;
@@ -32,6 +30,9 @@ use encoding::{Encoding, Reader};
 
 use session::*;
 use auth;
+
+use byteorder::{BigEndian, ByteOrder};
+use ring::rand;
 
 mod encrypted;
 
@@ -893,9 +894,20 @@ impl<H:Handler+Clone> Server<H> {
                         if events.token() == SERVER_TOKEN {
 
                             if let Ok((client_socket, addr)) = self.socket.accept() {
-                                let mut id = Token(0);
-                                while self.sessions.sessions.contains_key(&id) || id.0 == 0 {
-                                    id = Token(rand::thread_rng().gen())
+                                let rng = rand::SystemRandom::new();
+
+                                let mut id;
+                                loop {
+                                    let mut id_bytes = [0u8; 8];
+                                    rng.fill(&mut id_bytes).unwrap();
+                                    let id_value = BigEndian::read_u64(&id_bytes) as usize;
+                                    if id_value == 0 {
+                                        continue;
+                                    }
+                                    id = Token(id_value);
+                                    if !self.sessions.sessions.contains_key(&id) {
+                                        break;
+                                    }
                                 }
                                 self.sessions.poll.register(&client_socket, id, Ready::all(), PollOpt::edge()).unwrap();
                                 let co = server::Connection::new(self.config.clone());

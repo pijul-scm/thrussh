@@ -37,7 +37,6 @@ byteorder = "0.5"
 bitflags = "0.7"
 libc = "0.2"
 log = "0.3"
-rand = "0.3"
 ring = { git = "https://github.com/briansmith/ring", branch = "chacha" }
 rustc-serialize = "0.3"
 time = "0.1"
