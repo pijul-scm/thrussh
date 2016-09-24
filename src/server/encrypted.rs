@@ -25,7 +25,6 @@ use key::Verify;
 use negociation;
 use negociation::Select;
 use auth;
-use std::num::Wrapping;
 
 impl Session {
     #[doc(hidden)]
@@ -354,19 +353,12 @@ impl Session {
         let window = try!(r.read_u32());
         let maxpacket = try!(r.read_u32());
 
-        let sender_channel =
-            if let Some(ref mut enc) = self.0.encrypted {
-
-                enc.last_channel_id += Wrapping(1);
-                while enc.channels.contains_key(&enc.last_channel_id.0) {
-                    enc.last_channel_id += Wrapping(1)
-                }
-                enc.last_channel_id.0
-
-            } else {
-                unreachable!()
-            };
-
+        let mut sender_channel: u32 = 1;
+        if let Some(ref mut enc) = self.0.encrypted {
+            while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
+                sender_channel = thread_rng().gen()
+            }
+        }
         match typ {
             b"session" => {
                 server.channel_open_session(sender_channel, self);

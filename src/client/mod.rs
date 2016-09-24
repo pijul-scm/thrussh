@@ -599,14 +599,10 @@ impl Session {
                 Some(EncryptedState::Authenticated) => {
                     debug!("sending open request");
 
-                    let sender_channel = {
-                        enc.last_channel_id += Wrapping(1);
-                        while enc.channels.contains_key(&enc.last_channel_id.0) {
-                            enc.last_channel_id += Wrapping(1)
-                        }
-                        enc.last_channel_id.0
-                    };
-
+                    let mut sender_channel = 0;
+                    while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
+                        sender_channel = rand::thread_rng().gen()
+                    }
                     push_packet!(enc.write, {
                         enc.write.push(msg::CHANNEL_OPEN);
                         enc.write.extend_ssh_string(b"session");
@@ -614,9 +610,6 @@ impl Session {
                         enc.write.push_u32_be(self.0.config.as_ref().window_size); // window.
                         enc.write.push_u32_be(self.0.config.as_ref().maximum_packet_size); // max packet size.
                     });
-                    enc.new_channel(sender_channel,
-                                    self.0.config.window_size,
-                                    self.0.config.maximum_packet_size);
                     Some(sender_channel)
                 }
                 _ => None,
@@ -639,14 +632,10 @@ impl Session {
                 Some(EncryptedState::Authenticated) => {
                     debug!("sending open request");
 
-                    let sender_channel = {
-                        enc.last_channel_id += Wrapping(1);
-                        while enc.channels.contains_key(&enc.last_channel_id.0) {
-                            enc.last_channel_id += Wrapping(1)
-                        }
-                        enc.last_channel_id.0
-                    };
-
+                    let mut sender_channel = 0;
+                    while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
+                        sender_channel = rand::thread_rng().gen()
+                    }
                     push_packet!(enc.write, {
                         enc.write.push(msg::CHANNEL_OPEN);
                         enc.write.extend_ssh_string(b"x11");
@@ -657,9 +646,6 @@ impl Session {
                         enc.write.extend_ssh_string(originator_address.as_bytes());
                         enc.write.push_u32_be(originator_port); // sender channel id.
                     });
-                    enc.new_channel(sender_channel,
-                                    self.0.config.window_size,
-                                    self.0.config.maximum_packet_size);
                     Some(sender_channel)
                 }
                 _ => None,
@@ -683,14 +669,10 @@ impl Session {
                 Some(EncryptedState::Authenticated) => {
                     debug!("sending open request");
 
-                    let sender_channel = {
-                        enc.last_channel_id += Wrapping(1);
-                        while enc.channels.contains_key(&enc.last_channel_id.0) {
-                            enc.last_channel_id += Wrapping(1)
-                        }
-                        enc.last_channel_id.0
-                    };
-
+                    let mut sender_channel = 0;
+                    while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
+                        sender_channel = rand::thread_rng().gen()
+                    }
                     push_packet!(enc.write, {
                         enc.write.push(msg::CHANNEL_OPEN);
                         enc.write.extend_ssh_string(b"direct-tcpip");
@@ -703,9 +685,6 @@ impl Session {
                         enc.write.extend_ssh_string(originator_address.as_bytes());
                         enc.write.push_u32_be(originator_port); // sender channel id.
                     });
-                    enc.new_channel(sender_channel,
-                                    self.0.config.window_size,
-                                    self.0.config.maximum_packet_size);
                     Some(sender_channel)
                 }
                 _ => None,

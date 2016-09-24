@@ -29,6 +29,8 @@ use sshbuffer::SSHBuffer;
 use byteorder::{BigEndian, ByteOrder};
 use cipher::CipherT;
 use std::sync::Arc;
+use rand;
+use rand::Rng;
 use ring::digest;
 use encoding::Encoding;
 use std::num::Wrapping;
@@ -216,8 +218,15 @@ impl Encrypted {
         false
     }
 
-    pub fn new_channel(&mut self, sender_channel: u32, window_size: u32, maxpacket: u32) {
-        self.channels.insert(sender_channel,
+    pub fn new_channel(&mut self, window_size: u32, maxpacket: u32) -> u32 {
+        loop {
+            let sender_channel = rand::thread_rng().gen();
+            if sender_channel == 0 {
+                continue;
+            }
+            if let std::collections::hash_map::Entry::Vacant(vacant_entry) =
+                    self.channels.entry(sender_channel) {
+                vacant_entry.insert(
                              Channel {
                                  recipient_channel: 0,
                                  sender_channel: sender_channel,
@@ -228,6 +237,9 @@ impl Encrypted {
                                  confirmed: false,
                                  wants_reply: false,
                              });
+                return sender_channel;
+            }
+        }
     }
 }
 
