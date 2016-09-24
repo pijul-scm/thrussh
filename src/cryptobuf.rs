@@ -13,8 +13,8 @@
 // limitations under the License.
 //
 use std;
-
-use super::libc::{malloc, free, c_void};
+use libc;
+use libc::{malloc, free, c_void, size_t};
 use std::ops::{Index, IndexMut, Deref, DerefMut, Range, RangeFrom, RangeTo};
 /// A buffer which zeroes its memory on `.clear()`, `.truncate()` and
 /// reallocations, to avoid copying secrets around.
@@ -109,6 +109,26 @@ impl Default for CryptoBuf {
     }
 }
 
+#[cfg(not(windows))]
+unsafe fn mlock(ptr: *const u8, len: usize) {
+    libc::mlock(ptr as *const c_void, len as size_t);
+}
+#[cfg(not(windows))]
+unsafe fn munlock(ptr: *const u8, len: usize) {
+    libc::munlock(ptr as *const c_void, len as size_t);
+}
+
+#[cfg(windows)]
+use winapi::{LPVOID, SIZE_T, VirtualLock};
+#[cfg(windows)]
+unsafe fn mlock(ptr: *const u8, len: usize) {
+    VirtualLock(ptr as LPVOID, len as SIZE_T) 
+}
+#[cfg(windows)]
+unsafe fn munlock(ptr: *const u8, len: usize) {
+    VirtualUnlock(ptr as LPVOID, len as SIZE_T) 
+}
+
 
 impl CryptoBuf {
     pub fn new() -> CryptoBuf {
@@ -133,11 +153,11 @@ impl CryptoBuf {
                 let next_capacity = size.next_power_of_two();
                 let old_ptr = self.p;
                 self.p = malloc(next_capacity) as *mut u8;
-                // TODO: mlock(self.p as *mut c_void, next_capacity);
+                mlock(self.p, next_capacity);
 
                 if self.capacity > 0 {
                     std::ptr::copy_nonoverlapping(old_ptr, self.p, self.size);
-                    // TOOD: munlock(old_ptr as *mut c_void, self.size);
+                    munlock(old_ptr, self.size);
                     free(old_ptr as *mut c_void);
                 }
 
@@ -255,7 +275,7 @@ impl Drop for CryptoBuf {
     fn drop(&mut self) {
         if self.capacity > 0 {
             unsafe {
-                // TODO: munlock(self.p as *mut c_void, self.size);
+                munlock(self.p, self.size);
                 free(self.p as *mut c_void)
             }
         }

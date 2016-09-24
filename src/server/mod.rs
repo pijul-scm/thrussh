@@ -304,7 +304,6 @@ pub trait Handler {
     }
 }
 
-
 impl KexInit {
     pub fn server_parse<C: CipherT>(mut self,
                                     config: &Config,
@@ -894,6 +893,7 @@ impl<H:Handler+Clone> Server<H> {
         loop {
             match self.sessions.poll.poll(&mut self.events, Some(Duration::from_secs(1))) {
                 Ok(n) if n > 0 => {
+                    debug!("events: {:?}", n);
                     for events in self.events.into_iter() {
                         if events.token() == SERVER_TOKEN {
 
@@ -917,6 +917,7 @@ impl<H:Handler+Clone> Server<H> {
                             if events.kind().is_error() || events.kind().is_hup() {
                                 match self.sessions.sessions.entry(id) {
                                     Entry::Occupied(e) => {
+                                        debug!("Removing, file {}, line {}", file!(), line!());
                                         let rec = e.remove();
                                         self.sessions.poll.deregister(rec.stream.get_ref()).unwrap();
                                     },
@@ -966,13 +967,16 @@ impl<H:Handler> Sessions<H> {
                                     debug!("parking");
                                     self.parked.push_back((id, time));
                                     rec.is_parked = true;
-                                    return
                                 }
+                                return
                             },
                             Err(err) => debug!("error: {:?}", err)
                         }
+                    } else {
+                        return
                     }
                 }
+                debug!("Removing, file {}, line {}", file!(), line!());
                 let rec = e.remove();
                 self.poll.deregister(rec.stream.get_ref()).unwrap();
             },
@@ -990,6 +994,7 @@ impl<H:Handler> Sessions<H> {
                     rec.connection.write(rec.stream.get_mut())
                 };
                 if result.is_err() {
+                    debug!("Removing, file {}, line {}", file!(), line!());
                     let rec = e.remove();
                     self.poll.deregister(rec.stream.get_ref()).unwrap();                            
                 }

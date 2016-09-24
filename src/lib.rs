@@ -18,112 +18,59 @@
 //! Here is an example, using `Vec`s as instances of `Read` and `Write`, instead of network sockets.
 //!
 //! ```
-//! use std::sync::Arc;
-//! use thrussh::{key, server, client, CryptoBuf, Error};
-//! let client_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
-//! let server_keypair = key::Algorithm::generate_keypair(key::ED25519).unwrap();
+//! extern crate thrussh;
+//! use std::sync::{Arc, Mutex};
 //!
-//! // Server instance
-//!
-//! struct S {
-//!     client_pubkey: key::PublicKey
+//! #[derive(Debug, Clone, Default)]
+//! struct H(Arc<Mutex<HH>>);
+//! #[derive(Debug, Default)]
+//! struct HH {
+//!     user: String,
+//!     password: String,
 //! }
-//! impl server::Handler for S {
-//!     fn auth_publickey(&mut self, user:&str, publickey:&key::PublicKey) -> bool {
-//!         user == "pe" && publickey == &self.client_pubkey
+//!
+//! impl thrussh::server::Handler for H {
+//!     fn auth_password(&mut self, user: &str, password: &str) -> bool {
+//!         let mut h = self.0.lock().unwrap();
+//!         h.user.push_str(user);
+//!         h.password.clear();
+//!         h.password.push_str(password);
+//!         true
+//!     }
+//! }
+//! impl thrussh::client::Handler for H {
+//!     fn check_server_key(&mut self, server_public_key: &thrussh::key::PublicKey) -> Result<bool, thrussh::Error> {
+//!         // This function returns false by default.
+//!         Ok(true)
 //!     }
 //! }
 //!
-//! // Client instance
-//!
-//! struct C {
-//!     server_pk: key::PublicKey,
-//!     channel_confirmed: Option<u32>
-//! }
-//! impl client::Handler for C {
-//!     fn check_server_key(&mut self, server_pk:&key::PublicKey) -> Result<bool, Error> {
-//!
-//!         // This is an important part of the protocol: check the
-//!         // server's public key against the known one, to help prevent
-//!         // man-in-the-middle attacks.
-//!
-//!         Ok(&self.server_pk == server_pk)
-//!     }
-//!     fn channel_open_confirmation(&mut self, channel:u32, _:&mut client::Session) -> Result<(), Error> {
-//!         self.channel_confirmed = Some(channel);
-//!         Ok(())
-//!     }
-//! }
-//!
-//!
-//! // Initialize the server
-//!
-//! let server_config = {
-//!     let mut config:server::Config = Default::default();
-//!     config.keys.push(server_keypair.clone());
-//!     Arc::new(config)
-//! };
-
-//! let mut server = S{
-//!     client_pubkey: client_keypair.clone_public_key()
-//! };
-//! let mut server_connection = server::Connection::new(server_config.clone());
-//!
-//!
-//! // Initialize the client
-//!
-//! let client_config = Arc::new(Default::default());
-//!
-//! let mut client = C{
-//!     server_pk: server_keypair.clone_public_key(),
-//!     channel_confirmed: None
-//! };
-//! let mut client_connection = client::Connection::new(client_config);
-//! client_connection.set_auth_user("pe");
-//! client_connection.set_auth_public_key(client_keypair);
-//!
-//! // Now, run the protocol (it is obviously more useful when the
-//! // instances of Read and Write are networks sockets instead of Vec).
-//!
-//!
-//! // Fake sockets.
-//! let mut server_read:Vec<u8> = Vec::new();
-//! let mut server_write:Vec<u8> = Vec::new();
-//!
-//! // The server and client need extra workspace, we allocate these here.
-//! let mut buffer0 = CryptoBuf::new();
-//! let mut buffer1 = CryptoBuf::new();
-//!
-//! let mut run_protocol = |client_connection:&mut client::Connection, client:&mut C| {
+//! fn main() {
+//!     let sh = H::default();
+//!     let server = {
+//!         let mut config = thrussh::server::Config::default();
+//!         config.keys.push(thrussh::key::Algorithm::generate_keypair(thrussh::key::ED25519).unwrap());
+//!         let sh = sh.clone();
+//!         let mut server = thrussh::server::Server::new(config, "0.0.0.0:2222", sh);
+//!         std::thread::spawn(move || server.run())
+//!     };
 //!     {
-//!         let mut swrite = &server_write[..];
-//!         client_connection.read(client, &mut swrite, &mut buffer0, &mut buffer1).unwrap();
+//!         let mut ch = H::default();
+//!         let mut client = thrussh::client::Client::new();
+//!         client.set_host("localhost");
+//!         client.set_port(2222);
+//!         let mut client = client.connect().unwrap();
+//!         client.set_auth_user("black");
+//!         client.set_auth_password("bird".to_string());
+//!         client.authenticate().unwrap();
+//!         client.run_until(&mut ch, |client, _| client.is_authenticated()).unwrap();
+//!         client.disconnect(thrussh::Disconnect::ByApplication, "ciao", "IT");
+//!         client.run_until(&mut ch, |client, _| client.is_disconnected()).unwrap();
 //!     }
-//!     server_write.clear();
-//!     client_connection.write(&mut server_read).unwrap();
-//!     {
-//!         let mut sread = &server_read[..];
-//!         server_connection.read(&mut server, &mut sread, &mut buffer0, &mut buffer1).unwrap();
-//!     }
-//!     server_read.clear();
-//!     server_connection.write(&mut server_write).unwrap();
-//! };
-//!
-//! // Run the protocol until authentication is complete.
-//! while !client_connection.session.is_authenticated() {
-//!     run_protocol(&mut client_connection, &mut client)
+//!     let sh = sh.0.lock().unwrap();
+//!     assert_eq!(sh.user, "black");
+//!     assert_eq!(sh.password, "bird");
 //! }
-//!
-//! // From the client, ask the server to open a channel (prepare buffers to do so).
-//! let channel = client_connection.session.channel_open_session().unwrap();
-//!
-//!
-//! // Then run the protocol again, until our channel is confirmed.
-//! loop {
-//!     if client.channel_confirmed == Some(channel) { break };
-//!     run_protocol(&mut client_connection, &mut client);
-//! }
-//!
 //! ```
 
 
@@ -548,7 +495,6 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
                     let seckey = try!(position.read_string());
                     let comment = try!(position.read_string());
                     debug!("comment = {:?}", comment);
-                    println!("{:?} {:?} {:?}", seckey, seckey.len(), pubkey);
                     let (a,b) = seckey.split_at(32);
                     assert_eq!(pubkey, b);
                     let keypair = try!(signature::Ed25519KeyPair::from_bytes(a, pubkey));

@@ -95,7 +95,7 @@ impl super::Session {
                 }
                 Some(EncryptedState::WaitingAuthRequest(mut auth_request)) => {
                     if buf[0] == msg::USERAUTH_SUCCESS {
-
+                        
                         enc.state = Some(EncryptedState::Authenticated);
 
                     } else if buf[0] == msg::USERAUTH_FAILURE {

@@ -554,6 +554,11 @@ impl Session {
         false
     }
 
+    /// Whether the client is disconnected.
+    pub fn is_disconnected(&self) -> bool {
+        self.0.disconnected
+    }
+
     /// Check whether a channel has been confirmed.
     pub fn channel_is_open(&self, channel: u32) -> bool {
         if let Some(ref enc) = self.0.encrypted {
@@ -1003,13 +1008,39 @@ pub struct Client {
     port: u16,
     buffer0: CryptoBuf,
     buffer1: CryptoBuf,
-    pub connection: Connection,
+    connection: Connection,
 }
 
 pub struct Connected {
     client: Client,
     stream:BufReader<TcpStream>
 }
+use std::ops::{Deref, DerefMut};
+impl Deref for Connected {
+    type Target = Session;
+    fn deref(&self) -> &Self::Target {
+        &self.client.connection.session
+    }
+}
+
+impl Deref for Client {
+    type Target = Session;
+    fn deref(&self) -> &Self::Target {
+        &self.connection.session
+    }
+}
+impl DerefMut for Connected {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.client.connection.session
+    }
+}
+
+impl DerefMut for Client {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.connection.session
+    }
+}
+
 
 struct C<'s> {
     host: &'s str,
@@ -1275,9 +1306,9 @@ impl Connected {
     }
 
     fn run<R: Handler>(&mut self,
-                                        client: &mut R,
-                                        until: Option<RunUntil>)
-                                        -> Result<(), Error> {
+                       client: &mut R,
+                       until: Option<RunUntil>)
+                       -> Result<(), Error> {
 
         try!(self.client.connection.write(self.stream.get_mut()));
         loop {
@@ -1321,13 +1352,13 @@ impl Connected {
     }
 
     /// Run the protocol until some condition is satisfied on the client.
-    pub fn run_until<R: Handler, F: Fn(&mut R) -> bool>
+    pub fn run_until<R: Handler, F: Fn(&Client, &mut R) -> bool>
         (&mut self,
          client: &mut R,
          until: F)
          -> Result<(), Error> {
             try!(self.client.connection.write(self.stream.get_mut()));
-            while !until(client) {
+            while !until(&self.client, client) {
                 match self.client.poll.poll(&mut self.client.events, None) {
                     Ok(n) if n > 0 => {
                         for events in self.client.events.into_iter() {
