@@ -102,6 +102,8 @@ impl super::OpeningKey for Key {
 }
 
 impl super::SealingKey for Key {
+    fn block_size(&self) -> usize { 8 }
+
     /// Append an encrypted packet with contents `packet_content` at the end of `buffer`.
     fn seal(&self, packet_content: &[u8], buffer: &mut SSHBuffer) {
         // http://cvsweb.openbsd.org/cgi-bin/
@@ -110,7 +112,7 @@ impl super::SealingKey for Key {
         // - Compute the length, by chacha20-stream-xoring the first 4
         // bytes with the last 32 bytes of the client key.
 
-        let block_size = 8;
+        let block_size = self.block_size();
         let padding_len = if packet_content.len() + 5 <= 16 {
             16 - packet_content.len() - 1
         } else {
