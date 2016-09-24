@@ -17,7 +17,6 @@ use std::io::BufRead;
 use std;
 use cryptovec::CryptoVec;
 use sshbuffer::SSHBuffer;
-use rand::{thread_rng, Rng};
 pub mod chacha20poly1305;
 use msg;
 use encoding::Encoding;
@@ -121,7 +120,14 @@ impl CipherT for Clear {
         buffer.buffer.push_u32_be(packet_len as u32);
         buffer.buffer.push(padding_len as u8);
         buffer.buffer.extend(packet);
-        thread_rng().fill_bytes(buffer.buffer.reserve(padding_len));
+
+        // Since the packet is unencrypted anyway, there's no advantage to
+        // randomizing the padding, so avoid possibly leaking extra RNG state
+        // by padding with zeros.
+        for padding_byte in buffer.buffer.reserve(padding_len) {
+            *padding_byte = 0;
+        }
+
         debug!("write: {:?}", &buffer.buffer);
         buffer.seqn += 1;
     }
@@ -155,8 +161,13 @@ impl Clear {
         buffer.buffer.extend_ssh_string(description.as_bytes());
         buffer.buffer.extend_ssh_string(language_tag.as_bytes());
 
+        // Since the packet is unencrypted anyway, there's no advantage to
+        // randomizing the padding, so avoid possibly leaking extra RNG state
+        // by padding with zeros.
+        for padding_byte in buffer.buffer.reserve(padding_len) {
+            *padding_byte = 0;
+        }
 
-        thread_rng().fill_bytes(buffer.buffer.reserve(padding_len));
         debug!("write: {:?}", buffer.buffer);
         buffer.seqn += 1;
     }

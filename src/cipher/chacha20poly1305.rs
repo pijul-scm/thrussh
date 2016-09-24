@@ -16,7 +16,7 @@ use byteorder::{ByteOrder, BigEndian};
 use super::super::Error;
 use std::io::BufRead;
 use sshbuffer::SSHBuffer;
-use ring::{chacha, poly1305, rand};
+use ring::{chacha, poly1305};
 
 #[derive(Debug)]
 pub struct Cipher {
@@ -92,8 +92,6 @@ impl super::CipherT for Cipher {
 
     /// Append an encrypted packet with contents `packet_content` at the end of `buffer`.
     fn write(&self, packet_content: &[u8], buffer: &mut SSHBuffer) {
-        let rng = rand::SystemRandom::new(); // TODO: make a paramter.
-
         // http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD
         let offset = buffer.buffer.len();
         // - Compute the length, by chacha20-stream-xoring the first 4
@@ -130,10 +128,13 @@ impl super::CipherT for Cipher {
 
         // println!("buffer before padding: {:?}", &(buffer.as_slice())[offset..]);
 
-        let mut padding = [0; 256];
-
-        rng.fill(&mut padding[0..padding_len]).unwrap(); // XXX: unwrap
-        buffer.buffer.extend(&padding[0..padding_len]);
+        // As explained in "SSH via CTR mode with stateful decryption" in
+        // https://openvpn.net/papers/ssh-security.pdf, the padding doesn't
+        // need to be random because we're doing stateful counter-mode
+        // encryption. Use fixed padding to avoid PRNG overhead.
+        for padding_byte in buffer.buffer.reserve(padding_len) {
+            *padding_byte = 0;
+        }
 
         // println!("buffer before encryption: {:?}", &(buffer.as_slice())[offset..]);
         counter[0] = 1;
