@@ -183,6 +183,18 @@ impl Algorithm {
                         cipher: cipher::Name,
                         is_server: bool)
                         -> Result<super::cipher::CipherPair, Error> {
+        let make_cipher = match cipher {
+            super::cipher::CHACHA20POLY1305 => {
+                fn make_chacha20poly1305(key: &[u8]) -> super::cipher::Cipher {
+                    super::cipher::Cipher::WrappedChacha20Poly1305(
+                        super::cipher::chacha20poly1305::Cipher::init(key))
+                }
+                make_chacha20poly1305
+            }
+
+            _ => unreachable!(),
+        };
+
         // https://tools.ietf.org/html/rfc4253#section-7.2
         let mut compute_key = |c, key: &mut CryptoBuf, len| {
             buffer.clear();
@@ -210,35 +222,21 @@ impl Algorithm {
             }
         };
 
-        match cipher {
-            super::cipher::CHACHA20POLY1305 => {
+        let (local_to_remote, remote_to_local) = if is_server {
+            (b'D', b'C')
+        } else {
+            (b'C', b'D')
+        };
 
-                let client_to_server = {
-                    compute_key(b'C', key, super::cipher::key_size(cipher));
-                    super::cipher::Cipher::WrappedChacha20Poly1305 (
-                        super::cipher::chacha20poly1305::Cipher::init(&key)
-                    )
-                };
-                let server_to_client = {
-                    compute_key(b'D', key, super::cipher::key_size(cipher));
-                    super::cipher::Cipher::WrappedChacha20Poly1305 (
-                        super::cipher::chacha20poly1305::Cipher::init(&key)
-                    )
-                };
+        compute_key(local_to_remote, key, super::cipher::key_size(cipher));
+        let local_to_remote = make_cipher(key);
 
-                Ok(if is_server {
-                    super::cipher::CipherPair {
-                        local_to_remote: server_to_client,
-                        remote_to_local: client_to_server,
-                    }
-                } else {
-                    super::cipher::CipherPair {
-                        local_to_remote: client_to_server,
-                        remote_to_local: server_to_client,
-                    }
-                })
-            }
-            _ => unreachable!(),
-        }
+        compute_key(remote_to_local, key, super::cipher::key_size(cipher));
+        let remote_to_local = make_cipher(key);
+
+        Ok(super::cipher::CipherPair {
+            local_to_remote: local_to_remote,
+            remote_to_local: remote_to_local,
+        })
     }
 }
