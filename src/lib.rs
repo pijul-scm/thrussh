@@ -74,6 +74,8 @@
 //! ```
 
 
+#[macro_use]
+extern crate arrayref;
 extern crate libc;
 extern crate mio;
 extern crate rand;

@@ -32,6 +32,7 @@ include = [
         ]
 
 [dependencies]
+arrayref = "0.3.2"
 byteorder = "0.5"
 bitflags = "0.7"
 libc = "0.2"

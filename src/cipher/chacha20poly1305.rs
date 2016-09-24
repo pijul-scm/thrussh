@@ -24,28 +24,11 @@ pub struct Cipher {
     k2: chacha::Key,
 }
 
-/// Returns a reference to the elements of `$slice` as an array, verifying that
-/// the slice is of length `$len`.
-macro_rules! slice_as_array_ref {
-    ($slice:expr, $len:expr) => {
-        {
-            fn slice_as_array_ref<T>(slice: &[T]) -> &[T; $len] {
-                assert_eq!(slice.len(), $len);
-                unsafe {
-                    &*(slice.as_ptr() as *const [T; $len])
-                }
-            }
-            slice_as_array_ref($slice)
-        }
-    }
-}
-
-
 impl Cipher {
     pub fn init(key: &[u8]) -> Cipher {
         Cipher {
-            k1: chacha::key_from_bytes(slice_as_array_ref!(&key[32..64], 32)),
-            k2: chacha::key_from_bytes(slice_as_array_ref!(&key[0..32], 32)),
+            k1: chacha::key_from_bytes(array_ref![key, 32, 32]),
+            k2: chacha::key_from_bytes(array_ref![key, 0, 32]),
         }
     }
 }
