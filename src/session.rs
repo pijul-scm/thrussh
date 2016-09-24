@@ -22,7 +22,7 @@ use cipher;
 use msg;
 use key;
 use {Error, Channel, Disconnect};
-use cryptobuf::CryptoBuf;
+use cryptovec::CryptoVec;
 use std::collections::HashMap;
 use Limits;
 use sshbuffer::SSHBuffer;
@@ -30,6 +30,7 @@ use byteorder::{BigEndian, ByteOrder};
 use cipher::CipherT;
 use std::sync::Arc;
 use ring::digest;
+use encoding::Encoding;
 
 #[derive(Debug)]
 pub struct Encrypted {
@@ -42,7 +43,7 @@ pub struct Encrypted {
     pub rekey: Option<Kex>,
     pub channels: HashMap<u32, Channel>,
     pub wants_reply: bool,
-    pub write: CryptoBuf,
+    pub write: CryptoVec,
     pub write_cursor: usize,
     pub last_rekey: std::time::Instant,
 }
@@ -79,7 +80,7 @@ impl<C> CommonSession<C> {
                 rekey: None,
                 channels: HashMap::new(),
                 wants_reply: false,
-                write: CryptoBuf::new(),
+                write: CryptoVec::new(),
                 write_cursor: 0,
                 last_rekey: std::time::Instant::now(),
             });
@@ -237,23 +238,23 @@ pub enum EncryptedState {
 
 #[derive(Debug)]
 pub struct Exchange {
-    pub client_id: CryptoBuf,
-    pub server_id: CryptoBuf,
-    pub client_kex_init: CryptoBuf,
-    pub server_kex_init: CryptoBuf,
-    pub client_ephemeral: CryptoBuf,
-    pub server_ephemeral: CryptoBuf,
+    pub client_id: CryptoVec,
+    pub server_id: CryptoVec,
+    pub client_kex_init: CryptoVec,
+    pub server_kex_init: CryptoVec,
+    pub client_ephemeral: CryptoVec,
+    pub server_ephemeral: CryptoVec,
 }
 
 impl Exchange {
     pub fn new() -> Self {
         Exchange {
-            client_id: CryptoBuf::new(),
-            server_id: CryptoBuf::new(),
-            client_kex_init: CryptoBuf::new(),
-            server_kex_init: CryptoBuf::new(),
-            client_ephemeral: CryptoBuf::new(),
-            server_ephemeral: CryptoBuf::new(),
+            client_id: CryptoVec::new(),
+            server_id: CryptoVec::new(),
+            client_kex_init: CryptoVec::new(),
+            server_kex_init: CryptoVec::new(),
+            client_ephemeral: CryptoVec::new(),
+            server_ephemeral: CryptoVec::new(),
         }
     }
 }
@@ -329,8 +330,8 @@ pub struct KexDhDone {
 impl KexDhDone {
     pub fn compute_keys(self,
                         hash: digest::Digest,
-                        buffer: &mut CryptoBuf,
-                        buffer2: &mut CryptoBuf,
+                        buffer: &mut CryptoVec,
+                        buffer2: &mut CryptoVec,
                         is_server: bool)
                         -> Result<NewKeys, Error> {
         let session_id = if let Some(session_id) = self.session_id {

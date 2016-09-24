@@ -28,7 +28,7 @@ use cipher::CipherT;
 use sshbuffer::*;
 use negociation;
 use key::PubKey;
-use encoding::Reader;
+use encoding::{Encoding, Reader};
 
 use session::*;
 use auth;
@@ -360,8 +360,8 @@ impl KexInit {
 impl KexDh {
     pub fn parse<C: CipherT>(mut self,
                              config: &Config,
-                             buffer: &mut CryptoBuf,
-                             buffer2: &mut CryptoBuf,
+                             buffer: &mut CryptoVec,
+                             buffer2: &mut CryptoVec,
                              cipher: &mut C,
                              buf: &[u8],
                              write_buffer: &mut SSHBuffer)
@@ -443,8 +443,8 @@ impl Connection {
     pub fn read<R: BufRead, S: Handler>(&mut self,
                                         server: &mut S,
                                         stream: &mut R,
-                                        buffer: &mut CryptoBuf,
-                                        buffer2: &mut CryptoBuf)
+                                        buffer: &mut CryptoVec,
+                                        buffer2: &mut CryptoVec)
                                         -> Result<u8, Error> {
 
         let mut flags = 0;
@@ -479,8 +479,8 @@ impl Connection {
     fn read_one_packet<R: BufRead, S: Handler>(&mut self,
                                                server: &mut S,
                                                stream: &mut R,
-                                               buffer: &mut CryptoBuf,
-                                               buffer2: &mut CryptoBuf)
+                                               buffer: &mut CryptoVec,
+                                               buffer2: &mut CryptoVec)
                                                -> Result<u8, Error> {
         debug!("read {:?}", self.session);
         // Special case for the beginning.
@@ -887,8 +887,8 @@ impl<H:Handler+Clone> Server<H> {
 
     pub fn run(&mut self) {
 
-        let mut buffer0 = CryptoBuf::new();
-        let mut buffer1 = CryptoBuf::new();
+        let mut buffer0 = CryptoVec::new();
+        let mut buffer1 = CryptoVec::new();
         
         loop {
             match self.sessions.poll.poll(&mut self.events, Some(Duration::from_secs(1))) {
@@ -948,7 +948,7 @@ impl<H:Handler+Clone> Server<H> {
 }
 
 impl<H:Handler> Sessions<H> {
-    fn read(&mut self, id:Token, unpark: bool, buffer0: &mut CryptoBuf, buffer1:&mut CryptoBuf) {
+    fn read(&mut self, id:Token, unpark: bool, buffer0: &mut CryptoVec, buffer1:&mut CryptoVec) {
 
         match self.sessions.entry(id) {
             Entry::Occupied(mut e) => {
@@ -1005,7 +1005,7 @@ impl<H:Handler> Sessions<H> {
 
     }
     
-    fn unpark(&mut self, parking_time:time::Duration, buffer0:&mut CryptoBuf, buffer1:&mut CryptoBuf) {
+    fn unpark(&mut self, parking_time:time::Duration, buffer0:&mut CryptoVec, buffer1:&mut CryptoVec) {
         if let Some((id, time)) = self.parked.pop_front() {
             if time + parking_time < time::SteadyTime::now() {
                 // We can go.

@@ -45,6 +45,7 @@ untrusted = "0.3.1"
 mio = "0.6"
 regex = "0.1"
 user = "0.1.1"
+cryptovec = "0.2"
 
 [dev-dependencies]
 tempdir="0.3"

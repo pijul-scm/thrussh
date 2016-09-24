@@ -24,7 +24,7 @@ use msg;
 use auth;
 use cipher::CipherT;
 use negociation;
-use cryptobuf::CryptoBuf;
+use cryptovec::CryptoVec;
 use negociation::Select;
 use session::*;
 use sshbuffer::*;
@@ -35,7 +35,7 @@ use rand::Rng;
 use ring::signature;
 use pty::Pty;
 use untrusted;
-
+use encoding::Encoding;
 mod encrypted;
 
 #[derive(Debug)]
@@ -267,8 +267,8 @@ impl KexInit {
 
 impl KexDhDone {
     pub fn client_parse<C: CipherT, H: Handler>(mut self,
-                                                buffer: &mut CryptoBuf,
-                                                buffer2: &mut CryptoBuf,
+                                                buffer: &mut CryptoVec,
+                                                buffer2: &mut CryptoVec,
                                                 client: &mut H,
                                                 cipher: &mut C,
                                                 buf: &[u8],
@@ -355,8 +355,8 @@ impl Connection {
     pub fn read<R: BufRead, C: Handler>(&mut self,
                                         client: &mut C,
                                         stream: &mut R,
-                                        buffer: &mut CryptoBuf,
-                                        buffer2: &mut CryptoBuf)
+                                        buffer: &mut CryptoVec,
+                                        buffer2: &mut CryptoVec)
                                         -> Result<bool, Error> {
         if self.session.0.disconnected {
             return Err(Error::Disconnect);
@@ -381,8 +381,8 @@ impl Connection {
     fn read_one_packet<R: BufRead, C: Handler>(&mut self,
                                                client: &mut C,
                                                stream: &mut R,
-                                               buffer: &mut CryptoBuf,
-                                               buffer2: &mut CryptoBuf)
+                                               buffer: &mut CryptoVec,
+                                               buffer2: &mut CryptoVec)
                                                -> Result<bool, Error> {
 
         if self.session.0.encrypted.is_none() && self.session.0.kex.is_none() {
@@ -1006,8 +1006,8 @@ pub struct Client {
     events: Events,
     host: String,
     port: u16,
-    buffer0: CryptoBuf,
-    buffer1: CryptoBuf,
+    buffer0: CryptoVec,
+    buffer1: CryptoVec,
     connection: Connection,
 }
 
@@ -1087,8 +1087,8 @@ impl Client {
             events: Events::with_capacity(1024),
             host: "".to_string(),
             port: 22,
-            buffer0: CryptoBuf::new(),
-            buffer1: CryptoBuf::new(),
+            buffer0: CryptoVec::new(),
+            buffer1: CryptoVec::new(),
             connection: Connection::new(Arc::new(Default::default())),
         }
     }

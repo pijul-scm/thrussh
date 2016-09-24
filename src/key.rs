@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-use cryptobuf::CryptoBuf;
+use cryptovec::CryptoVec;
 use negociation::Named;
 use Error;
-use encoding::Reader;
+use encoding::{Encoding, Reader};
 use ring::{digest, rand, signature};
 use std;
 use rustc_serialize::base64::{ToBase64, STANDARD};
@@ -121,11 +121,11 @@ impl std::fmt::Debug for Algorithm {
 }
 #[doc(hidden)]
 pub trait PubKey {
-    fn push_to(&self, buffer: &mut CryptoBuf);
+    fn push_to(&self, buffer: &mut CryptoVec);
 }
 
 impl PubKey for PublicKey {
-    fn push_to(&self, buffer: &mut CryptoBuf) {
+    fn push_to(&self, buffer: &mut CryptoVec) {
         match self {
             &PublicKey::Ed25519(ref public) => {
 
@@ -138,7 +138,7 @@ impl PubKey for PublicKey {
 }
 
 impl PubKey for Algorithm {
-    fn push_to(&self, buffer: &mut CryptoBuf) {
+    fn push_to(&self, buffer: &mut CryptoVec) {
         match self {
             &Algorithm::Ed25519(ref key_pair) => {
                 let public = key_pair.public_key_bytes();
@@ -190,7 +190,7 @@ impl Algorithm {
     }
 
     #[doc(hidden)]
-    pub fn add_signature(&self, buffer: &mut CryptoBuf, hash: &digest::Digest) {
+    pub fn add_signature(&self, buffer: &mut CryptoVec, hash: &digest::Digest) {
         match self {
             &Algorithm::Ed25519(ref key_pair) => {
                 // XXX: Is this right? We use Ed25519 to sign a digest, so that
@@ -207,7 +207,7 @@ impl Algorithm {
     }
 
     #[doc(hidden)]
-    pub fn add_self_signature(&self, buffer: &mut CryptoBuf) {
+    pub fn add_self_signature(&self, buffer: &mut CryptoVec) {
         match self {
             &Algorithm::Ed25519(ref key_pair) => {
                 // XXX: Is this right? Above, we do a double hashing, but here

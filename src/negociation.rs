@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-use super::Error;
-use super::key;
-use super::kex;
-use super::cipher;
-use super::msg;
+use Error;
+use key;
+use kex;
+use cipher;
+use msg;
 // use super::mac; // unimplemented
 // use super::compression; // unimplemented
-use cryptobuf::CryptoBuf;
-use super::encoding::Reader;
+use cryptovec::CryptoVec;
+use encoding::{Encoding, Reader};
 use ring::rand;
 
 #[derive(Debug)]
@@ -146,7 +146,7 @@ impl Select for Client {
 }
 
 
-pub fn write_kex(prefs: &Preferred, buf: &mut CryptoBuf) {
+pub fn write_kex(prefs: &Preferred, buf: &mut CryptoVec) {
     let rng = rand::SystemRandom::new(); // TODO: make a parameter.
 
     // buf.clear();

@@ -19,7 +19,7 @@ use std::io::BufRead;
 
 #[derive(Debug)]
 pub struct SSHBuffer {
-    pub buffer: CryptoBuf,
+    pub buffer: CryptoVec,
     pub len: usize, // next packet length.
     pub bytes: usize,
     pub seqn: usize,
@@ -27,7 +27,7 @@ pub struct SSHBuffer {
 impl SSHBuffer {
     pub fn new() -> Self {
         SSHBuffer {
-            buffer: CryptoBuf::new(),
+            buffer: CryptoVec::new(),
             len: 0,
             bytes: 0,
             seqn: 0,

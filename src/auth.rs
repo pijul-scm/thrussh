@@ -14,7 +14,7 @@
 //
 
 use encoding;
-use cryptobuf::CryptoBuf;
+use cryptovec::CryptoVec;
 
 /// Set of methods, represented by bit flags.
 bitflags! {
@@ -89,8 +89,8 @@ impl MethodSet {
 pub struct AuthRequest {
     pub methods: MethodSet,
     pub partial_success: bool,
-    pub public_key: CryptoBuf,
-    pub public_key_algorithm: CryptoBuf,
+    pub public_key: CryptoVec,
+    pub public_key_algorithm: CryptoVec,
     pub public_key_is_ok: bool,
     pub sent_pk_ok: bool,
     pub rejection_count: usize

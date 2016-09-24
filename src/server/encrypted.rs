@@ -20,7 +20,7 @@ use super::*;
 use super::super::*;
 use session::*;
 use msg;
-use encoding::Reader;
+use encoding::{Encoding, Reader};
 use auth::*;
 use key::Verify;
 use negociation;
@@ -33,7 +33,7 @@ impl Session {
     pub fn server_read_encrypted<S: Handler>(&mut self,
                                              server: &mut S,
                                              buf: &[u8],
-                                             buffer: &mut CryptoBuf)
+                                             buffer: &mut CryptoVec)
                                              -> Result<bool, Error> {
 
         // Either this packet is a KEXINIT, in which case we start a key re-exchange.
@@ -419,7 +419,7 @@ impl Encrypted {
     pub fn server_read_auth_request<S: Handler>(&mut self,
                                                 server: &mut S,
                                                 buf: &[u8],
-                                                buffer: &mut CryptoBuf,
+                                                buffer: &mut CryptoVec,
                                                 auth_user: &mut String,
                                                 mut auth_request: AuthRequest)
                                                 -> Result<bool, Error> {
@@ -561,7 +561,7 @@ impl Encrypted {
 
 fn server_accept_service(banner: Option<&str>,
                          methods: auth::MethodSet,
-                         buffer: &mut CryptoBuf)
+                         buffer: &mut CryptoVec)
                          -> AuthRequest {
 
     push_packet!(buffer, {
@@ -580,8 +580,8 @@ fn server_accept_service(banner: Option<&str>,
     AuthRequest {
         methods: methods,
         partial_success: false, // not used immediately anway.
-        public_key: CryptoBuf::new(),
-        public_key_algorithm: CryptoBuf::new(),
+        public_key: CryptoVec::new(),
+        public_key_algorithm: CryptoVec::new(),
         sent_pk_ok: false,
         public_key_is_ok: false,
         rejection_count: 0,
@@ -589,14 +589,14 @@ fn server_accept_service(banner: Option<&str>,
 }
 
 
-fn server_auth_request_success(buffer: &mut CryptoBuf) {
+fn server_auth_request_success(buffer: &mut CryptoVec) {
 
     push_packet!(buffer, {
         buffer.push(msg::USERAUTH_SUCCESS);
     })
 }
 
-fn server_send_pk_ok(buffer: &mut CryptoBuf, auth_request: &mut AuthRequest) {
+fn server_send_pk_ok(buffer: &mut CryptoVec, auth_request: &mut AuthRequest) {
     push_packet!(buffer, {
         buffer.push(msg::USERAUTH_PK_OK);
         buffer.extend_ssh_string(&auth_request.public_key_algorithm);
@@ -605,7 +605,7 @@ fn server_send_pk_ok(buffer: &mut CryptoBuf, auth_request: &mut AuthRequest) {
     auth_request.sent_pk_ok = true;
 }
 
-fn server_confirm_channel_open(buffer: &mut CryptoBuf, channel: &Channel, config: &super::Config) {
+fn server_confirm_channel_open(buffer: &mut CryptoVec, channel: &Channel, config: &super::Config) {
 
     push_packet!(buffer, {
         buffer.push(msg::CHANNEL_OPEN_CONFIRMATION);

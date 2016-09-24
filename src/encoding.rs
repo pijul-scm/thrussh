@@ -14,9 +14,9 @@
 //
 
 use byteorder::{ByteOrder, BigEndian};
-use super::Error;
-use super::cryptobuf::CryptoBuf;
-use super::key;
+use Error;
+use cryptovec::CryptoVec;
+use key;
 use negociation::Named;
 
 pub trait Bytes {
@@ -33,12 +33,20 @@ impl<'b> Bytes for &'b key::Algorithm {
         self.name().as_bytes()
     }
 }
-impl CryptoBuf {
-    pub fn extend_ssh_string(&mut self, s: &[u8]) {
+
+pub trait Encoding {
+    fn extend_ssh_string(&mut self, s: &[u8]);
+    fn extend_ssh_mpint(&mut self, s: &[u8]);
+    fn extend_list<A: Bytes, I: Iterator<Item = A>>(&mut self, list: I);
+    fn write_empty_list(&mut self);
+}
+
+impl Encoding for CryptoVec {
+    fn extend_ssh_string(&mut self, s: &[u8]) {
         self.push_u32_be(s.len() as u32);
         self.extend(s);
     }
-    pub fn extend_ssh_mpint(&mut self, s: &[u8]) {
+    fn extend_ssh_mpint(&mut self, s: &[u8]) {
         let mut i = 0;
         while i < s.len() && s[i] == 0 {
             i += 1
@@ -57,7 +65,7 @@ impl CryptoBuf {
     }
 
 
-    pub fn extend_list<A: Bytes, I: Iterator<Item = A>>(&mut self, list: I) {
+    fn extend_list<A: Bytes, I: Iterator<Item = A>>(&mut self, list: I) {
         let len0 = self.len();
         self.extend(&[0, 0, 0, 0]);
         let mut first = true;
@@ -74,7 +82,7 @@ impl CryptoBuf {
         BigEndian::write_u32(&mut self[len0..], len);
     }
 
-    pub fn write_empty_list(&mut self) {
+    fn write_empty_list(&mut self) {
         self.extend(&[0, 0, 0, 0]);
     }
 }
@@ -83,7 +91,7 @@ pub trait Reader {
     fn reader<'a>(&'a self, starting_at: usize) -> Position<'a>;
 }
 
-impl Reader for CryptoBuf {
+impl Reader for CryptoVec {
     fn reader<'a>(&'a self, starting_at: usize) -> Position<'a> {
         Position {
             s: &self,

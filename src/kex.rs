@@ -13,17 +13,18 @@
 // limitations under the License.
 //
 use byteorder::{ByteOrder, BigEndian};
-
-use super::Error;
-use super::msg;
 use std;
 
-use super::cryptobuf::CryptoBuf;
+use Error;
+use msg;
+
+use cryptovec::CryptoVec;
 use session::Exchange;
 use key;
 use cipher;
 use ring::{agreement, digest, rand};
 use untrusted;
+use encoding::Encoding;
 
 #[doc(hidden)]
 pub struct Algorithm {
@@ -90,8 +91,8 @@ impl Algorithm {
     }
 
     pub fn client_dh(name: Name,
-                     client_ephemeral: &mut CryptoBuf,
-                     buf: &mut CryptoBuf)
+                     client_ephemeral: &mut CryptoVec,
+                     buf: &mut CryptoVec)
                      -> Result<Algorithm, Error> {
         let rng = rand::SystemRandom::new(); // TODO: make a parameter.
 
@@ -140,7 +141,7 @@ impl Algorithm {
     pub fn compute_exchange_hash<K: key::PubKey>(&self,
                                                  key: &K,
                                                  exchange: &Exchange,
-                                                 buffer: &mut CryptoBuf)
+                                                 buffer: &mut CryptoVec)
                                                  -> Result<digest::Digest, Error> {
         // Computing the exchange hash, see page 7 of RFC 5656.
 
@@ -178,8 +179,8 @@ impl Algorithm {
     pub fn compute_keys(&self,
                         session_id: &digest::Digest,
                         exchange_hash: &digest::Digest,
-                        buffer: &mut CryptoBuf,
-                        key: &mut CryptoBuf,
+                        buffer: &mut CryptoVec,
+                        key: &mut CryptoVec,
                         cipher: cipher::Name,
                         is_server: bool)
                         -> Result<super::cipher::CipherPair, Error> {
@@ -196,7 +197,7 @@ impl Algorithm {
         };
 
         // https://tools.ietf.org/html/rfc4253#section-7.2
-        let mut compute_key = |c, key: &mut CryptoBuf, len| {
+        let mut compute_key = |c, key: &mut CryptoVec, len| {
             buffer.clear();
             key.clear();
 

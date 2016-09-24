@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-use cryptobuf::CryptoBuf;
+use cryptovec::CryptoVec;
 use {Sig, Error, ChannelOpenFailure};
 use std;
 use auth;
 use session::*;
 use msg;
-use encoding::Reader;
+use encoding::{Encoding, Reader};
 use negociation::Named;
 use key;
 use key::PubKey;
@@ -32,7 +32,7 @@ impl super::Session {
     pub fn client_read_encrypted<C: super::Handler>(&mut self,
                                                     client: &mut C,
                                                     buf: &[u8],
-                                                    buffer: &mut CryptoBuf)
+                                                    buffer: &mut CryptoVec)
                                                     -> Result<(), Error> {
 
         // Either this packet is a KEXINIT, in which case we start a key re-exchange.
@@ -70,8 +70,8 @@ impl super::Session {
                             let auth_request = auth::AuthRequest {
                                 methods: auth::MethodSet::all(),
                                 partial_success: false,
-                                public_key: CryptoBuf::new(),
-                                public_key_algorithm: CryptoBuf::new(),
+                                public_key: CryptoVec::new(),
+                                public_key_algorithm: CryptoVec::new(),
                                 public_key_is_ok: false,
                                 sent_pk_ok: false,
                                 rejection_count: 0,
@@ -289,7 +289,7 @@ impl Encrypted {
     pub fn client_send_signature(&mut self,
                                  user: &str,
                                  method: &auth::Method<key::Algorithm>,
-                                 buffer: &mut CryptoBuf) {
+                                 buffer: &mut CryptoVec) {
         debug!("sending signature {:?}", method);
         match method {
             &auth::Method::PublicKey { ref key } => {

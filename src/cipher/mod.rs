@@ -15,11 +15,12 @@
 use {Error, Disconnect};
 use std::io::BufRead;
 use std;
-use cryptobuf::CryptoBuf;
+use cryptovec::CryptoVec;
 use sshbuffer::SSHBuffer;
 use rand::{thread_rng, Rng};
 pub mod chacha20poly1305;
 use msg;
+use encoding::Encoding;
 
 #[derive(Debug)]
 pub enum Cipher {
@@ -165,7 +166,7 @@ impl Clear {
 
 /// Fills the read buffer, and returns whether a complete message has been read.
 fn read(stream: &mut BufRead,
-        read_buffer: &mut CryptoBuf,
+        read_buffer: &mut CryptoVec,
         read_len: usize,
         bytes_read: &mut usize)
         -> Result<bool, Error> {

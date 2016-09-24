@@ -91,6 +91,7 @@ extern crate byteorder;
 extern crate rustc_serialize; // config: read base 64.
 extern crate untrusted;
 extern crate regex;
+extern crate cryptovec;
 
 use std::io::{Read, BufRead, BufReader, Seek, SeekFrom, Write};
 use byteorder::{BigEndian, WriteBytesExt};
@@ -103,8 +104,7 @@ use std::borrow::Cow;
 use std::fs::OpenOptions;
 use std::sync::Arc;
 
-mod cryptobuf;
-pub use cryptobuf::CryptoBuf;
+pub use cryptovec::CryptoVec;
 
 mod sshbuffer;
 
