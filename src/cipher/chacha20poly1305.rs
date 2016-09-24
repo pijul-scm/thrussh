@@ -104,6 +104,16 @@ impl super::OpeningKey for Key {
 impl super::SealingKey for Key {
     fn block_size(&self) -> usize { 8 }
 
+    // As explained in "SSH via CTR mode with stateful decryption" in
+    // https://openvpn.net/papers/ssh-security.pdf, the padding doesn't need to
+    // be random because we're doing stateful counter-mode encryption. Use
+    // fixed padding to avoid PRNG overhead.
+    fn fill_padding(&self, padding_out: &mut [u8]) {
+        for padding_byte in padding_out {
+            *padding_byte = 0;
+        }
+    }
+
     /// Append an encrypted packet with contents `packet_content` at the end of `buffer`.
     fn seal(&self, packet_content: &[u8], buffer: &mut SSHBuffer) {
         // http://cvsweb.openbsd.org/cgi-bin/
@@ -143,13 +153,7 @@ impl super::SealingKey for Key {
 
         // println!("buffer before padding: {:?}", &(buffer.as_slice())[offset..]);
 
-        // As explained in "SSH via CTR mode with stateful decryption" in
-        // https://openvpn.net/papers/ssh-security.pdf, the padding doesn't
-        // need to be random because we're doing stateful counter-mode
-        // encryption. Use fixed padding to avoid PRNG overhead.
-        for padding_byte in buffer.buffer.reserve(padding_len) {
-            *padding_byte = 0;
-        }
+        self.fill_padding(buffer.buffer.reserve(padding_len));
 
         // println!("buffer before encryption: {:?}", &(buffer.as_slice())[offset..]);
         counter[0] = 1;

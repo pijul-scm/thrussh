@@ -66,6 +66,8 @@ pub trait OpeningKey {
 pub trait SealingKey {
     fn block_size(&self) -> usize;
 
+    fn fill_padding(&self, padding_out: &mut [u8]);
+
     /// Extend the buffer with the encrypted packet.
     fn seal(&self, packet: &[u8], buffer: &mut SSHBuffer);
 }
