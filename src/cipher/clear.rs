@@ -61,31 +61,19 @@ impl super::OpeningKey for Key {
 }
 
 impl super::SealingKey for Key {
-    fn seal(&self, packet: &[u8], buffer: &mut SSHBuffer) {
-
-        // Unencrypted packets should be of lengths multiple of 8.
-        let block_size = 8;
-        let padding_len = block_size - ((5 + packet.len()) % block_size);
-        let padding_len = if padding_len < 4 {
-            padding_len + block_size
-        } else {
-            padding_len
-        };
-
-        let packet_len = packet.len() + 1 + padding_len;
-        buffer.buffer.push_u32_be(packet_len as u32);
-        buffer.buffer.push(padding_len as u8);
-        buffer.buffer.extend(packet);
-
+    fn fill_padding(&self, padding_out: &mut [u8]) {
         // Since the packet is unencrypted anyway, there's no advantage to
         // randomizing the padding, so avoid possibly leaking extra RNG state
         // by padding with zeros.
-        for padding_byte in buffer.buffer.reserve(padding_len) {
+        for padding_byte in padding_out {
             *padding_byte = 0;
         }
+    }
 
-        debug!("write: {:?}", &buffer.buffer);
-        buffer.seqn += 1;
+    fn tag_len(&self) -> usize { 0 }
+
+    fn seal(&self, _seqn: u32, _plaintext_in_ciphertext_out: &mut [u8], tag_out: &mut [u8]) {
+        debug_assert_eq!(tag_out.len(), self.tag_len());
     }
 }
 

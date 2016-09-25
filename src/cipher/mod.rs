@@ -64,12 +64,11 @@ pub trait OpeningKey {
 }
 
 pub trait SealingKey {
-    fn block_size(&self) -> usize;
-
     fn fill_padding(&self, padding_out: &mut [u8]);
 
-    /// Extend the buffer with the encrypted packet.
-    fn seal(&self, packet: &[u8], buffer: &mut SSHBuffer);
+    fn tag_len(&self) -> usize;
+
+    fn seal(&self, seqn: u32, plaintext_in_ciphertext_out: &mut [u8], tag_out: &mut [u8]);
 }
 
 impl<'a> Cipher {
@@ -132,7 +131,56 @@ impl CipherPair {
         self.remote_to_local.as_opening_key().open(stream, buffer)
     }
 
-    pub fn write(&self, packet: &[u8], buffer: &mut SSHBuffer) {
-        self.local_to_remote.as_sealing_key().seal(packet, buffer)
+    pub fn write(&self, payload: &[u8], buffer: &mut SSHBuffer) {
+        // https://tools.ietf.org/html/rfc4253#section-6
+        //
+        // The variables `payload`, `packet_length` and `padding_length` refer
+        // to the protocol fields of the same names.
+
+        // Pad to "a multiple of the cipher block size or 8, whichever is
+        // larger". Currently no block ciphers are supported so there is no
+        // block size to be larger than 8.
+        let block_size = MINIMUM_BLOCK_SIZE_FOR_PADDING;
+        let unpadded_len = PACKET_LENGTH_LEN + PADDING_LENGTH_LEN + payload.len();
+        let mut padding_length = match unpadded_len % block_size {
+            0 => 0,
+            n => block_size - n,
+        };
+        // RFC 4253 says "There MUST be at least four bytes of padding."
+        if padding_length < 4 {
+            padding_length += block_size;
+        };
+        debug_assert_eq!((unpadded_len + padding_length) % block_size, 0);
+
+        let packet_length = PADDING_LENGTH_LEN + payload.len() + padding_length;
+
+        let offset = buffer.buffer.len();
+        let key = self.remote_to_local.as_sealing_key();
+
+        assert!(packet_length <= std::u32::MAX as usize); // XXX: Is this really always true?
+        buffer.buffer.push_u32_be(packet_length as u32);
+
+        assert!(padding_length <= std::u8::MAX as usize);
+        buffer.buffer.push(padding_length as u8);
+        buffer.buffer.extend(payload);
+        key.fill_padding(buffer.buffer.reserve(padding_length));
+        buffer.buffer.reserve(key.tag_len());
+
+        let (plaintext, tag) = buffer.buffer[offset..]
+                                     .split_at_mut(PACKET_LENGTH_LEN + packet_length);
+
+        assert!(buffer.seqn <= std::u32::MAX as usize); // XXX: Is this really always true?
+        key.seal(buffer.seqn as u32, plaintext, tag);
+
+        // XXX: Can't this overflow `usize` and also make the `u32' cast truncate?
+        buffer.seqn += 1;
     }
 }
+
+// RFC 4253 makes reference to "the cipher block size or 8, whichever is
+// larger" when specifying how the padding works. This is the "8" in "or 8".
+const MINIMUM_BLOCK_SIZE_FOR_PADDING: usize = 8;
+
+const PACKET_LENGTH_LEN: usize = 4;
+
+const PADDING_LENGTH_LEN: usize = 1;

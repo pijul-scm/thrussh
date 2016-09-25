@@ -102,8 +102,6 @@ impl super::OpeningKey for Key {
 }
 
 impl super::SealingKey for Key {
-    fn block_size(&self) -> usize { 8 }
-
     // As explained in "SSH via CTR mode with stateful decryption" in
     // https://openvpn.net/papers/ssh-security.pdf, the padding doesn't need to
     // be random because we're doing stateful counter-mode encryption. Use
@@ -114,61 +112,34 @@ impl super::SealingKey for Key {
         }
     }
 
+    fn tag_len(&self) -> usize { poly1305::TAG_LEN }
+
     /// Append an encrypted packet with contents `packet_content` at the end of `buffer`.
-    fn seal(&self, packet_content: &[u8], buffer: &mut SSHBuffer) {
+    fn seal(&self, seqn: u32, plaintext_in_ciphertext_out: &mut [u8], tag_out: &mut [u8]) {
         // http://cvsweb.openbsd.org/cgi-bin/
         // cvsweb/src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD
-        let offset = buffer.buffer.len();
-        // - Compute the length, by chacha20-stream-xoring the first 4
-        // bytes with the last 32 bytes of the client key.
 
-        let block_size = self.block_size();
-        let padding_len = if packet_content.len() + 5 <= 16 {
-            16 - packet_content.len() - 1
-        } else {
-            (block_size - ((1 + packet_content.len()) % block_size))
-        };
-        let padding_len = if padding_len < 4 {
-            padding_len + block_size
-        } else {
-            padding_len
-        };
-
-        buffer.buffer.push_u32_be((packet_content.len() + padding_len + 1) as u32);
+        let mut tag_out = array_mut_ref![tag_out, 0, poly1305::TAG_LEN];
 
         let mut nonce = [0; chacha::NONCE_LEN];
-        BigEndian::write_u32(&mut nonce[(chacha::NONCE_LEN - 4)..], buffer.seqn as u32);
+        BigEndian::write_u32(&mut nonce[(chacha::NONCE_LEN - 4)..], seqn);
 
         let mut counter = chacha::make_counter(&nonce, 0);
 
-        chacha::chacha20_xor_in_place(&self.k1, &counter, &mut buffer.buffer[offset..(offset + 4)]);
-        // the first 4 bytes of buffer now contain the encrypted length.
-        // - Append the encrypted packet
+        {
+            let (len_in_out, data_and_padding_in_out) =
+                plaintext_in_ciphertext_out.split_at_mut(4);
 
-        // Compute the amount of padding.
-        // println!("padding_len {:?}", padding_len);
-        buffer.buffer.push(padding_len as u8);
+            chacha::chacha20_xor_in_place(&self.k1, &counter, len_in_out);
+            // the first 4 bytes of buffer now contain the encrypted length.
 
-        buffer.buffer.extend(packet_content);
-
-        // println!("buffer before padding: {:?}", &(buffer.as_slice())[offset..]);
-
-        self.fill_padding(buffer.buffer.reserve(padding_len));
-
-        // println!("buffer before encryption: {:?}", &(buffer.as_slice())[offset..]);
-        counter[0] = 1;
-        chacha::chacha20_xor_in_place(&self.k2, &counter, &mut buffer.buffer[offset + 4..]);
-
-        // println!("buffer before tag: {:?}", &(buffer.as_slice())[offset..]);
-        // - Compute the Poly1305 auth on the first (4+length) first bytes of the packet.
+            counter[0] = 1;
+            chacha::chacha20_xor_in_place(&self.k2, &counter, data_and_padding_in_out);
+        }
 
         let mut poly_key = [0; poly1305::KEY_LEN];
         counter[0] = 0;
         chacha::chacha20_xor_in_place(&self.k2, &counter, &mut poly_key);
-        let mut tag = [0; poly1305::TAG_LEN];
-        poly1305::sign(&poly_key, &buffer.buffer[offset..], &mut tag);
-
-        buffer.buffer.extend(&tag);
-        buffer.seqn += 1;
+        poly1305::sign(&poly_key, plaintext_in_ciphertext_out, &mut tag_out);
     }
 }
