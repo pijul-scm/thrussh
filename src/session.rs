@@ -103,7 +103,7 @@ impl<C> CommonSession<C> {
             self.cipher.write(&enc.write[i0..], &mut self.write_buffer);
             enc.write.truncate(i0)
         } else {
-            cipher::Clear.disconnect(reason, description, language_tag, &mut self.write_buffer)
+            cipher::clear::disconnect(reason, description, language_tag, &mut self.write_buffer)
         }
     }
 

@@ -187,7 +187,7 @@ impl Algorithm {
         let make_cipher = match cipher {
             super::cipher::CHACHA20POLY1305 => {
                 fn make_chacha20poly1305(key: &[u8]) -> super::cipher::Cipher {
-                    super::cipher::Cipher::WrappedChacha20Poly1305(
+                    super::cipher::Cipher::Chacha20Poly1305(
                         super::cipher::chacha20poly1305::Cipher::init(key))
                 }
                 make_chacha20poly1305
