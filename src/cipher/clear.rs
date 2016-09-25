@@ -18,13 +18,12 @@ use std::io::BufRead;
 use encoding::Encoding;
 use msg;
 use sshbuffer::SSHBuffer;
-use super::CipherT;
 
 #[derive(Debug)]
-pub struct Cipher;
+pub struct Key;
 
-impl CipherT for Cipher {
-    fn read<'a>(&self,
+impl super::OpeningKey for Key {
+    fn open<'a>(&self,
                 stream: &mut BufRead,
                 buffer: &'a mut SSHBuffer)
                 -> Result<Option<&'a [u8]>, Error> {
@@ -59,8 +58,10 @@ impl CipherT for Cipher {
 
         }
     }
+}
 
-    fn write(&self, packet: &[u8], buffer: &mut SSHBuffer) {
+impl super::SealingKey for Key {
+    fn seal(&self, packet: &[u8], buffer: &mut SSHBuffer) {
 
         // Unencrypted packets should be of lengths multiple of 8.
         let block_size = 8;

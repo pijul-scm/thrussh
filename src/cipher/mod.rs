@@ -23,8 +23,8 @@ pub mod clear;
 
 #[derive(Debug)]
 pub enum Cipher {
-    Clear(clear::Cipher),
-    Chacha20Poly1305(chacha20poly1305::Cipher),
+    Clear(clear::Key),
+    Chacha20Poly1305(chacha20poly1305::Key),
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -51,23 +51,32 @@ pub struct CipherPair {
 }
 
 pub const CLEAR_PAIR: CipherPair = CipherPair {
-    local_to_remote: Cipher::Clear(clear::Cipher),
-    remote_to_local: Cipher::Clear(clear::Cipher),
+    local_to_remote: Cipher::Clear(clear::Key),
+    remote_to_local: Cipher::Clear(clear::Key),
 };
 
-pub trait CipherT {
+pub trait OpeningKey {
     /// Replace the buffer's content with the next deciphered packet from `stream`.
-    fn read<'a>(&self,
+    fn open<'a>(&self,
                 stream: &mut BufRead,
                 buffer: &'a mut SSHBuffer)
                 -> Result<Option<&'a [u8]>, Error>;
-    /// Extend the buffer with the encrypted packet.
-    fn write(&self, packet: &[u8], buffer: &mut SSHBuffer);
 }
 
+pub trait SealingKey {
+    /// Extend the buffer with the encrypted packet.
+    fn seal(&self, packet: &[u8], buffer: &mut SSHBuffer);
+}
 
 impl<'a> Cipher {
-    fn key(&'a self) -> &'a CipherT {
+    fn as_opening_key(&'a self) -> &'a OpeningKey {
+        match *self {
+            Cipher::Clear(ref key) => key,
+            Cipher::Chacha20Poly1305(ref key) => key,
+        }
+    }
+
+    fn as_sealing_key(&'a self) -> &'a SealingKey {
         match *self {
             Cipher::Clear(ref key) => key,
             Cipher::Chacha20Poly1305(ref key) => key,
@@ -116,10 +125,10 @@ fn read(stream: &mut BufRead,
 impl CipherPair {
     pub fn read<'a>(&self, stream: &mut BufRead, buffer: &'a mut SSHBuffer)
                     -> Result<Option<&'a [u8]>, Error> {
-        self.remote_to_local.key().read(stream, buffer)
+        self.remote_to_local.as_opening_key().open(stream, buffer)
     }
 
     pub fn write(&self, packet: &[u8], buffer: &mut SSHBuffer) {
-        self.local_to_remote.key().write(packet, buffer)
+        self.local_to_remote.as_sealing_key().seal(packet, buffer)
     }
 }

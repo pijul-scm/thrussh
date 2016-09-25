@@ -19,22 +19,22 @@ use sshbuffer::SSHBuffer;
 use ring::{chacha, poly1305};
 
 #[derive(Debug)]
-pub struct Cipher {
+pub struct Key {
     k1: chacha::Key,
     k2: chacha::Key,
 }
 
-impl Cipher {
-    pub fn init(key: &[u8]) -> Cipher {
-        Cipher {
+impl Key {
+    pub fn init(key: &[u8]) -> Key {
+        Key {
             k1: chacha::key_from_bytes(array_ref![key, 32, 32]),
             k2: chacha::key_from_bytes(array_ref![key, 0, 32]),
         }
     }
 }
 
-impl super::CipherT for Cipher {
-    fn read<'a>(&self,
+impl super::OpeningKey for Key {
+    fn open<'a>(&self,
                 stream: &mut BufRead,
                 read_buffer: &'a mut SSHBuffer)
                 -> Result<Option<&'a [u8]>, Error> {
@@ -99,9 +99,11 @@ impl super::CipherT for Cipher {
             Ok(None)
         }
     }
+}
 
+impl super::SealingKey for Key {
     /// Append an encrypted packet with contents `packet_content` at the end of `buffer`.
-    fn write(&self, packet_content: &[u8], buffer: &mut SSHBuffer) {
+    fn seal(&self, packet_content: &[u8], buffer: &mut SSHBuffer) {
         // http://cvsweb.openbsd.org/cgi-bin/
         // cvsweb/src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD
         let offset = buffer.buffer.len();

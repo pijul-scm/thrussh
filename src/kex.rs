@@ -188,7 +188,7 @@ impl Algorithm {
             super::cipher::CHACHA20POLY1305 => {
                 fn make_chacha20poly1305(key: &[u8]) -> super::cipher::Cipher {
                     super::cipher::Cipher::Chacha20Poly1305(
-                        super::cipher::chacha20poly1305::Cipher::init(key))
+                        super::cipher::chacha20poly1305::Key::init(key))
                 }
                 make_chacha20poly1305
             }
