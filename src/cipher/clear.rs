@@ -57,6 +57,9 @@ pub fn disconnect(reason: Disconnect,
                   description: &str,
                   language_tag: &str,
                   buffer: &mut SSHBuffer) {
+    // XXX This duplicates the logic of `CipherPair::write()` and
+    // `clear::Key::seal()`. TODO: Replace this duplication by using
+    // `CipherPair::write()` with `super::CLEAR_PAIR`.
 
     let payload_len = 13 + description.len() + language_tag.len();
 
