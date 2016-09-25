@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
+use byteorder::{ByteOrder, BigEndian};
 use Error;
 use std::io::BufRead;
 use std;
@@ -58,11 +59,10 @@ pub const CLEAR_PAIR: CipherPair = CipherPair {
 pub trait OpeningKey {
     fn decrypt_packet_length(&self, seqn: u32, encrypted_packet_length: [u8; 4]) -> [u8; 4];
 
-    /// Replace the buffer's content with the next deciphered packet from `stream`.
-    fn open<'a>(&self,
-                stream: &mut BufRead,
-                buffer: &'a mut SSHBuffer)
-                -> Result<Option<&'a [u8]>, Error>;
+    fn tag_len(&self) -> usize;
+
+    fn open(&self, seqn: u32, ciphertext_in_plaintext_out: &mut [u8], tag: &[u8])
+            -> Result<(), Error>;
 }
 
 pub trait SealingKey {
@@ -130,7 +130,39 @@ fn read(stream: &mut BufRead,
 impl CipherPair {
     pub fn read<'a>(&self, stream: &mut BufRead, buffer: &'a mut SSHBuffer)
                     -> Result<Option<&'a [u8]>, Error> {
-        self.remote_to_local.as_opening_key().open(stream, buffer)
+        let key = self.remote_to_local.as_opening_key();
+
+        // XXX: `buffer.seqn as u32` may truncate.
+        let seqn = buffer.seqn as u32;
+
+        if buffer.len == 0 {
+            buffer.buffer.clear();
+            let mut len = [0; 4];
+            try!(stream.read_exact(&mut len));
+            buffer.buffer.extend(&len);
+            let len = key.decrypt_packet_length(seqn, len);
+            buffer.len = BigEndian::read_u32(&len) as usize + key.tag_len();
+            debug!("buffer len: {:?}", buffer.len);
+        }
+
+        if try!(read(stream, &mut buffer.buffer, buffer.len, &mut buffer.bytes)) {
+            let ciphertext_len = buffer.buffer.len() - key.tag_len();
+            let (ciphertext, tag) = buffer.buffer.split_at_mut(ciphertext_len);
+            try!(key.open(seqn, ciphertext, tag));
+            let (padding_length, plaintext) =
+                ciphertext[PACKET_LENGTH_LEN..].split_at(PADDING_LENGTH_LEN);
+            debug_assert_eq!(PADDING_LENGTH_LEN, 1);
+            let padding_length = padding_length[0] as usize;
+            let plaintext_end = try!(plaintext.len()
+                                              .checked_sub(padding_length)
+                                              .ok_or(Error::IndexOutOfBounds));
+            let result = Some(&plaintext[..plaintext_end]);
+            buffer.seqn += 1;
+            buffer.len = 0;
+            Ok(result)
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn write(&self, payload: &[u8], buffer: &mut SSHBuffer) {
@@ -183,6 +215,6 @@ impl CipherPair {
 // larger" when specifying how the padding works. This is the "8" in "or 8".
 const MINIMUM_BLOCK_SIZE_FOR_PADDING: usize = 8;
 
-const PACKET_LENGTH_LEN: usize = 4;
+pub const PACKET_LENGTH_LEN: usize = 4;
 
 const PADDING_LENGTH_LEN: usize = 1;

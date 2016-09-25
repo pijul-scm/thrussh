@@ -17,8 +17,6 @@
 
 use byteorder::{ByteOrder, BigEndian};
 use super::super::Error;
-use std::io::BufRead;
-use sshbuffer::SSHBuffer;
 use ring::{chacha, poly1305};
 
 #[derive(Debug)]
@@ -46,66 +44,30 @@ impl super::OpeningKey for Key {
         packet_length
     }
 
-    fn open<'a>(&self,
-                stream: &mut BufRead,
-                read_buffer: &'a mut SSHBuffer)
-                -> Result<Option<&'a [u8]>, Error> {
+    fn tag_len(&self) -> usize { poly1305::TAG_LEN }
+
+    fn open(&self, seqn: u32, ciphertext_in_plaintext_out: &mut [u8], tag: &[u8])
+            -> Result<(), Error> {
+        let tag = array_ref![tag, 0, poly1305::TAG_LEN];
+
         let mut nonce = [0; chacha::NONCE_LEN];
-        /* XXX: `read_buffer.seqn as u32` may truncate */
-        BigEndian::write_u32(&mut nonce[(chacha::NONCE_LEN - 4)..], read_buffer.seqn as u32);
+        BigEndian::write_u32(&mut nonce[(chacha::NONCE_LEN - 4)..], seqn);
         let mut counter = chacha::make_counter(&nonce, 0);
 
-        // - Compute the length, by chacha20-stream-xoring the first 4
-        // bytes with the last 32 bytes of the client key.
-        if read_buffer.len == 0 {
-            read_buffer.buffer.clear();
-            let mut len = [0; 4];
-            try!(stream.read_exact(&mut len));
-            read_buffer.buffer.extend(&len);
-            let len = self.decrypt_packet_length(read_buffer.seqn as u32, len);
-            read_buffer.len = BigEndian::read_u32(&len) as usize + poly1305::TAG_LEN;
-            debug!("buffer len: {:?}", read_buffer.len);
-        }
-        // - Compute the Poly1305 auth on the first (4+length) first bytes of the packet.
-        if try!(super::read(stream,
-                            &mut read_buffer.buffer,
-                            read_buffer.len,
-                            &mut read_buffer.bytes)) {
+        let mut poly_key = [0; poly1305::KEY_LEN];
+        chacha::chacha20_xor_in_place(&self.k2, &counter, &mut poly_key);
 
-            let mut poly_key = [0; poly1305::KEY_LEN];
-            chacha::chacha20_xor_in_place(&self.k2, &counter, &mut poly_key);
+        try!(poly1305::verify(&poly_key, ciphertext_in_plaintext_out, tag)
+            .map_err(|_| Error::PacketAuth));
 
-            if read_buffer.len < 1 + poly1305::TAG_LEN {
-                return Err(Error::IndexOutOfBounds);
-            }
-            try!(poly1305::verify(&poly_key,
-                                  &read_buffer.buffer[0..4 + read_buffer.len - poly1305::TAG_LEN],
-                                  &read_buffer.buffer[4 + read_buffer.len - poly1305::TAG_LEN..])
-                .map_err(|_| Error::PacketAuth));
+        // The first `PACKET_LENGTH_LEN` bytes were encrypted with self.k1 and
+        // were already decrypted with decrypt_packet_length.
+        counter[0] = 1;
+        chacha::chacha20_xor_in_place(&self.k2,
+                                      &counter,
+                                      &mut ciphertext_in_plaintext_out[super::PACKET_LENGTH_LEN..]);
 
-            // - If the auth is correct, chacha20-xor the length
-            // bytes after the first 4 ones, with ic 1.
-            // (actually, the above doc says "ic = LE encoding of
-            // 1", which is different from the libsodium
-            // interface).
-
-            counter[0] = 1;
-            chacha::chacha20_xor_in_place(&self.k2,
-                                          &counter,
-                                          &mut read_buffer.buffer[4..(4 + read_buffer.len -
-                                                                      poly1305::TAG_LEN)]);
-            let padding = read_buffer.buffer[4] as usize;
-            if read_buffer.len < 1 + padding + poly1305::TAG_LEN {
-                return Err(Error::IndexOutOfBounds);
-            }
-            let result = Some(&read_buffer.buffer[5..(4 + read_buffer.len - poly1305::TAG_LEN -
-                                                      padding)]);
-            read_buffer.seqn += 1;
-            read_buffer.len = 0;
-            Ok(result)
-        } else {
-            Ok(None)
-        }
+        Ok(())
     }
 }
 

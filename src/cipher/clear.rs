@@ -13,11 +13,11 @@
 // limitations under the License.
 //
 
-use {Disconnect, Error};
-use std::io::BufRead;
-use encoding::Encoding;
-use msg;
+use {Error, Disconnect};
 use sshbuffer::SSHBuffer;
+
+use msg;
+use encoding::Encoding;
 
 #[derive(Debug)]
 pub struct Key;
@@ -27,40 +27,12 @@ impl super::OpeningKey for Key {
         packet_length
     }
 
-    fn open<'a>(&self,
-                stream: &mut BufRead,
-                buffer: &'a mut SSHBuffer)
-                -> Result<Option<&'a [u8]>, Error> {
+    fn tag_len(&self) -> usize { 0 }
 
-        debug!("clear buffer: {:?}", buffer);
-        if buffer.len == 0 {
-
-            // setting the length
-            buffer.buffer.clear();
-            buffer.buffer.extend(b"\0\0\0\0");
-            try!(stream.read_exact(&mut buffer.buffer));
-            buffer.len = buffer.buffer.read_u32_be(0) as usize;
-            debug!("clear buffer len: {:?}", buffer.len);
-        }
-        if try!(super::read(stream, &mut buffer.buffer, buffer.len, &mut buffer.bytes)) {
-
-            if buffer.len < 5 {
-                return Err(Error::IndexOutOfBounds);
-            }
-            let padding_length = buffer.buffer[4] as usize;
-            if buffer.len < 1+padding_length {
-                return Err(Error::IndexOutOfBounds);
-            }
-            let result = &buffer.buffer[5..(4 + buffer.len - padding_length)];
-            buffer.len = 0;
-            buffer.seqn += 1;
-            Ok(Some(result))
-
-        } else {
-
-            Ok(None)
-
-        }
+    fn open(&self, _seqn: u32, _ciphertext_in_plaintext_out: &mut [u8], tag: &[u8])
+            -> Result<(), Error> {
+        debug_assert_eq!(tag.len(), self.tag_len());
+        Ok(())
     }
 }
 
