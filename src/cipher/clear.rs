@@ -23,6 +23,10 @@ use sshbuffer::SSHBuffer;
 pub struct Key;
 
 impl super::OpeningKey for Key {
+    fn decrypt_packet_length(&self, _seqn: u32, packet_length: [u8; 4]) -> [u8; 4] {
+        packet_length
+    }
+
     fn open<'a>(&self,
                 stream: &mut BufRead,
                 buffer: &'a mut SSHBuffer)

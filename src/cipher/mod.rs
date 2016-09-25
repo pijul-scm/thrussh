@@ -56,6 +56,8 @@ pub const CLEAR_PAIR: CipherPair = CipherPair {
 };
 
 pub trait OpeningKey {
+    fn decrypt_packet_length(&self, seqn: u32, encrypted_packet_length: [u8; 4]) -> [u8; 4];
+
     /// Replace the buffer's content with the next deciphered packet from `stream`.
     fn open<'a>(&self,
                 stream: &mut BufRead,

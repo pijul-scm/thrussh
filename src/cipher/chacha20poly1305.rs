@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
+
+// http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD
+
 use byteorder::{ByteOrder, BigEndian};
 use super::super::Error;
 use std::io::BufRead;
@@ -34,16 +37,22 @@ impl Key {
 }
 
 impl super::OpeningKey for Key {
+    fn decrypt_packet_length(&self, seqn: u32, encrypted_packet_length: [u8; 4]) -> [u8; 4] {
+        let mut packet_length = encrypted_packet_length;
+        let mut nonce = [0; chacha::NONCE_LEN];
+        BigEndian::write_u32(&mut nonce[(chacha::NONCE_LEN - 4)..], seqn);
+        let counter = chacha::make_counter(&nonce, 0);
+        chacha::chacha20_xor_in_place(&self.k1, &counter, &mut packet_length);
+        packet_length
+    }
+
     fn open<'a>(&self,
                 stream: &mut BufRead,
                 read_buffer: &'a mut SSHBuffer)
                 -> Result<Option<&'a [u8]>, Error> {
-
-        // http://cvsweb.openbsd.org/cgi-bin/cvsweb/
-        // src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD
         let mut nonce = [0; chacha::NONCE_LEN];
-        BigEndian::write_u32(&mut nonce[(chacha::NONCE_LEN - 4)..],
-                             read_buffer.seqn as u32);
+        /* XXX: `read_buffer.seqn as u32` may truncate */
+        BigEndian::write_u32(&mut nonce[(chacha::NONCE_LEN - 4)..], read_buffer.seqn as u32);
         let mut counter = chacha::make_counter(&nonce, 0);
 
         // - Compute the length, by chacha20-stream-xoring the first 4
@@ -53,8 +62,7 @@ impl super::OpeningKey for Key {
             let mut len = [0; 4];
             try!(stream.read_exact(&mut len));
             read_buffer.buffer.extend(&len);
-            chacha::chacha20_xor_in_place(&self.k1, &counter, &mut len);
-
+            let len = self.decrypt_packet_length(read_buffer.seqn as u32, len);
             read_buffer.len = BigEndian::read_u32(&len) as usize + poly1305::TAG_LEN;
             debug!("buffer len: {:?}", read_buffer.len);
         }
