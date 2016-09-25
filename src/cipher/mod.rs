@@ -96,7 +96,13 @@ impl CipherT for Clear {
         }
         if try!(read(stream, &mut buffer.buffer, buffer.len, &mut buffer.bytes)) {
 
+            if buffer.len < 5 {
+                return Err(Error::IndexOutOfBounds);
+            }
             let padding_length = buffer.buffer[4] as usize;
+            if buffer.len < 1+padding_length {
+                return Err(Error::IndexOutOfBounds);
+            }
             let result = &buffer.buffer[5..(4 + buffer.len - padding_length)];
             buffer.len = 0;
             buffer.seqn += 1;
