@@ -44,7 +44,8 @@ pub struct Config {
     pub methods: auth::MethodSet,
     /// The authentication banner, usually a warning message shown to the client.
     pub auth_banner: Option<&'static str>,
-    /// Authentication rejections must happen in constant time for security reasons. Thrussh does not handle this by default.
+    /// Authentication rejections must happen in constant time for
+    /// security reasons. Thrussh does not handle this by default.
     pub auth_rejection_time: time::Duration,
     /// The server's keys. The first key pair in the client's preference order will be chosen.
     pub keys: Vec<key::Algorithm>,
@@ -74,7 +75,7 @@ impl Default for Config {
             maximum_packet_size: 1 << 20,
             limits: Limits::default(),
             preferred: Default::default(),
-            max_auth_attempts: 10
+            max_auth_attempts: 10,
         }
     }
 }
@@ -104,7 +105,6 @@ impl std::ops::DerefMut for Connection {
 }
 
 pub trait Handler {
-
     /// Check authentication using the "none" method. Thrussh makes
     /// sure rejection happens in time `config.auth_rejection_time`,
     /// except if this method takes more than that.
@@ -241,7 +241,8 @@ pub trait Handler {
         Ok(())
     }
 
-    /// The client sends a command to execute, to be passed to a shell. Make sure to check the command before doing so.
+    /// The client sends a command to execute, to be passed to a
+    /// shell. Make sure to check the command before doing so.
     #[allow(unused_variables)]
     fn exec_request(&mut self,
                     channel: u32,
@@ -284,7 +285,8 @@ pub trait Handler {
         Ok(())
     }
 
-    /// Used for reverse-forwarding ports, see [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
+    /// Used for reverse-forwarding ports, see
+    /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
     #[allow(unused_variables)]
     fn tcpip_forward(&mut self,
                      address: &str,
@@ -294,7 +296,8 @@ pub trait Handler {
         Ok(())
     }
 
-    /// Used to stop the reverse-forwarding of a port, see [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
+    /// Used to stop the reverse-forwarding of a port, see
+    /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
     #[allow(unused_variables)]
     fn cancel_tcpip_forward(&mut self,
                             address: &str,
@@ -377,9 +380,8 @@ impl KexDh {
             assert!(buf[0] == msg::KEX_ECDH_INIT);
             let mut r = buf.reader(1);
             self.exchange.client_ephemeral.extend(try!(r.read_string()));
-            let kex = try!(super::kex::Algorithm::server_dh(self.names.kex,
-                                                            &mut self.exchange,
-                                                            buf));
+            let kex =
+                try!(super::kex::Algorithm::server_dh(self.names.kex, &mut self.exchange, buf));
             // Then, we fill the write buffer right away, so that we
             // can output it immediately when the time comes.
             let kexdhdone = KexDhDone {
@@ -391,9 +393,7 @@ impl KexDh {
             };
 
             let hash = try!(kexdhdone.kex
-                                     .compute_exchange_hash(&config.keys[kexdhdone.key],
-                                                            &kexdhdone.exchange,
-                                                            buffer));
+                .compute_exchange_hash(&config.keys[kexdhdone.key], &kexdhdone.exchange, buffer));
 
             buffer.clear();
             buffer.push(msg::KEX_ECDH_REPLY);
@@ -411,8 +411,8 @@ impl KexDh {
     }
 }
 
-const AT_LEAST_ONE_PACKET:u8 = 1;
-const AUTH_REJECTED:u8 = 2;
+const AT_LEAST_ONE_PACKET: u8 = 1;
+const AUTH_REJECTED: u8 = 2;
 
 
 impl Connection {
@@ -439,7 +439,9 @@ impl Connection {
     }
 
     /// Process all packets available in the buffer, and returns
-    /// whether at least one complete packet was read. `buffer` and `buffer2` are work spaces mostly used to compute keys. They are cleared before using, hence nothing is expected from them.
+    /// whether at least one complete packet was read. `buffer` and
+    /// `buffer2` are work spaces mostly used to compute keys. They
+    /// are cleared before using, hence nothing is expected from them.
     #[doc(hidden)]
     pub fn read<R: BufRead, S: Handler>(&mut self,
                                         server: &mut S,
@@ -453,7 +455,7 @@ impl Connection {
         loop {
             if flags & AUTH_REJECTED != 0 {
                 // We have to wait.
-                return Ok(flags)
+                return Ok(flags);
             }
             match self.read_one_packet(server, stream, buffer, buffer2) {
 
@@ -461,9 +463,9 @@ impl Connection {
                     flags |= one_packet_flags;
                     if one_packet_flags & AT_LEAST_ONE_PACKET == 0 {
                         // We don't have a full packet.
-                        return Ok(flags)
+                        return Ok(flags);
                     }
-                },
+                }
                 Err(Error::IO(e)) => {
                     match e.kind() {
                         std::io::ErrorKind::UnexpectedEof |
@@ -495,7 +497,7 @@ impl Connection {
                     exchange.client_id.extend(client_id);
                     debug!("client id, exchange = {:?}", exchange);
                 } else {
-                    return Ok(0)
+                    return Ok(0);
                 }
             }
             // Preparing the response
@@ -581,7 +583,7 @@ impl Connection {
                 }
                 None => {}
             }
-            if ! try!(self.session.server_read_encrypted(server, buf, buffer)) {
+            if !try!(self.session.server_read_encrypted(server, buf, buffer)) {
                 self.session.flush();
                 Ok(AT_LEAST_ONE_PACKET | AUTH_REJECTED)
             } else {
@@ -626,7 +628,10 @@ impl Session {
         self.0.disconnect(reason, description, language_tag);
     }
 
-    /// Send a "success" reply to a /global/ request (requests without a channel number, such as TCP/IP forwarding or cancelling). Always call this function if the request was successful (it checks whether the client expects an answer).
+    /// Send a "success" reply to a /global/ request (requests without
+    /// a channel number, such as TCP/IP forwarding or
+    /// cancelling). Always call this function if the request was
+    /// successful (it checks whether the client expects an answer).
     pub fn request_success(&mut self) {
         if self.0.wants_reply {
             if let Some(ref mut enc) = self.0.encrypted {
@@ -644,7 +649,9 @@ impl Session {
         }
     }
 
-    /// Send a "success" reply to a channel request. Always call this function if the request was successful (it checks whether the client expects an answer).
+    /// Send a "success" reply to a channel request. Always call this
+    /// function if the request was successful (it checks whether the
+    /// client expects an answer).
     pub fn channel_success(&mut self, channel: u32) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get_mut(&channel) {
@@ -706,7 +713,9 @@ impl Session {
         self.flush();
     }
 
-    /// Send data to a channel. On session channels, `extended` can be used to encode standard error by passing `Some(1)`, and stdout by passing `None`.
+    /// Send data to a channel. On session channels, `extended` can be
+    /// used to encode standard error by passing `Some(1)`, and stdout
+    /// by passing `None`.
     pub fn data(&mut self,
                 channel: u32,
                 extended: Option<u32>,
@@ -719,7 +728,9 @@ impl Session {
         }
     }
 
-    /// Inform the client of whether they may perform control-S/control-Q flow control. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-6.8).
+    /// Inform the client of whether they may perform
+    /// control-S/control-Q flow control. See
+    /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-6.8).
     pub fn xon_xoff_request(&mut self, channel: u32, client_can_do: bool) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
@@ -730,11 +741,7 @@ impl Session {
                     enc.write.push_u32_be(channel.recipient_channel);
                     enc.write.extend_ssh_string(b"xon-xoff");
                     enc.write.push(0);
-                    enc.write.push(if client_can_do {
-                        1
-                    } else {
-                        0
-                    });
+                    enc.write.push(if client_can_do { 1 } else { 0 });
                 })
             }
         }
@@ -774,11 +781,7 @@ impl Session {
                     enc.write.extend_ssh_string(b"exit-signal");
                     enc.write.push(0);
                     enc.write.extend_ssh_string(signal.name().as_bytes());
-                    enc.write.push(if core_dumped {
-                        1
-                    } else {
-                        0
-                    });
+                    enc.write.push(if core_dumped { 1 } else { 0 });
                     enc.write.extend_ssh_string(error_message.as_bytes());
                     enc.write.extend_ssh_string(language_tag.as_bytes());
                 })
@@ -786,7 +789,11 @@ impl Session {
         }
     }
 
-    /// Open a TCP/IP forwarding channel, when a connection comes to a local port for which forwarding has been requested. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-7). The TCP/IP packets can then be tunneled through the channel using `.data()`.
+    /// Open a TCP/IP forwarding channel, when a connection comes to a
+    /// local port for which forwarding has been requested. See
+    /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-7). The
+    /// TCP/IP packets can then be tunneled through the channel using
+    /// `.data()`.
     pub fn channel_open_forwarded_tcpip(&mut self,
                                         connected_address: &str,
                                         connected_port: u32,
@@ -798,15 +805,22 @@ impl Session {
                 Some(EncryptedState::Authenticated) => {
                     debug!("sending open request");
 
-                    let sender_channel = enc.new_channel(self.0.config.window_size,
-                                                         self.0.config.maximum_packet_size);
+                    let sender_channel =
+                        enc.new_channel(self.0.config.window_size,
+                                        self.0.config.maximum_packet_size);
                     push_packet!(enc.write, {
                         enc.write.push(msg::CHANNEL_OPEN);
                         enc.write.extend_ssh_string(b"forwarded-tcpip");
-                        enc.write.push_u32_be(sender_channel); // sender channel id.
-                        enc.write.push_u32_be(self.0.config.as_ref().window_size); // window.
-                        enc.write.push_u32_be(self.0.config.as_ref().maximum_packet_size); // max packet size.
-                        //
+
+                        // sender channel id.
+                        enc.write.push_u32_be(sender_channel);
+
+                        // window.
+                        enc.write.push_u32_be(self.0.config.as_ref().window_size);
+
+                        // max packet size.
+                        enc.write.push_u32_be(self.0.config.as_ref().maximum_packet_size);
+
                         enc.write.extend_ssh_string(connected_address.as_bytes());
                         enc.write.push_u32_be(connected_port); // sender channel id.
                         enc.write.extend_ssh_string(originator_address.as_bytes());
@@ -824,7 +838,7 @@ impl Session {
     }
 }
 
-use std::io::{ BufReader };
+use std::io::BufReader;
 use std::collections::{HashMap, VecDeque};
 use std::collections::hash_map::Entry;
 
@@ -832,23 +846,23 @@ use std::net::ToSocketAddrs;
 use mio::{Token, Poll, PollOpt, Ready, Events};
 use mio::tcp::{TcpStream, TcpListener};
 use std::time::Duration;
-const SERVER_TOKEN:Token = Token(0);
+const SERVER_TOKEN: Token = Token(0);
 
 struct ClientRecord<H> {
     stream: BufReader<TcpStream>,
     addr: std::net::SocketAddr,
     is_parked: bool,
     connection: Connection,
-    handler:H
+    handler: H,
 }
 
 
-pub struct Server<H:Handler> {
+pub struct Server<H: Handler> {
     config: Arc<Config>,
     events: Events,
     handler: H,
     socket: TcpListener,
-    sessions: Sessions<H>
+    sessions: Sessions<H>,
 }
 
 struct Sessions<H> {
@@ -857,13 +871,12 @@ struct Sessions<H> {
     parked: VecDeque<(Token, time::SteadyTime)>,
 }
 
-impl<H:Handler+Clone> Server<H> {
-
-    pub fn new(config:Config, addr:&str, handler:H) -> Self {
+impl<H: Handler + Clone> Server<H> {
+    pub fn new(config: Config, addr: &str, handler: H) -> Self {
 
         let addr = addr.to_socket_addrs().unwrap().next().unwrap();
         let socket = TcpListener::bind(&addr).unwrap();
-        
+
         let poll = Poll::new().unwrap();
 
         poll.register(&socket, Token(0), Ready::all(), PollOpt::edge()).unwrap();
@@ -877,7 +890,7 @@ impl<H:Handler+Clone> Server<H> {
                 poll: poll,
                 parked: VecDeque::new(),
                 sessions: HashMap::new(),
-            }
+            },
         }
     }
 
@@ -885,7 +898,7 @@ impl<H:Handler+Clone> Server<H> {
 
         let mut buffer0 = CryptoVec::new();
         let mut buffer1 = CryptoVec::new();
-        
+
         loop {
             match self.sessions.poll.poll(&mut self.events, Some(Duration::from_secs(1))) {
                 Ok(n) if n > 0 => {
@@ -909,14 +922,20 @@ impl<H:Handler+Clone> Server<H> {
                                         break;
                                     }
                                 }
-                                self.sessions.poll.register(&client_socket, id, Ready::all(), PollOpt::edge()).unwrap();
+                                self.sessions
+                                    .poll
+                                    .register(&client_socket, id, Ready::all(), PollOpt::edge())
+                                    .unwrap();
                                 let co = server::Connection::new(self.config.clone());
 
                                 let rec = ClientRecord {
                                     stream: BufReader::new(client_socket),
-                                    addr: addr, is_parked: false, connection:co, handler: self.handler.clone()
+                                    addr: addr,
+                                    is_parked: false,
+                                    connection: co,
+                                    handler: self.handler.clone(),
                                 };
-                                
+
                                 self.sessions.sessions.insert(id, rec);
                             }
                         } else {
@@ -926,8 +945,11 @@ impl<H:Handler+Clone> Server<H> {
                                     Entry::Occupied(e) => {
                                         debug!("Removing, file {}, line {}", file!(), line!());
                                         let rec = e.remove();
-                                        self.sessions.poll.deregister(rec.stream.get_ref()).unwrap();
-                                    },
+                                        self.sessions
+                                            .poll
+                                            .deregister(rec.stream.get_ref())
+                                            .unwrap();
+                                    }
                                     _ => {}
                                 };
 
@@ -941,7 +963,7 @@ impl<H:Handler+Clone> Server<H> {
                             }
                         }
                     }
-                },
+                }
                 Ok(_) => {
                     let parking_time = self.config.as_ref().auth_rejection_time;
                     self.sessions.unpark(parking_time, &mut buffer0, &mut buffer1)
@@ -954,8 +976,8 @@ impl<H:Handler+Clone> Server<H> {
     }
 }
 
-impl<H:Handler> Sessions<H> {
-    fn read(&mut self, id:Token, unpark: bool, buffer0: &mut CryptoVec, buffer1:&mut CryptoVec) {
+impl<H: Handler> Sessions<H> {
+    fn read(&mut self, id: Token, unpark: bool, buffer0: &mut CryptoVec, buffer1: &mut CryptoVec) {
 
         match self.sessions.entry(id) {
             Entry::Occupied(mut e) => {
@@ -967,7 +989,8 @@ impl<H:Handler> Sessions<H> {
                     if !rec.is_parked || unpark {
                         debug!("reading from: {:?}", rec.addr);
                         rec.is_parked = false;
-                        match rec.connection.read(&mut rec.handler, &mut rec.stream, buffer0, buffer1) {
+                        match rec.connection
+                            .read(&mut rec.handler, &mut rec.stream, buffer0, buffer1) {
 
                             Ok(r) => {
                                 if r & AUTH_REJECTED != 0 {
@@ -975,23 +998,23 @@ impl<H:Handler> Sessions<H> {
                                     self.parked.push_back((id, time));
                                     rec.is_parked = true;
                                 }
-                                return
-                            },
-                            Err(err) => debug!("error: {:?}", err)
+                                return;
+                            }
+                            Err(err) => debug!("error: {:?}", err),
                         }
                     } else {
-                        return
+                        return;
                     }
                 }
                 debug!("Removing, file {}, line {}", file!(), line!());
                 let rec = e.remove();
                 self.poll.deregister(rec.stream.get_ref()).unwrap();
-            },
+            }
             _ => {}
-        };        
+        };
     }
 
-    fn write(&mut self, id:Token) {
+    fn write(&mut self, id: Token) {
 
         match self.sessions.entry(id) {
             Entry::Occupied(mut e) => {
@@ -1003,23 +1026,26 @@ impl<H:Handler> Sessions<H> {
                 if result.is_err() {
                     debug!("Removing, file {}, line {}", file!(), line!());
                     let rec = e.remove();
-                    self.poll.deregister(rec.stream.get_ref()).unwrap();                            
+                    self.poll.deregister(rec.stream.get_ref()).unwrap();
                 }
 
-            },
+            }
             _ => {}
         }
 
     }
-    
-    fn unpark(&mut self, parking_time:time::Duration, buffer0:&mut CryptoVec, buffer1:&mut CryptoVec) {
+
+    fn unpark(&mut self,
+              parking_time: time::Duration,
+              buffer0: &mut CryptoVec,
+              buffer1: &mut CryptoVec) {
         if let Some((id, time)) = self.parked.pop_front() {
             if time + parking_time < time::SteadyTime::now() {
                 // We can go.
                 self.read(id, true, buffer0, buffer1);
                 self.write(id)
             } else {
-                self.parked.push_front((id,time))
+                self.parked.push_front((id, time))
             }
         }
     }

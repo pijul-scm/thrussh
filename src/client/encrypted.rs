@@ -95,7 +95,7 @@ impl super::Session {
                 }
                 Some(EncryptedState::WaitingAuthRequest(mut auth_request)) => {
                     if buf[0] == msg::USERAUTH_SUCCESS {
-                        
+
                         enc.state = Some(EncryptedState::Authenticated);
 
                     } else if buf[0] == msg::USERAUTH_FAILURE {
@@ -177,7 +177,9 @@ impl super::Session {
                     if let Some(ref mut enc) = self.0.encrypted {
                         enc.channels.remove(&channel_num);
                     }
-                    try!(client.channel_open_failure(channel_num, reason_code, descr, language, self));
+                    try!(client.channel_open_failure(
+                        channel_num, reason_code, descr, language, self
+                    ));
                 }
                 msg::CHANNEL_DATA => {
                     let mut r = buf.reader(1);
@@ -260,7 +262,10 @@ impl super::Session {
     }
 }
 impl Encrypted {
-    pub fn write_auth_request(&mut self, user:&str, auth_method: &auth::Method<key::Algorithm>) -> bool {
+    pub fn write_auth_request(&mut self,
+                              user: &str,
+                              auth_method: &auth::Method<key::Algorithm>)
+                              -> bool {
         // The server is waiting for our USERAUTH_REQUEST.
         push_packet!(self.write, {
             self.write.push(msg::USERAUTH_REQUEST);

@@ -57,7 +57,9 @@ pub const CLEAR_PAIR: CipherPair = CipherPair {
 
 pub trait CipherT {
     /// Replace the buffer's content with the next deciphered packet from `stream`.
-    fn read<'a>(&self, stream: &mut BufRead, buffer: &'a mut SSHBuffer)
+    fn read<'a>(&self,
+                stream: &mut BufRead,
+                buffer: &'a mut SSHBuffer)
                 -> Result<Option<&'a [u8]>, Error>;
     /// Extend the buffer with the encrypted packet.
     fn write(&self, packet: &[u8], buffer: &mut SSHBuffer);
@@ -77,7 +79,9 @@ impl<'a> Cipher {
 pub struct Clear;
 
 impl CipherT for Clear {
-    fn read<'a>(&self, stream: &mut BufRead, buffer: &'a mut SSHBuffer)
+    fn read<'a>(&self,
+                stream: &mut BufRead,
+                buffer: &'a mut SSHBuffer)
                 -> Result<Option<&'a [u8]>, Error> {
 
         debug!("clear buffer: {:?}", buffer);
@@ -214,7 +218,9 @@ fn read(stream: &mut BufRead,
 
 
 impl CipherT for CipherPair {
-    fn read<'a>(&self, stream: &mut BufRead, buffer: &'a mut SSHBuffer)
+    fn read<'a>(&self,
+                stream: &mut BufRead,
+                buffer: &'a mut SSHBuffer)
                 -> Result<Option<&'a [u8]>, Error> {
         self.remote_to_local.key().read(stream, buffer)
     }

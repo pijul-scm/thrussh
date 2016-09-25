@@ -29,14 +29,16 @@ use sshbuffer::SSHBuffer;
 use byteorder::{BigEndian, ByteOrder};
 use cipher::CipherT;
 use std::sync::Arc;
-use ring::{digest, rand};
+use ring::digest;
 use encoding::Encoding;
 use std::num::Wrapping;
 
 #[derive(Debug)]
 pub struct Encrypted {
     pub state: Option<EncryptedState>,
-    pub exchange: Option<Exchange>, // It's always Some, except when we std::mem::replace it temporarily.
+
+    // It's always Some, except when we std::mem::replace it temporarily.
+    pub exchange: Option<Exchange>,
     pub kex: kex::Algorithm,
     pub key: usize,
     pub mac: Option<&'static str>,
@@ -202,7 +204,8 @@ impl Encrypted {
                     // Read a single packet, selfrypt and send it.
                     let len = BigEndian::read_u32(&self.write[self.write_cursor..]) as usize;
                     debug!("flushing len {:?}", len);
-                    let packet = &self.write[(self.write_cursor + 4)..(self.write_cursor + 4 + len)];
+                    let packet = &self.write[(self.write_cursor + 4)..(self.write_cursor + 4 +
+                                                                       len)];
                     cipher.write(packet, write_buffer);
                     self.write_cursor += 4 + len
                 }
@@ -215,30 +218,29 @@ impl Encrypted {
         }
         false
     }
-
+    pub fn new_channel_id(&mut self) -> u32 {
+        self.last_channel_id += Wrapping(1);
+        while self.channels.contains_key(&self.last_channel_id.0) {
+            self.last_channel_id += Wrapping(1)
+        }
+        self.last_channel_id.0
+    }
     pub fn new_channel(&mut self, window_size: u32, maxpacket: u32) -> u32 {
-        let rng = rand::SystemRandom::new();
         loop {
-            let mut sender_channel_bytes = [0u8; 4];
-            rng.fill(&mut sender_channel_bytes).unwrap();
-            let sender_channel = BigEndian::read_u32(&sender_channel_bytes);
-            if sender_channel == 0 {
-                continue;
-            }
-            if let std::collections::hash_map::Entry::Vacant(vacant_entry) =
-                    self.channels.entry(sender_channel) {
-                vacant_entry.insert(
-                             Channel {
-                                 recipient_channel: 0,
-                                 sender_channel: sender_channel,
-                                 sender_window_size: window_size,
-                                 recipient_window_size: 0,
-                                 sender_maximum_packet_size: maxpacket,
-                                 recipient_maximum_packet_size: 0,
-                                 confirmed: false,
-                                 wants_reply: false,
-                             });
-                return sender_channel;
+            self.last_channel_id += Wrapping(1);
+            if let std::collections::hash_map::Entry::Vacant(vacant_entry) = self.channels
+                .entry(self.last_channel_id.0) {
+                vacant_entry.insert(Channel {
+                    recipient_channel: 0,
+                    sender_channel: self.last_channel_id.0,
+                    sender_window_size: window_size,
+                    recipient_window_size: 0,
+                    sender_maximum_packet_size: maxpacket,
+                    recipient_maximum_packet_size: 0,
+                    confirmed: false,
+                    wants_reply: false,
+                });
+                return self.last_channel_id.0;
             }
         }
     }
@@ -277,10 +279,19 @@ impl Exchange {
 
 #[derive(Debug)]
 pub enum Kex {
-    KexInit(KexInit), /* Version number sent. `algo` and `sent` tell wether kexinit has been received, and sent, respectively. */
-    KexDh(KexDh), // Algorithms have been determined, the DH algorithm should run.
-    KexDhDone(KexDhDone), // The kex has run.
-    NewKeys(NewKeys), /* The DH is over, we've sent the NEWKEYS packet, and are waiting the NEWKEYS from the other side. */
+    /// Version number sent. `algo` and `sent` tell wether kexinit has
+    /// been received, and sent, respectively.
+    KexInit(KexInit),
+
+    /// Algorithms have been determined, the DH algorithm should run.
+    KexDh(KexDh),
+
+    /// The kex has run.
+    KexDhDone(KexDhDone),
+
+    /// The DH is over, we've sent the NEWKEYS packet, and are waiting
+    /// the NEWKEYS from the other side.
+    NewKeys(NewKeys),
 }
 
 
@@ -373,7 +384,6 @@ impl KexDhDone {
             sent: false,
         })
     }
-
 }
 
 #[derive(Debug)]

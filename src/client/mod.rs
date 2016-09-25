@@ -16,7 +16,6 @@
 use std::sync::Arc;
 use std::io::{Write, BufRead};
 use std;
-use std::num::Wrapping;
 
 use {Disconnect, Error, Limits, Sig, ChannelOpenFailure, parse_public_key};
 use encoding::Reader;
@@ -90,7 +89,10 @@ impl std::ops::DerefMut for Connection {
 pub struct Session(CommonSession<Config>);
 
 pub trait Handler {
-    /// Called when the server sends us an authentication banner. This is usually meant to be shown to the user, see [RFC4252](https://tools.ietf.org/html/rfc4252#section-5.4) for more details.
+    /// Called when the server sends us an authentication banner. This
+    /// is usually meant to be shown to the user, see
+    /// [RFC4252](https://tools.ietf.org/html/rfc4252#section-5.4) for
+    /// more details.
     #[allow(unused_variables)]
     fn auth_banner(&mut self, banner: &str) {}
 
@@ -102,7 +104,9 @@ pub trait Handler {
         Ok(false)
     }
 
-    /// Called when the server confirmed our request to open a channel. A channel can only be written to after receiving this message (this library panics otherwise).
+    /// Called when the server confirmed our request to open a
+    /// channel. A channel can only be written to after receiving this
+    /// message (this library panics otherwise).
     #[allow(unused_variables)]
     fn channel_open_confirmation(&mut self,
                                  channel: u32,
@@ -146,7 +150,10 @@ pub trait Handler {
                                     session: &mut Session) {
     }
 
-    /// Called when the server sends us data. The `extended_code` parameter is a stream identifier, `None` is usually the standard output, and `Some(1)` is the standard error. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-5.2).
+    /// Called when the server sends us data. The `extended_code`
+    /// parameter is a stream identifier, `None` is usually the
+    /// standard output, and `Some(1)` is the standard error. See
+    /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-5.2).
     #[allow(unused_variables)]
     fn data(&mut self,
             channel: u32,
@@ -157,7 +164,9 @@ pub trait Handler {
         Ok(())
     }
 
-    /// The server informs this client of whether the client may perform control-S/control-Q flow control. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-6.8).
+    /// The server informs this client of whether the client may
+    /// perform control-S/control-Q flow control. See
+    /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-6.8).
     #[allow(unused_variables)]
     fn xon_xoff(&mut self,
                 channel: u32,
@@ -294,7 +303,8 @@ impl KexDhDone {
 
                     try!(self.kex.compute_shared_secret(&self.exchange.server_ephemeral));
 
-                    let hash = try!(self.kex.compute_exchange_hash(&pubkey, &self.exchange, buffer));
+                    let hash = try!(self.kex
+                        .compute_exchange_hash(&pubkey, &self.exchange, buffer));
 
                     let signature = {
                         let mut sig_reader = signature.reader(0);
@@ -308,7 +318,8 @@ impl KexDhDone {
                             assert!(signature::verify(&signature::ED25519,
                                                       untrusted::Input::from(&pubkey),
                                                       untrusted::Input::from(hash.as_ref()),
-                                                      untrusted::Input::from(signature)).is_ok());
+                                                      untrusted::Input::from(signature))
+                                .is_ok());
                         }
                     };
                     debug!("signature = {:?}", signature);
@@ -349,8 +360,9 @@ impl Connection {
     }
 
     /// Process all packets available in the buffer, and returns
-    /// whether at least one complete packet was read.
-    /// `buffer` and `buffer2` are work spaces mostly used to compute keys. They are cleared before using, hence nothing is expected from them.
+    /// whether at least one complete packet was read.  `buffer` and
+    /// `buffer2` are work spaces mostly used to compute keys. They
+    /// are cleared before using, hence nothing is expected from them.
     pub fn read<R: BufRead, C: Handler>(&mut self,
                                         client: &mut C,
                                         stream: &mut R,
@@ -531,16 +543,12 @@ impl Session {
 
     /// Set the authentication method.
     pub fn set_auth_public_key(&mut self, key: key::Algorithm) {
-        self.0.auth_method = Some(auth::Method::PublicKey {
-            key: key,
-        });
+        self.0.auth_method = Some(auth::Method::PublicKey { key: key });
     }
 
     /// Set the authentication method.
     pub fn set_auth_password(&mut self, password: String) {
-        self.0.auth_method = Some(auth::Method::Password {
-            password: password,
-        });
+        self.0.auth_method = Some(auth::Method::Password { password: password });
     }
 
     /// Whether the client is authenticated.
@@ -568,7 +576,8 @@ impl Session {
         false
     }
 
-    /// Tests whether we need an authentication method (for instance if the last attempt failed).
+    /// Tests whether we need an authentication method (for instance
+    /// if the last attempt failed).
     pub fn has_auth_method(&self) -> bool {
         self.0.auth_method.is_some()
     }
@@ -599,16 +608,21 @@ impl Session {
                 Some(EncryptedState::Authenticated) => {
                     debug!("sending open request");
 
-                    let mut sender_channel = 0;
-                    while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
-                        sender_channel = rand::thread_rng().gen()
-                    }
+                    let sender_channel =
+                        enc.new_channel(self.0.config.window_size,
+                                        self.0.config.maximum_packet_size);
                     push_packet!(enc.write, {
                         enc.write.push(msg::CHANNEL_OPEN);
                         enc.write.extend_ssh_string(b"session");
-                        enc.write.push_u32_be(sender_channel); // sender channel id.
-                        enc.write.push_u32_be(self.0.config.as_ref().window_size); // window.
-                        enc.write.push_u32_be(self.0.config.as_ref().maximum_packet_size); // max packet size.
+
+                        // sender channel id.
+                        enc.write.push_u32_be(sender_channel);
+
+                        // window.
+                        enc.write.push_u32_be(self.0.config.as_ref().window_size);
+
+                        // max packet size.
+                        enc.write.push_u32_be(self.0.config.as_ref().maximum_packet_size);
                     });
                     Some(sender_channel)
                 }
@@ -632,17 +646,22 @@ impl Session {
                 Some(EncryptedState::Authenticated) => {
                     debug!("sending open request");
 
-                    let mut sender_channel = 0;
-                    while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
-                        sender_channel = rand::thread_rng().gen()
-                    }
+                    let sender_channel =
+                        enc.new_channel(self.0.config.window_size,
+                                        self.0.config.maximum_packet_size);
                     push_packet!(enc.write, {
                         enc.write.push(msg::CHANNEL_OPEN);
                         enc.write.extend_ssh_string(b"x11");
-                        enc.write.push_u32_be(sender_channel); // sender channel id.
-                        enc.write.push_u32_be(self.0.config.as_ref().window_size); // window.
-                        enc.write.push_u32_be(self.0.config.as_ref().maximum_packet_size); // max packet size.
-                        //
+
+                        // sender channel id.
+                        enc.write.push_u32_be(sender_channel);
+
+                        // window.
+                        enc.write.push_u32_be(self.0.config.as_ref().window_size);
+
+                        // max packet size.
+                        enc.write.push_u32_be(self.0.config.as_ref().maximum_packet_size);
+
                         enc.write.extend_ssh_string(originator_address.as_bytes());
                         enc.write.push_u32_be(originator_port); // sender channel id.
                     });
@@ -657,7 +676,11 @@ impl Session {
         result
     }
 
-    /// Open a TCP/IP forwarding channel. This is usually done when a connection comes to a locally forwarded TCP/IP port. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-7). The TCP/IP packets can then be tunneled through the channel using `.data()`.
+    /// Open a TCP/IP forwarding channel. This is usually done when a
+    /// connection comes to a locally forwarded TCP/IP port. See
+    /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-7). The
+    /// TCP/IP packets can then be tunneled through the channel using
+    /// `.data()`.
     pub fn channel_open_direct_tcpip(&mut self,
                                      host_to_connect: &str,
                                      port_to_connect: u32,
@@ -669,17 +692,22 @@ impl Session {
                 Some(EncryptedState::Authenticated) => {
                     debug!("sending open request");
 
-                    let mut sender_channel = 0;
-                    while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
-                        sender_channel = rand::thread_rng().gen()
-                    }
+                    let sender_channel =
+                        enc.new_channel(self.0.config.window_size,
+                                        self.0.config.maximum_packet_size);
                     push_packet!(enc.write, {
                         enc.write.push(msg::CHANNEL_OPEN);
                         enc.write.extend_ssh_string(b"direct-tcpip");
-                        enc.write.push_u32_be(sender_channel); // sender channel id.
-                        enc.write.push_u32_be(self.0.config.as_ref().window_size); // window.
-                        enc.write.push_u32_be(self.0.config.as_ref().maximum_packet_size); // max packet size.
-                        //
+
+                        // sender channel id.
+                        enc.write.push_u32_be(sender_channel);
+
+                        // window.
+                        enc.write.push_u32_be(self.0.config.as_ref().window_size);
+
+                        // max packet size.
+                        enc.write.push_u32_be(self.0.config.as_ref().maximum_packet_size);
+
                         enc.write.extend_ssh_string(host_to_connect.as_bytes());
                         enc.write.push_u32_be(port_to_connect); // sender channel id.
                         enc.write.extend_ssh_string(originator_address.as_bytes());
@@ -708,7 +736,9 @@ impl Session {
         self.flush();
     }
 
-    /// Send data or "extended data" to the given channel. Extended data can be used to multiplex different data streams into a single channel.
+    /// Send data or "extended data" to the given channel. Extended
+    /// data can be used to multiplex different data streams into a
+    /// single channel.
     pub fn data(&mut self,
                 channel: u32,
                 extended: Option<u32>,
@@ -740,11 +770,7 @@ impl Session {
 
                     enc.write.push_u32_be(channel.recipient_channel);
                     enc.write.extend_ssh_string(b"pty-req");
-                    enc.write.push(if want_reply {
-                        1
-                    } else {
-                        0
-                    });
+                    enc.write.push(if want_reply { 1 } else { 0 });
 
                     enc.write.extend_ssh_string(term.as_bytes());
                     enc.write.push_u32_be(col_width);
@@ -766,7 +792,10 @@ impl Session {
         self.flush();
     }
 
-    /// Request X11 forwarding through an already opened X11 channel. See [RFC4254](https://tools.ietf.org/html/rfc4254#section-6.3.1) for security issues related to cookies.
+    /// Request X11 forwarding through an already opened X11
+    /// channel. See
+    /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-6.3.1)
+    /// for security issues related to cookies.
     pub fn request_x11(&mut self,
                        channel: u32,
                        want_reply: bool,
@@ -781,16 +810,8 @@ impl Session {
 
                     enc.write.push_u32_be(channel.recipient_channel);
                     enc.write.extend_ssh_string(b"x11-req");
-                    enc.write.push(if want_reply {
-                        1
-                    } else {
-                        0
-                    });
-                    enc.write.push(if single_connection {
-                        1
-                    } else {
-                        0
-                    });
+                    enc.write.push(if want_reply { 1 } else { 0 });
+                    enc.write.push(if single_connection { 1 } else { 0 });
                     enc.write.extend_ssh_string(x11_authentication_protocol.as_bytes());
                     enc.write.extend_ssh_string(x11_authentication_cookie.as_bytes());
                     enc.write.push_u32_be(x11_screen_number);
@@ -813,11 +834,7 @@ impl Session {
 
                     enc.write.push_u32_be(channel.recipient_channel);
                     enc.write.extend_ssh_string(b"env");
-                    enc.write.push(if want_reply {
-                        1
-                    } else {
-                        0
-                    });
+                    enc.write.push(if want_reply { 1 } else { 0 });
                     enc.write.extend_ssh_string(variable_name.as_bytes());
                     enc.write.extend_ssh_string(variable_value.as_bytes());
                 });
@@ -836,18 +853,16 @@ impl Session {
 
                     enc.write.push_u32_be(channel.recipient_channel);
                     enc.write.extend_ssh_string(b"shell");
-                    enc.write.push(if want_reply {
-                        1
-                    } else {
-                        0
-                    });
+                    enc.write.push(if want_reply { 1 } else { 0 });
                 });
             }
         }
         self.flush();
     }
 
-    /// Execute a remote program (will be passed to a shell). This can be used to implement scp (by calling a remote scp and tunneling to its standard input).
+    /// Execute a remote program (will be passed to a shell). This can
+    /// be used to implement scp (by calling a remote scp and
+    /// tunneling to its standard input).
     pub fn exec(&mut self, channel: u32, want_reply: bool, command: &str) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
@@ -856,11 +871,7 @@ impl Session {
 
                     enc.write.push_u32_be(channel.recipient_channel);
                     enc.write.extend_ssh_string(b"exec");
-                    enc.write.push(if want_reply {
-                        1
-                    } else {
-                        0
-                    });
+                    enc.write.push(if want_reply { 1 } else { 0 });
                     enc.write.extend_ssh_string(command.as_bytes());
                 });
             }
@@ -894,11 +905,7 @@ impl Session {
 
                     enc.write.push_u32_be(channel.recipient_channel);
                     enc.write.extend_ssh_string(b"subsystem");
-                    enc.write.push(if want_reply {
-                        1
-                    } else {
-                        0
-                    });
+                    enc.write.push(if want_reply { 1 } else { 0 });
                     enc.write.extend_ssh_string(name.as_bytes());
                 });
             }
@@ -931,17 +938,15 @@ impl Session {
         self.flush();
     }
 
-    /// Request the forwarding of a remote port to the client. The server will then open forwarding channels (which cause the client to call `.channel_open_forwarded_tcpip()`).
+    /// Request the forwarding of a remote port to the client. The
+    /// server will then open forwarding channels (which cause the
+    /// client to call `.channel_open_forwarded_tcpip()`).
     pub fn tcpip_forward(&mut self, want_reply: bool, address: &str, port: u32) {
         if let Some(ref mut enc) = self.0.encrypted {
             push_packet!(enc.write, {
                 enc.write.push(msg::GLOBAL_REQUEST);
                 enc.write.extend_ssh_string(b"tcpip-forward");
-                enc.write.push(if want_reply {
-                    1
-                } else {
-                    0
-                });
+                enc.write.push(if want_reply { 1 } else { 0 });
                 enc.write.extend_ssh_string(address.as_bytes());
                 enc.write.push_u32_be(port);
             });
@@ -955,11 +960,7 @@ impl Session {
             push_packet!(enc.write, {
                 enc.write.push(msg::GLOBAL_REQUEST);
                 enc.write.extend_ssh_string(b"cancel-tcpip-forward");
-                enc.write.push(if want_reply {
-                    1
-                } else {
-                    0
-                });
+                enc.write.push(if want_reply { 1 } else { 0 });
                 enc.write.extend_ssh_string(address.as_bytes());
                 enc.write.push_u32_be(port);
             });
@@ -979,9 +980,8 @@ use std::default::Default;
 use regex::Regex;
 use std::net::ToSocketAddrs;
 use std::fs::File;
-// use std::ascii::AsciiExt; // case-insensitive equality.
 
-use std::io::{BufReader};
+use std::io::BufReader;
 
 use std::path::{Path, PathBuf};
 
@@ -1003,7 +1003,7 @@ pub struct Client {
 
 pub struct Connected {
     client: Client,
-    stream:BufReader<TcpStream>
+    stream: BufReader<TcpStream>,
 }
 use std::ops::{Deref, DerefMut};
 impl Deref for Connected {
@@ -1036,7 +1036,7 @@ struct C<'s> {
     host: &'s str,
     port: u16,
     key_is_known: Option<bool>,
-    key: Option<key::PublicKey>
+    key: Option<key::PublicKey>,
 }
 
 impl<'s> Handler for C<'s> {
@@ -1084,7 +1084,9 @@ impl Client {
     }
 
 
-    /// Parse the ssh config file, from its default location (`~/.ssh/config` on Unix, and `%USERPROFILE%/ssh/config` on Windows.
+    /// Parse the ssh config file, from its default location
+    /// (`~/.ssh/config` on Unix, and `%USERPROFILE%/ssh/config` on
+    /// Windows.
     ///
     /// ```
     /// use thrussh::client::*;
@@ -1116,62 +1118,62 @@ impl Client {
     }
 
     /// Read an SSH configuration file from a custom path.
-    pub fn ssh_config<P: AsRef<Path>>
-        (&mut self,
-         path: P)
-         -> Result<Option<std::net::SocketAddr>, Error> {
+    pub fn ssh_config<P: AsRef<Path>>(&mut self,
+                                      path: P)
+                                      -> Result<Option<std::net::SocketAddr>, Error> {
 
-            let mut f = try!(File::open(path));
+        let mut f = try!(File::open(path));
 
-            let mut bufr = BufReader::new(&mut f);
-            let mut buffer = String::new();
-            let re = Regex::new(r#"^\s*([A-Za-z]+)\s*(=|\s)\s*("([^"]*)"|([^\s]*))\s*$"#).unwrap();
+        let mut bufr = BufReader::new(&mut f);
+        let mut buffer = String::new();
+        let re = Regex::new(r#"^\s*([A-Za-z]+)\s*(=|\s)\s*("([^"]*)"|([^\s]*))\s*$"#).unwrap();
 
-            // let mut has_canonical_match = false;
-            let mut is_on = false;
-            // First pass.
-            loop {
-                buffer.clear();
-                if try!(bufr.read_line(&mut buffer)) == 0 {
-                    break;
-                }
-                if let Some(cap) = re.captures(&buffer) {
-                    if is_on {
-                        match (cap.at(1), cap.at(4).or(cap.at(5))) {
-                            (Some("Host"), _) => is_on = false,
-                            (Some("Match"), _) => is_on = false,
+        // let mut has_canonical_match = false;
+        let mut is_on = false;
+        // First pass.
+        loop {
+            buffer.clear();
+            if try!(bufr.read_line(&mut buffer)) == 0 {
+                break;
+            }
+            if let Some(cap) = re.captures(&buffer) {
+                if is_on {
+                    match (cap.at(1), cap.at(4).or(cap.at(5))) {
+                        (Some("Host"), _) => is_on = false,
+                        (Some("Match"), _) => is_on = false,
 
-                            //
-                            (Some("HostName"), Some(hostname)) => {
-                                self.host.clear();
-                                self.host.push_str(hostname)
-                            }
-                            (Some("IdentityFile"), Some(path)) => {
-                                debug!("identity file: {:?}", path);
-                                self.connection.set_auth_public_key(try!(super::load_secret_key(path)))
-                            }
-                            (Some("Port"), Some(port_)) => self.port = port_.parse().unwrap_or(0),
-                            (Some("User"), Some(user_)) => self.connection.set_auth_user(user_),
-                            (Some(a),Some(b)) => println!("unsupported option: {:?} {:?}", a,b),
-                            _ => {}
+                        //
+                        (Some("HostName"), Some(hostname)) => {
+                            self.host.clear();
+                            self.host.push_str(hostname)
                         }
-                    } else {
-                        match (cap.at(1), cap.at(4).or(cap.at(5))) {
-                            (Some("Host"), Some(h)) if h == self.host => is_on = true,
-                            // (Some("Match"), Some(h))  => break,
-                            _ => {}
+                        (Some("IdentityFile"), Some(path)) => {
+                            debug!("identity file: {:?}", path);
+                            self.connection.set_auth_public_key(try!(super::load_secret_key(path)))
                         }
+                        (Some("Port"), Some(port_)) => self.port = port_.parse().unwrap_or(0),
+                        (Some("User"), Some(user_)) => self.connection.set_auth_user(user_),
+                        (Some(a), Some(b)) => println!("unsupported option: {:?} {:?}", a, b),
+                        _ => {}
+                    }
+                } else {
+                    match (cap.at(1), cap.at(4).or(cap.at(5))) {
+                        (Some("Host"), Some(h)) if h == self.host => is_on = true,
+                        // (Some("Match"), Some(h))  => break,
+                        _ => {}
                     }
                 }
             }
-            /*if has_canonical_match {
-                // Second pass, looking only for canonical matches.
-                try!(bufr.seek(std::io::SeekFrom::Start(0)));
-            }*/
-            Ok(None)
         }
+        // if has_canonical_match {
+        // Second pass, looking only for canonical matches.
+        // try!(bufr.seek(std::io::SeekFrom::Start(0)));
+        // }
+        Ok(None)
+    }
 
-    /// Set the host name, replacing any previously set name. This can be a name from the config file.
+    /// Set the host name, replacing any previously set name. This can
+    /// be a name from the config file.
     pub fn set_host(&mut self, host: &str) {
         self.host.clear();
         self.host.push_str(host)
@@ -1187,10 +1189,10 @@ impl Client {
         let addr = try!((&self.host[..], self.port).to_socket_addrs()).next().unwrap();
         let sock = try!(TcpStream::connect(&addr));
         try!(self.poll
-             .register(&sock, Token(0), Ready::all(), PollOpt::edge()));
+            .register(&sock, Token(0), Ready::all(), PollOpt::edge()));
         Ok(Connected {
             client: self,
-            stream: BufReader::new(sock)
+            stream: BufReader::new(sock),
         })
     }
 }
@@ -1199,21 +1201,21 @@ impl Client {
 
 
 impl Connected {
-
     /// Attempt (or re-attempt) authentication. Returns `Ok(Some(…))`
     /// if the server's host key is unknown, `Ok(None)` if
     /// authentication succeeded, and errors in all other cases.
     pub fn authenticate(&mut self) -> Result<Option<key::PublicKey>, Error> {
-        try!(self.client.poll
-             .reregister(self.stream.get_ref(),
-                         Token(0),
-                         Ready::all(),
-                         PollOpt::edge()));
+        try!(self.client
+            .poll
+            .reregister(self.stream.get_ref(),
+                        Token(0),
+                        Ready::all(),
+                        PollOpt::edge()));
         let mut d = C {
             host: &self.client.host,
             port: self.client.port,
             key_is_known: None,
-            key: None
+            key: None,
         };
 
 
@@ -1232,19 +1234,21 @@ impl Connected {
                                                                  &mut self.client.buffer0,
                                                                  &mut self.client.buffer1));
                                 if d.key_is_known == Some(false) {
-                                    return Ok(Some(d.key.unwrap()))
+                                    return Ok(Some(d.key.unwrap()));
                                 }
 
-                                if self.client.connection
+                                if self.client
+                                    .connection
                                     .session
                                     .is_authenticated() {
-                                        return Ok(None)
-                                    }
-                                if !self.client.connection
+                                    return Ok(None);
+                                }
+                                if !self.client
+                                    .connection
                                     .session
                                     .has_auth_method() {
-                                        return Err(Error::AuthFailed)
-                                    }
+                                    return Err(Error::AuthFailed);
+                                }
                             }
                             if kind.is_writable() {
                                 try!(self.client.connection.write(self.stream.get_mut()));
@@ -1268,43 +1272,35 @@ impl Connected {
     }
 
     /// Waiting until the given channel is open.
-    pub fn wait_channel_open<C: Handler>(&mut self,
-                                                          c: &mut C,
-                                                          channel: u32)
-                                                          -> Result<(), Error> {
-        try!(self.client.poll
-             .reregister(self.stream.get_ref(),
-                         Token(0),
-                         Ready::all(),
-                         PollOpt::edge()));
+    pub fn wait_channel_open<C: Handler>(&mut self, c: &mut C, channel: u32) -> Result<(), Error> {
+        try!(self.client
+            .poll
+            .reregister(self.stream.get_ref(),
+                        Token(0),
+                        Ready::all(),
+                        PollOpt::edge()));
         try!(self.run(c, Some(RunUntil::ChannelOpened(channel))));
         Ok(())
     }
 
     /// Waiting until the given channel is closed by the remote side.
-    pub fn wait_channel_close<C: Handler>(&mut self,
-                                                           c: &mut C,
-                                                           channel: u32)
-                                                           -> Result<(), Error> {
-        try!(self.client.poll
-             .reregister(self.stream.get_ref(),
-                         Token(0),
-                         Ready::all(),
-                         PollOpt::edge()));
+    pub fn wait_channel_close<C: Handler>(&mut self, c: &mut C, channel: u32) -> Result<(), Error> {
+        try!(self.client
+            .poll
+            .reregister(self.stream.get_ref(),
+                        Token(0),
+                        Ready::all(),
+                        PollOpt::edge()));
         try!(self.run(c, Some(RunUntil::ChannelClosed(channel))));
         Ok(())
     }
 
-    fn run<R: Handler>(&mut self,
-                       client: &mut R,
-                       until: Option<RunUntil>)
-                       -> Result<(), Error> {
+    fn run<R: Handler>(&mut self, client: &mut R, until: Option<RunUntil>) -> Result<(), Error> {
 
         try!(self.client.connection.write(self.stream.get_mut()));
         loop {
             match self.client.poll.poll(&mut self.client.events, None) {
                 Ok(n) if n > 0 => {
-
                     for events in self.client.events.into_iter() {
                         let kind = events.kind();
                         if kind.is_error() || kind.is_hup() {
@@ -1312,20 +1308,22 @@ impl Connected {
                         } else {
                             if kind.is_readable() {
                                 try!(self.client.connection.read(client,
-                                                          &mut self.stream,
-                                                          &mut self.client.buffer0,
-                                                          &mut self.client.buffer1));
+                                                                 &mut self.stream,
+                                                                 &mut self.client.buffer0,
+                                                                 &mut self.client.buffer1));
                                 match until {
-                                    Some(RunUntil::ChannelOpened(x)) if self.client.connection
+                                    Some(RunUntil::ChannelOpened(x)) if self.client
+                                        .connection
                                         .session
                                         .channel_is_open(x) => {
-                                            return Ok(());
-                                        }
-                                    Some(RunUntil::ChannelClosed(x)) if !self.client.connection
+                                        return Ok(());
+                                    }
+                                    Some(RunUntil::ChannelClosed(x)) if !self.client
+                                        .connection
                                         .session
                                         .channel_is_open(x) => {
-                                            return Ok(());
-                                        }
+                                        return Ok(());
+                                    }
                                     _ => {}
                                 }
                             }
@@ -1342,37 +1340,36 @@ impl Connected {
     }
 
     /// Run the protocol until some condition is satisfied on the client.
-    pub fn run_until<R: Handler, F: Fn(&Client, &mut R) -> bool>
-        (&mut self,
-         client: &mut R,
-         until: F)
-         -> Result<(), Error> {
-            try!(self.client.connection.write(self.stream.get_mut()));
-            while !until(&self.client, client) {
-                match self.client.poll.poll(&mut self.client.events, None) {
-                    Ok(n) if n > 0 => {
-                        for events in self.client.events.into_iter() {
-                            let kind = events.kind();
-                            if kind.is_error() || kind.is_hup() {
-                                return Err(From::from(Error::HUP));
-                            } else {
-                                if kind.is_readable() {
-                                    try!(self.client.connection.read(client,
-                                                                     &mut self.stream,
-                                                                     &mut self.client.buffer0,
-                                                                     &mut self.client.buffer1));
-                                }
-                                if kind.is_writable() {
-                                    try!(self.client.connection.write(self.stream.get_mut()));
-                                }
+    pub fn run_until<R: Handler, F: Fn(&Client, &mut R) -> bool>(&mut self,
+                                                                 client: &mut R,
+                                                                 until: F)
+                                                                 -> Result<(), Error> {
+        try!(self.client.connection.write(self.stream.get_mut()));
+        while !until(&self.client, client) {
+            match self.client.poll.poll(&mut self.client.events, None) {
+                Ok(n) if n > 0 => {
+                    for events in self.client.events.into_iter() {
+                        let kind = events.kind();
+                        if kind.is_error() || kind.is_hup() {
+                            return Err(From::from(Error::HUP));
+                        } else {
+                            if kind.is_readable() {
+                                try!(self.client.connection.read(client,
+                                                                 &mut self.stream,
+                                                                 &mut self.client.buffer0,
+                                                                 &mut self.client.buffer1));
+                            }
+                            if kind.is_writable() {
+                                try!(self.client.connection.write(self.stream.get_mut()));
                             }
                         }
                     }
-                    _ => break,
                 }
+                _ => break,
             }
-            Ok(())
         }
+        Ok(())
+    }
 }
 
 

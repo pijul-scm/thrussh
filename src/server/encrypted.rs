@@ -353,12 +353,13 @@ impl Session {
         let window = try!(r.read_u32());
         let maxpacket = try!(r.read_u32());
 
-        let mut sender_channel: u32 = 1;
-        if let Some(ref mut enc) = self.0.encrypted {
-            while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
-                sender_channel = thread_rng().gen()
-            }
-        }
+        let sender_channel = if let Some(ref mut enc) = self.0.encrypted {
+            enc.new_channel_id()
+        } else {
+            unreachable!()
+        };
+
+
         match typ {
             b"session" => {
                 server.channel_open_session(sender_channel, self);
@@ -391,7 +392,10 @@ impl Session {
         }
         let channel = Channel {
             recipient_channel: sender,
-            sender_channel: sender_channel, /* "sender" is the local end, i.e. we're the sender, the remote is the recipient. */
+
+            // "sender" is the local end, i.e. we're the sender, the remote is the recipient.
+            sender_channel: sender_channel,
+
             recipient_window_size: window,
             sender_window_size: self.0.config.window_size,
             recipient_maximum_packet_size: maxpacket,
@@ -544,11 +548,7 @@ impl Encrypted {
         push_packet!(self.write, {
             self.write.push(msg::USERAUTH_FAILURE);
             self.write.extend_list(auth_request.methods);
-            self.write.push(if auth_request.partial_success {
-                1
-            } else {
-                0
-            });
+            self.write.push(if auth_request.partial_success { 1 } else { 0 });
         });
         auth_request.sent_pk_ok = false;
         auth_request.rejection_count += 1;
