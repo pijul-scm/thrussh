@@ -31,6 +31,7 @@ use cipher::CipherT;
 use std::sync::Arc;
 use ring::digest;
 use encoding::Encoding;
+use std::num::Wrapping;
 
 #[derive(Debug)]
 pub struct Encrypted {
@@ -42,6 +43,7 @@ pub struct Encrypted {
     pub session_id: digest::Digest,
     pub rekey: Option<Kex>,
     pub channels: HashMap<u32, Channel>,
+    pub last_channel_id: Wrapping<u32>,
     pub wants_reply: bool,
     pub write: CryptoVec,
     pub write_cursor: usize,
@@ -79,6 +81,7 @@ impl<C> CommonSession<C> {
                 state: Some(state),
                 rekey: None,
                 channels: HashMap::new(),
+                last_channel_id: Wrapping(1),
                 wants_reply: false,
                 write: CryptoVec::new(),
                 write_cursor: 0,

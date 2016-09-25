@@ -16,6 +16,7 @@
 use std::sync::Arc;
 use std::io::{Write, BufRead};
 use std;
+use std::num::Wrapping;
 
 use {Disconnect, Error, Limits, Sig, ChannelOpenFailure, parse_public_key};
 use encoding::Reader;
@@ -30,8 +31,6 @@ use session::*;
 use sshbuffer::*;
 use cipher;
 use kex;
-use rand;
-use rand::Rng;
 use ring::signature;
 use pty::Pty;
 use untrusted;
@@ -600,10 +599,14 @@ impl Session {
                 Some(EncryptedState::Authenticated) => {
                     debug!("sending open request");
 
-                    let mut sender_channel = 0;
-                    while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
-                        sender_channel = rand::thread_rng().gen()
-                    }
+                    let sender_channel = {
+                        enc.last_channel_id += Wrapping(1);
+                        while enc.channels.contains_key(&enc.last_channel_id.0) {
+                            enc.last_channel_id += Wrapping(1)
+                        }
+                        enc.last_channel_id.0
+                    };
+
                     push_packet!(enc.write, {
                         enc.write.push(msg::CHANNEL_OPEN);
                         enc.write.extend_ssh_string(b"session");
@@ -636,10 +639,14 @@ impl Session {
                 Some(EncryptedState::Authenticated) => {
                     debug!("sending open request");
 
-                    let mut sender_channel = 0;
-                    while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
-                        sender_channel = rand::thread_rng().gen()
-                    }
+                    let sender_channel = {
+                        enc.last_channel_id += Wrapping(1);
+                        while enc.channels.contains_key(&enc.last_channel_id.0) {
+                            enc.last_channel_id += Wrapping(1)
+                        }
+                        enc.last_channel_id.0
+                    };
+
                     push_packet!(enc.write, {
                         enc.write.push(msg::CHANNEL_OPEN);
                         enc.write.extend_ssh_string(b"x11");
@@ -676,10 +683,14 @@ impl Session {
                 Some(EncryptedState::Authenticated) => {
                     debug!("sending open request");
 
-                    let mut sender_channel = 0;
-                    while enc.channels.contains_key(&sender_channel) || sender_channel == 0 {
-                        sender_channel = rand::thread_rng().gen()
-                    }
+                    let sender_channel = {
+                        enc.last_channel_id += Wrapping(1);
+                        while enc.channels.contains_key(&enc.last_channel_id.0) {
+                            enc.last_channel_id += Wrapping(1)
+                        }
+                        enc.last_channel_id.0
+                    };
+
                     push_packet!(enc.write, {
                         enc.write.push(msg::CHANNEL_OPEN);
                         enc.write.extend_ssh_string(b"direct-tcpip");
