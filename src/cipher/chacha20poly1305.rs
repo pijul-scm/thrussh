@@ -15,63 +15,35 @@
 
 // http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD
 
-use byteorder::{ByteOrder, BigEndian};
 use super::super::Error;
-use ring::{chacha, poly1305};
+use ring;
 
-#[derive(Debug)]
-pub struct Key {
-    k1: chacha::Key,
-    k2: chacha::Key,
-}
+pub type OpeningKey = ring::protocols::chacha20_poly1305_openssh::OpeningKey;
+pub type SealingKey = ring::protocols::chacha20_poly1305_openssh::SealingKey;
 
-impl Key {
-    pub fn init(key: &[u8]) -> Key {
-        Key {
-            k1: chacha::key_from_bytes(array_ref![key, 32, 32]),
-            k2: chacha::key_from_bytes(array_ref![key, 0, 32]),
-        }
-    }
-}
+pub const KEY_LEN: usize = ring::protocols::chacha20_poly1305_openssh::KEY_LEN;
+const TAG_LEN: usize = ring::protocols::chacha20_poly1305_openssh::TAG_LEN;
 
-impl super::OpeningKey for Key {
-    fn decrypt_packet_length(&self, seqn: u32, encrypted_packet_length: [u8; 4]) -> [u8; 4] {
-        let mut packet_length = encrypted_packet_length;
-        let mut nonce = [0; chacha::NONCE_LEN];
-        BigEndian::write_u32(&mut nonce[(chacha::NONCE_LEN - 4)..], seqn);
-        let counter = chacha::make_counter(&nonce, 0);
-        chacha::chacha20_xor_in_place(&self.k1, &counter, &mut packet_length);
-        packet_length
+impl super::OpeningKey for OpeningKey {
+    fn decrypt_packet_length(&self,
+                             sequence_number: u32,
+                             encrypted_packet_length: [u8; 4]) -> [u8; 4] {
+        <OpeningKey>::decrypt_packet_length(self, sequence_number, encrypted_packet_length)
     }
 
-    fn tag_len(&self) -> usize { poly1305::TAG_LEN }
+    fn tag_len(&self) -> usize { TAG_LEN }
 
-    fn open(&self, seqn: u32, ciphertext_in_plaintext_out: &mut [u8], tag: &[u8])
+    fn open(&self, sequence_number: u32,
+            ciphertext_in_plaintext_out: &mut [u8],
+            tag: &[u8])
             -> Result<(), Error> {
-        let tag = array_ref![tag, 0, poly1305::TAG_LEN];
-
-        let mut nonce = [0; chacha::NONCE_LEN];
-        BigEndian::write_u32(&mut nonce[(chacha::NONCE_LEN - 4)..], seqn);
-        let mut counter = chacha::make_counter(&nonce, 0);
-
-        let mut poly_key = [0; poly1305::KEY_LEN];
-        chacha::chacha20_xor_in_place(&self.k2, &counter, &mut poly_key);
-
-        try!(poly1305::verify(&poly_key, ciphertext_in_plaintext_out, tag)
-            .map_err(|_| Error::PacketAuth));
-
-        // The first `PACKET_LENGTH_LEN` bytes were encrypted with self.k1 and
-        // were already decrypted with decrypt_packet_length.
-        counter[0] = 1;
-        chacha::chacha20_xor_in_place(&self.k2,
-                                      &counter,
-                                      &mut ciphertext_in_plaintext_out[super::PACKET_LENGTH_LEN..]);
-
-        Ok(())
+        let tag = array_ref![tag, 0, TAG_LEN];
+        self.open_in_place(sequence_number, ciphertext_in_plaintext_out, tag)
+            .map_err(|_| Error::PacketAuth)
     }
 }
 
-impl super::SealingKey for Key {
+impl super::SealingKey for SealingKey {
     // As explained in "SSH via CTR mode with stateful decryption" in
     // https://openvpn.net/papers/ssh-security.pdf, the padding doesn't need to
     // be random because we're doing stateful counter-mode encryption. Use
@@ -82,34 +54,14 @@ impl super::SealingKey for Key {
         }
     }
 
-    fn tag_len(&self) -> usize { poly1305::TAG_LEN }
+    fn tag_len(&self) -> usize { TAG_LEN }
 
     /// Append an encrypted packet with contents `packet_content` at the end of `buffer`.
-    fn seal(&self, seqn: u32, plaintext_in_ciphertext_out: &mut [u8], tag_out: &mut [u8]) {
-        // http://cvsweb.openbsd.org/cgi-bin/
-        // cvsweb/src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD
-
-        let mut tag_out = array_mut_ref![tag_out, 0, poly1305::TAG_LEN];
-
-        let mut nonce = [0; chacha::NONCE_LEN];
-        BigEndian::write_u32(&mut nonce[(chacha::NONCE_LEN - 4)..], seqn);
-
-        let mut counter = chacha::make_counter(&nonce, 0);
-
-        {
-            let (len_in_out, data_and_padding_in_out) =
-                plaintext_in_ciphertext_out.split_at_mut(4);
-
-            chacha::chacha20_xor_in_place(&self.k1, &counter, len_in_out);
-            // the first 4 bytes of buffer now contain the encrypted length.
-
-            counter[0] = 1;
-            chacha::chacha20_xor_in_place(&self.k2, &counter, data_and_padding_in_out);
-        }
-
-        let mut poly_key = [0; poly1305::KEY_LEN];
-        counter[0] = 0;
-        chacha::chacha20_xor_in_place(&self.k2, &counter, &mut poly_key);
-        poly1305::sign(&poly_key, plaintext_in_ciphertext_out, &mut tag_out);
+    fn seal(&self,
+            sequence_number: u32,
+            plaintext_in_ciphertext_out: &mut [u8],
+            tag_out: &mut [u8]) {
+        let tag_out = array_mut_ref![tag_out, 0, TAG_LEN];
+        self.seal_in_place(sequence_number, plaintext_in_ciphertext_out, tag_out);
     }
 }

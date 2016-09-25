@@ -22,10 +22,32 @@ use sshbuffer::SSHBuffer;
 pub mod chacha20poly1305;
 pub mod clear;
 
-#[derive(Debug)]
-pub enum Cipher {
+pub enum OpeningCipher {
     Clear(clear::Key),
-    Chacha20Poly1305(chacha20poly1305::Key),
+    Chacha20Poly1305(chacha20poly1305::OpeningKey),
+}
+
+impl<'a> OpeningCipher {
+    fn as_opening_key(&'a self) -> &'a OpeningKey {
+        match *self {
+            OpeningCipher::Clear(ref key) => key,
+            OpeningCipher::Chacha20Poly1305(ref key) => key,
+        }
+    }
+}
+
+pub enum SealingCipher {
+    Clear(clear::Key),
+    Chacha20Poly1305(chacha20poly1305::SealingKey),
+}
+
+impl<'a> SealingCipher {
+    fn as_sealing_key(&'a self) -> &'a SealingKey {
+        match *self {
+            SealingCipher::Clear(ref key) => key,
+            SealingCipher::Chacha20Poly1305(ref key) => key,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -45,15 +67,20 @@ pub fn key_size(c: Name) -> usize {
     }
 }
 
-#[derive(Debug)]
 pub struct CipherPair {
-    pub local_to_remote: Cipher,
-    pub remote_to_local: Cipher,
+    pub local_to_remote: SealingCipher,
+    pub remote_to_local: OpeningCipher,
+}
+
+impl std::fmt::Debug for CipherPair {
+    fn fmt(&self, _: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        Ok(()) // TODO?
+    }
 }
 
 pub const CLEAR_PAIR: CipherPair = CipherPair {
-    local_to_remote: Cipher::Clear(clear::Key),
-    remote_to_local: Cipher::Clear(clear::Key),
+    local_to_remote: SealingCipher::Clear(clear::Key),
+    remote_to_local: OpeningCipher::Clear(clear::Key),
 };
 
 pub trait OpeningKey {
@@ -71,22 +98,6 @@ pub trait SealingKey {
     fn tag_len(&self) -> usize;
 
     fn seal(&self, seqn: u32, plaintext_in_ciphertext_out: &mut [u8], tag_out: &mut [u8]);
-}
-
-impl<'a> Cipher {
-    fn as_opening_key(&'a self) -> &'a OpeningKey {
-        match *self {
-            Cipher::Clear(ref key) => key,
-            Cipher::Chacha20Poly1305(ref key) => key,
-        }
-    }
-
-    fn as_sealing_key(&'a self) -> &'a SealingKey {
-        match *self {
-            Cipher::Clear(ref key) => key,
-            Cipher::Chacha20Poly1305(ref key) => key,
-        }
-    }
 }
 
 /// Fills the read buffer, and returns whether a complete message has been read.
@@ -189,7 +200,7 @@ impl CipherPair {
         let packet_length = PADDING_LENGTH_LEN + payload.len() + padding_length;
 
         let offset = buffer.buffer.len();
-        let key = self.remote_to_local.as_sealing_key();
+        let key = self.local_to_remote.as_sealing_key();
 
         assert!(packet_length <= std::u32::MAX as usize); // XXX: Is this really always true?
         buffer.buffer.push_u32_be(packet_length as u32);
