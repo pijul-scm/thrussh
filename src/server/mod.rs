@@ -59,6 +59,8 @@ pub struct Config {
     pub preferred: Preferred,
     /// Maximal number of allowed authentication attempts.
     pub max_auth_attempts: usize,
+    /// Time after which the connection is garbage-collected.
+    pub connection_timeout: time::Duration,
 }
 
 impl Default for Config {
@@ -76,6 +78,7 @@ impl Default for Config {
             limits: Limits::default(),
             preferred: Default::default(),
             max_auth_attempts: 10,
+            connection_timeout: time::Duration::minutes(10),
         }
     }
 }
@@ -839,16 +842,18 @@ impl Session {
 }
 
 use std::io::BufReader;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, BTreeSet, VecDeque};
 use std::collections::hash_map::Entry;
 
 use std::net::ToSocketAddrs;
 use mio::{Token, Poll, PollOpt, Ready, Events};
 use mio::tcp::{TcpStream, TcpListener};
 use std::time::Duration;
+
 const SERVER_TOKEN: Token = Token(0);
 
 struct ClientRecord<H> {
+    last_seen: time::SteadyTime,
     stream: BufReader<TcpStream>,
     addr: std::net::SocketAddr,
     is_parked: bool,
@@ -867,6 +872,7 @@ pub struct Server<H: Handler> {
 
 struct Sessions<H> {
     poll: Poll,
+    last_seen: BTreeSet<(time::SteadyTime, Token)>,
     sessions: HashMap<Token, ClientRecord<H>>,
     parked: VecDeque<(Token, time::SteadyTime)>,
 }
@@ -888,6 +894,7 @@ impl<H: Handler + Clone> Server<H> {
             socket: socket,
             sessions: Sessions {
                 poll: poll,
+                last_seen: BTreeSet::new(),
                 parked: VecDeque::new(),
                 sessions: HashMap::new(),
             },
@@ -931,6 +938,7 @@ impl<H: Handler + Clone> Server<H> {
                                 let rec = ClientRecord {
                                     stream: BufReader::new(client_socket),
                                     addr: addr,
+                                    last_seen: time::SteadyTime::now(),
                                     is_parked: false,
                                     connection: co,
                                     handler: self.handler.clone(),
@@ -965,6 +973,27 @@ impl<H: Handler + Clone> Server<H> {
                     }
                 }
                 Ok(_) => {
+
+                    // Garbage-collect old connections.
+                    let t = time::SteadyTime::now() + self.config.connection_timeout;
+                    let alive = self.sessions.last_seen.split_off(&(t, Token(0)));
+                    let dead = std::mem::replace(&mut self.sessions.last_seen, alive);
+                    for (_, tok) in dead {
+                        match self.sessions.sessions.entry(tok) {
+                            Entry::Occupied(e) => {
+                                debug!("Removing, file {}, line {}", file!(), line!());
+                                let rec = e.remove();
+                                self.sessions
+                                    .poll
+                                    .deregister(rec.stream.get_ref())
+                                    .unwrap();
+                            }
+                            _ => {}
+                        };
+
+                    }
+
+                    // Unpark connections (if needed).
                     let parking_time = self.config.as_ref().auth_rejection_time;
                     self.sessions.unpark(parking_time, &mut buffer0, &mut buffer1)
                 }
@@ -985,6 +1014,9 @@ impl<H: Handler> Sessions<H> {
                 let time = time::SteadyTime::now();
                 {
                     let rec = e.get_mut();
+                    self.last_seen.remove(&(rec.last_seen, id));
+                    self.last_seen.insert((time, id));
+                    rec.last_seen = time;
 
                     if !rec.is_parked || unpark {
                         debug!("reading from: {:?}", rec.addr);
@@ -1015,12 +1047,15 @@ impl<H: Handler> Sessions<H> {
     }
 
     fn write(&mut self, id: Token) {
-
         match self.sessions.entry(id) {
             Entry::Occupied(mut e) => {
 
+                let time = time::SteadyTime::now();
                 let result = {
                     let rec = e.get_mut();
+                    self.last_seen.remove(&(rec.last_seen, id));
+                    self.last_seen.insert((time, id));
+                    rec.last_seen = time;
                     rec.connection.write(rec.stream.get_mut())
                 };
                 if result.is_err() {

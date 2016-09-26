@@ -64,6 +64,7 @@
 //!         client.set_auth_password("bird".to_string());
 //!         client.authenticate().unwrap();
 //!         client.run_until(&mut ch, |client, _| client.is_authenticated()).unwrap();
+//!         std::thread::sleep(std::time::Duration::from_secs(2));
 //!         client.disconnect(thrussh::Disconnect::ByApplication, "ciao", "IT");
 //!         client.run_until(&mut ch, |client, _| client.is_disconnected()).unwrap();
 //!     }
