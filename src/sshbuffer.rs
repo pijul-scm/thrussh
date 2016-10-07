@@ -16,13 +16,17 @@
 use std;
 use super::*;
 use std::io::BufRead;
+use std::num::Wrapping;
 
 #[derive(Debug)]
 pub struct SSHBuffer {
     pub buffer: CryptoVec,
     pub len: usize, // next packet length.
     pub bytes: usize,
-    pub seqn: usize,
+
+    // Sequence numbers are on 32 bits and wrap.
+    // https://tools.ietf.org/html/rfc4253#section-6.4
+    pub seqn: Wrapping<u32>,
 }
 impl SSHBuffer {
     pub fn new() -> Self {
@@ -30,7 +34,7 @@ impl SSHBuffer {
             buffer: CryptoVec::new(),
             len: 0,
             bytes: 0,
-            seqn: 0,
+            seqn: Wrapping(0),
         }
     }
     pub fn read_ssh_id<'a, R: BufRead>(&'a mut self,

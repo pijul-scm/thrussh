@@ -18,6 +18,7 @@ use sshbuffer::SSHBuffer;
 
 use msg;
 use encoding::Encoding;
+use std::num::Wrapping;
 
 #[derive(Debug)]
 pub struct Key;
@@ -90,5 +91,5 @@ pub fn disconnect(reason: Disconnect,
     }
 
     debug!("write: {:?}", buffer.buffer);
-    buffer.seqn += 1;
+    buffer.seqn += Wrapping(1)
 }

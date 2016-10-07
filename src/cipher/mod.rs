@@ -18,6 +18,7 @@ use std::io::BufRead;
 use std;
 use cryptovec::CryptoVec;
 use sshbuffer::SSHBuffer;
+use std::num::Wrapping;
 
 pub mod chacha20poly1305;
 pub mod clear;
@@ -144,7 +145,7 @@ impl CipherPair {
         let key = self.remote_to_local.as_opening_key();
 
         // XXX: `buffer.seqn as u32` may truncate.
-        let seqn = buffer.seqn as u32;
+        let seqn = buffer.seqn.0;
 
         if buffer.len == 0 {
             buffer.buffer.clear();
@@ -168,7 +169,10 @@ impl CipherPair {
                                               .checked_sub(padding_length)
                                               .ok_or(Error::IndexOutOfBounds));
             let result = Some(&plaintext[..plaintext_end]);
-            buffer.seqn += 1;
+
+            // Sequence numbers are on 32 bits and wrap.
+            // https://tools.ietf.org/html/rfc4253#section-6.4
+            buffer.seqn += Wrapping(1);
             buffer.len = 0;
             Ok(result)
         } else {
@@ -202,7 +206,9 @@ impl CipherPair {
         let offset = buffer.buffer.len();
         let key = self.local_to_remote.as_sealing_key();
 
-        assert!(packet_length <= std::u32::MAX as usize); // XXX: Is this really always true?
+        // Maximum packet length:
+        // https://tools.ietf.org/html/rfc4253#section-6.1
+        assert!(packet_length <= std::u32::MAX as usize);
         buffer.buffer.push_u32_be(packet_length as u32);
 
         assert!(padding_length <= std::u8::MAX as usize);
@@ -214,11 +220,11 @@ impl CipherPair {
         let (plaintext, tag) = buffer.buffer[offset..]
                                      .split_at_mut(PACKET_LENGTH_LEN + packet_length);
 
-        assert!(buffer.seqn <= std::u32::MAX as usize); // XXX: Is this really always true?
-        key.seal(buffer.seqn as u32, plaintext, tag);
+        key.seal(buffer.seqn.0, plaintext, tag);
 
-        // XXX: Can't this overflow `usize` and also make the `u32' cast truncate?
-        buffer.seqn += 1;
+        // Sequence numbers are on 32 bits and wrap.
+        // https://tools.ietf.org/html/rfc4253#section-6.4
+        buffer.seqn += Wrapping(1);
     }
 }
 
