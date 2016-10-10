@@ -250,9 +250,20 @@ mod auth;
 /// The number of bytes read/written, and the number of seconds before a key re-exchange is requested.
 #[derive(Debug,Clone)]
 pub struct Limits {
-    pub rekey_write_limit: usize,
-    pub rekey_read_limit: usize,
-    pub rekey_time_limit: std::time::Duration,
+    rekey_write_limit: usize,
+    rekey_read_limit: usize,
+    rekey_time_limit: std::time::Duration,
+}
+
+impl Limits {
+    pub fn new(write_limit: usize, read_limit: usize, time_limit: std::time::Duration) -> Limits {
+        assert!(write_limit <= 1<<30 && read_limit <= 1<<30);
+        Limits {
+            rekey_write_limit: write_limit,
+            rekey_read_limit: read_limit,
+            rekey_time_limit: time_limit
+        }
+    }
 }
 
 impl Default for Limits {
