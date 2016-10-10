@@ -16,13 +16,13 @@
 // http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/usr.bin/ssh/PROTOCOL.chacha20poly1305?annotate=HEAD
 
 use super::super::Error;
-use ring;
+use ring::aead;
 
-pub type OpeningKey = ring::protocols::chacha20_poly1305_openssh::OpeningKey;
-pub type SealingKey = ring::protocols::chacha20_poly1305_openssh::SealingKey;
+pub type OpeningKey = aead::chacha20_poly1305_openssh::OpeningKey;
+pub type SealingKey = aead::chacha20_poly1305_openssh::SealingKey;
 
-pub const KEY_LEN: usize = ring::protocols::chacha20_poly1305_openssh::KEY_LEN;
-const TAG_LEN: usize = ring::protocols::chacha20_poly1305_openssh::TAG_LEN;
+pub const KEY_LEN: usize = aead::chacha20_poly1305_openssh::KEY_LEN;
+const TAG_LEN: usize = aead::chacha20_poly1305_openssh::TAG_LEN;
 
 impl super::OpeningKey for OpeningKey {
     fn decrypt_packet_length(&self,
@@ -33,10 +33,10 @@ impl super::OpeningKey for OpeningKey {
 
     fn tag_len(&self) -> usize { TAG_LEN }
 
-    fn open(&self, sequence_number: u32,
-            ciphertext_in_plaintext_out: &mut [u8],
-            tag: &[u8])
-            -> Result<(), Error> {
+    fn open<'a>(&self, sequence_number: u32,
+                ciphertext_in_plaintext_out: &'a mut [u8],
+                tag: &[u8])
+                -> Result<&'a [u8], Error> {
         let tag = array_ref![tag, 0, TAG_LEN];
         self.open_in_place(sequence_number, ciphertext_in_plaintext_out, tag)
             .map_err(|_| Error::PacketAuth)

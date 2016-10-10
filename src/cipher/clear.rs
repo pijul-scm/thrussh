@@ -30,10 +30,10 @@ impl super::OpeningKey for Key {
 
     fn tag_len(&self) -> usize { 0 }
 
-    fn open(&self, _seqn: u32, _ciphertext_in_plaintext_out: &mut [u8], tag: &[u8])
-            -> Result<(), Error> {
+    fn open<'a>(&self, _seqn: u32, ciphertext_in_plaintext_out: &'a mut [u8], tag: &[u8])
+            -> Result<&'a [u8], Error> {
         debug_assert_eq!(tag.len(), self.tag_len());
-        Ok(())
+        Ok(ciphertext_in_plaintext_out)
     }
 }
 

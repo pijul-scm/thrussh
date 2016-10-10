@@ -89,8 +89,8 @@ pub trait OpeningKey {
 
     fn tag_len(&self) -> usize;
 
-    fn open(&self, seqn: u32, ciphertext_in_plaintext_out: &mut [u8], tag: &[u8])
-            -> Result<(), Error>;
+    fn open<'a>(&self, seqn: u32, ciphertext_in_plaintext_out: &'a mut [u8], tag: &[u8])
+            -> Result<&'a [u8], Error>;
 }
 
 pub trait SealingKey {
@@ -160,9 +160,8 @@ impl CipherPair {
         if try!(read(stream, &mut buffer.buffer, buffer.len, &mut buffer.bytes)) {
             let ciphertext_len = buffer.buffer.len() - key.tag_len();
             let (ciphertext, tag) = buffer.buffer.split_at_mut(ciphertext_len);
-            try!(key.open(seqn, ciphertext, tag));
-            let (padding_length, plaintext) =
-                ciphertext[PACKET_LENGTH_LEN..].split_at(PADDING_LENGTH_LEN);
+            let plaintext = try!(key.open(seqn, ciphertext, tag));
+            let (padding_length, plaintext) = plaintext.split_at(PADDING_LENGTH_LEN);
             debug_assert_eq!(PADDING_LENGTH_LEN, 1);
             let padding_length = padding_length[0] as usize;
             let plaintext_end = try!(plaintext.len()
