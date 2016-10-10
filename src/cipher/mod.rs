@@ -23,6 +23,14 @@ use std::num::Wrapping;
 pub mod chacha20poly1305;
 pub mod clear;
 
+
+pub struct Cipher {
+    pub name: Name,
+    pub key_len: usize,
+    pub make_opening_cipher: fn(key: &[u8]) -> OpeningCipher,
+    pub make_sealing_cipher: fn(key: &[u8]) -> SealingCipher,
+}
+
 pub enum OpeningCipher {
     Clear(clear::Key),
     Chacha20Poly1305(chacha20poly1305::OpeningKey),
@@ -56,15 +64,6 @@ pub struct Name(&'static str);
 impl AsRef<str> for Name {
     fn as_ref(&self) -> &str {
         self.0
-    }
-}
-
-pub const CHACHA20POLY1305: Name = Name("chacha20-poly1305@openssh.com");
-
-pub fn key_size(c: Name) -> usize {
-    match c {
-        CHACHA20POLY1305 => 64,
-        _ => 0,
     }
 }
 

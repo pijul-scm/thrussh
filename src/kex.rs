@@ -184,31 +184,8 @@ impl Algorithm {
                         cipher: cipher::Name,
                         is_server: bool)
                         -> Result<super::cipher::CipherPair, Error> {
-        let make_opening_cipher = match cipher {
-            super::cipher::CHACHA20POLY1305 => {
-                fn make_chacha20poly1305(key: &[u8])
-                                         -> super::cipher::OpeningCipher {
-                    let key = array_ref![key, 0, super::cipher::chacha20poly1305::KEY_LEN];
-                    super::cipher::OpeningCipher::Chacha20Poly1305(
-                        super::cipher::chacha20poly1305::OpeningKey::new(key))
-                }
-                make_chacha20poly1305
-            }
-
-            _ => unreachable!(),
-        };
-
-        let make_sealing_cipher = match cipher {
-            super::cipher::CHACHA20POLY1305 => {
-                fn make_chacha20poly1305(key: &[u8])
-                                         -> super::cipher::SealingCipher {
-                    let key = array_ref![key, 0, super::cipher::chacha20poly1305::KEY_LEN];
-                    super::cipher::SealingCipher::Chacha20Poly1305(
-                        super::cipher::chacha20poly1305::SealingKey::new(key))
-                }
-                make_chacha20poly1305
-            }
-
+        let cipher = match cipher {
+            super::cipher::chacha20poly1305::NAME => &super::cipher::chacha20poly1305::CIPHER,
             _ => unreachable!(),
         };
 
@@ -245,11 +222,11 @@ impl Algorithm {
             (b'C', b'D')
         };
 
-        compute_key(local_to_remote, key, super::cipher::key_size(cipher));
-        let local_to_remote = make_sealing_cipher(key);
+        compute_key(local_to_remote, key, cipher.key_len);
+        let local_to_remote = (cipher.make_sealing_cipher)(key);
 
-        compute_key(remote_to_local, key, super::cipher::key_size(cipher));
-        let remote_to_local = make_opening_cipher(key);
+        compute_key(remote_to_local, key, cipher.key_len);
+        let remote_to_local = (cipher.make_opening_cipher)(key);
 
         Ok(super::cipher::CipherPair {
             local_to_remote: local_to_remote,

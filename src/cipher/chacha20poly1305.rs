@@ -24,6 +24,25 @@ pub type SealingKey = aead::chacha20_poly1305_openssh::SealingKey;
 pub const KEY_LEN: usize = aead::chacha20_poly1305_openssh::KEY_LEN;
 const TAG_LEN: usize = aead::chacha20_poly1305_openssh::TAG_LEN;
 
+pub static CIPHER: super::Cipher = super::Cipher {
+    name: NAME,
+    key_len: 64,
+    make_opening_cipher: make_opening_cipher,
+    make_sealing_cipher: make_sealing_cipher,
+};
+
+pub const NAME: super::Name = super::Name("chacha20-poly1305@openssh.com");
+
+fn make_opening_cipher(key: &[u8]) -> super::OpeningCipher {
+    let key = array_ref![key, 0, KEY_LEN];
+    super::OpeningCipher::Chacha20Poly1305(OpeningKey::new(key))
+}
+
+fn make_sealing_cipher(key: &[u8]) -> super::SealingCipher {
+    let key = array_ref![key, 0, KEY_LEN];
+    super::SealingCipher::Chacha20Poly1305(SealingKey::new(key))
+}
+
 impl super::OpeningKey for OpeningKey {
     fn decrypt_packet_length(&self,
                              sequence_number: u32,
