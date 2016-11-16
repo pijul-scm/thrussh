@@ -3,7 +3,7 @@ name = "thrussh"
 description = "A client and server SSH library. Memory-safe, doesn't do its own crypto (based on *ring*)."
 keywords = ["ssh"]
 version = "0.7.0"
-authors = ["Pierre-Étienne Meunier <pe@pijul.org>", "Brian Smith <brian@briansmith.org>"]
+authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
 repository = "https://pijul.org/thrussh"
 homepage = "https://pijul.org/thrussh"
 documentation = "https://pijul.org/thrussh/doc/thrussh"
@@ -37,7 +37,7 @@ byteorder = "0.5"
 bitflags = "0.7"
 libc = "0.2"
 log = "0.3"
-ring = { git = "https://github.com/briansmith/ring", branch = "ssh" }
+ring = { git = "https://github.com/briansmith/ring" }
 rustc-serialize = "0.3"
 time = "0.1"
 untrusted = "0.3.1"
@@ -45,6 +45,11 @@ mio = "0.6"
 regex = "0.1"
 user = "0.1.1"
 cryptovec = "0.2"
+
+tokio-core = { git = "https://github.com/tokio-rs/tokio-core" }
+futures = { git = "https://github.com/alexcrichton/futures-rs" }
+
+env_logger = "*"
 
 [dev-dependencies]
 tempdir="0.3"

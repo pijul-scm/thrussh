@@ -15,7 +15,6 @@
 use std::io::{Write, BufRead};
 use std;
 use std::sync::Arc;
-use time;
 
 use super::*;
 
@@ -46,7 +45,7 @@ pub struct Config {
     pub auth_banner: Option<&'static str>,
     /// Authentication rejections must happen in constant time for
     /// security reasons. Thrussh does not handle this by default.
-    pub auth_rejection_time: time::Duration,
+    pub auth_rejection_time: std::time::Duration,
     /// The server's keys. The first key pair in the client's preference order will be chosen.
     pub keys: Vec<key::Algorithm>,
     /// The bytes and time limits before key re-exchange.
@@ -60,7 +59,7 @@ pub struct Config {
     /// Maximal number of allowed authentication attempts.
     pub max_auth_attempts: usize,
     /// Time after which the connection is garbage-collected.
-    pub connection_timeout: time::Duration,
+    pub connection_timeout: std::time::Duration,
 }
 
 impl Default for Config {
@@ -71,14 +70,14 @@ impl Default for Config {
                                env!("CARGO_PKG_VERSION")),
             methods: auth::MethodSet::all(),
             auth_banner: None,
-            auth_rejection_time: time::Duration::seconds(1),
+            auth_rejection_time: std::time::Duration::from_secs(1),
             keys: Vec::new(),
             window_size: 1 << 30,
             maximum_packet_size: 1 << 20,
             limits: Limits::default(),
             preferred: Default::default(),
             max_auth_attempts: 10,
-            connection_timeout: time::Duration::minutes(10),
+            connection_timeout: std::time::Duration::from_secs(600),
         }
     }
 }
@@ -373,7 +372,7 @@ impl KexDh {
                  buf: &[u8],
                  write_buffer: &mut SSHBuffer)
                  -> Result<Kex, Error> {
-
+        debug!("KexDh: parse");
         if self.names.ignore_guessed {
             // If we need to ignore this packet.
             self.names.ignore_guessed = false;
@@ -404,6 +403,7 @@ impl KexDh {
             // Server ephemeral
             buffer.extend_ssh_string(&kexdhdone.exchange.server_ephemeral);
             // Hash signature
+            debug!(" >>>>>>>>>>>>>>> signing with key {:?}", kexdhdone.key);
             config.keys[kexdhdone.key].add_signature(buffer, &hash);
             cipher.write(&buffer, write_buffer);
 
@@ -417,6 +417,10 @@ impl KexDh {
 const AT_LEAST_ONE_PACKET: u8 = 1;
 const AUTH_REJECTED: u8 = 2;
 
+enum Status {
+    Ok,
+    AuthRejected
+}
 
 impl Connection {
     #[doc(hidden)]
@@ -441,57 +445,17 @@ impl Connection {
         session
     }
 
-    /// Process all packets available in the buffer, and returns
-    /// whether at least one complete packet was read. `buffer` and
-    /// `buffer2` are work spaces mostly used to compute keys. They
-    /// are cleared before using, hence nothing is expected from them.
-    #[doc(hidden)]
-    pub fn read<R: BufRead, S: Handler>(&mut self,
-                                        server: &mut S,
-                                        stream: &mut R,
-                                        buffer: &mut CryptoVec,
-                                        buffer2: &mut CryptoVec)
-                                        -> Result<u8, Error> {
-
-        let mut flags = 0;
-
-        loop {
-            if flags & AUTH_REJECTED != 0 {
-                // We have to wait.
-                return Ok(flags);
-            }
-            match self.read_one_packet(server, stream, buffer, buffer2) {
-
-                Ok(one_packet_flags) => {
-                    flags |= one_packet_flags;
-                    if one_packet_flags & AT_LEAST_ONE_PACKET == 0 {
-                        // We don't have a full packet.
-                        return Ok(flags);
-                    }
-                }
-                Err(Error::IO(e)) => {
-                    match e.kind() {
-                        std::io::ErrorKind::UnexpectedEof |
-                        std::io::ErrorKind::WouldBlock => return Ok(flags),
-                        _ => return Err(Error::IO(e)),
-                    }
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
-    // returns whether a complete packet has been read.
+    /// returns whether a complete packet has been read.
     fn read_one_packet<R: BufRead, S: Handler>(&mut self,
                                                server: &mut S,
                                                stream: &mut R,
                                                buffer: &mut CryptoVec,
                                                buffer2: &mut CryptoVec)
-                                               -> Result<u8, Error> {
-        debug!("read {:?}", self.session);
+                                               -> Result<Async<Status>, Error> {
+        debug!("read");
         // Special case for the beginning.
         if self.session.0.encrypted.is_none() && self.session.0.kex.is_none() {
-
+            debug!("both none");
             let mut exchange;
             {
                 let client_id = try!(self.read_buffer.read_ssh_id(stream));
@@ -500,7 +464,7 @@ impl Connection {
                     exchange.client_id.extend(client_id);
                     debug!("client id, exchange = {:?}", exchange);
                 } else {
-                    return Ok(0);
+                    return Ok(Async::NotReady);
                 }
             }
             // Preparing the response
@@ -515,14 +479,15 @@ impl Connection {
                                  &mut self.session.0.cipher,
                                  &mut self.session.0.write_buffer);
             self.session.0.kex = Some(Kex::KexInit(kexinit));
-            return Ok(AT_LEAST_ONE_PACKET);
+
+            return Ok(Async::Ready(Status::Ok))
 
         }
 
 
 
         // In all other cases:
-        if let Some(buf) = try!(self.session.0.cipher.read(stream, &mut self.read_buffer)) {
+        if let Some(buf) = try_nb!(self.session.0.cipher.read(stream, &mut self.read_buffer)) {
             debug!("read buf = {:?}", buf);
             // Handle the transport layer.
             if buf[0] == msg::DISCONNECT {
@@ -530,12 +495,12 @@ impl Connection {
                 return Err(Error::Disconnect);
             }
             if buf[0] <= 4 {
-                return Ok(AT_LEAST_ONE_PACKET);
+                return Ok(Async::Ready(Status::Ok))
             }
 
             // Handle key exchange/re-exchange.
+            debug!("self.session.0.kex = {:?} {:?}", self.session.0.kex, msg::KEXINIT);
             match std::mem::replace(&mut self.session.0.kex, None) {
-
                 Some(Kex::KexInit(kexinit)) => {
                     if kexinit.algo.is_some() || buf[0] == msg::KEXINIT ||
                        self.session.0.encrypted.is_none() {
@@ -546,7 +511,7 @@ impl Connection {
                         match next_kex {
                             Ok(next_kex) => {
                                 self.session.0.kex = Some(next_kex);
-                                return Ok(AT_LEAST_ONE_PACKET);
+                                return Ok(Async::Ready(Status::Ok));
                             }
                             Err(e) => return Err(e),
                         }
@@ -566,7 +531,7 @@ impl Connection {
                     match next_kex {
                         Ok(next_kex) => {
                             self.session.0.kex = Some(next_kex);
-                            return Ok(AT_LEAST_ONE_PACKET);
+                            return Ok(Async::Ready(Status::Ok))
                         }
                         Err(e) => return Err(e),
                     }
@@ -578,23 +543,23 @@ impl Connection {
                     }
                     // Ok, NEWKEYS received, now encrypted.
                     self.session.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
-                    return Ok(AT_LEAST_ONE_PACKET);
+                    return Ok(Async::Ready(Status::Ok))
                 }
                 Some(kex) => {
                     self.session.0.kex = Some(kex);
-                    return Ok(AT_LEAST_ONE_PACKET);
+                    return Ok(Async::Ready(Status::Ok))
                 }
                 None => {}
             }
             if !try!(self.session.server_read_encrypted(server, buf, buffer)) {
                 self.session.flush();
-                Ok(AT_LEAST_ONE_PACKET | AUTH_REJECTED)
+                Ok(Async::Ready(Status::AuthRejected))
             } else {
                 self.session.flush();
-                Ok(AT_LEAST_ONE_PACKET)
+                Ok(Async::Ready(Status::Ok))
             }
         } else {
-            Ok(0)
+            Ok(Async::NotReady)
         }
     }
 
@@ -846,242 +811,108 @@ use std::collections::{HashMap, BTreeSet, VecDeque};
 use std::collections::hash_map::Entry;
 
 use std::net::ToSocketAddrs;
-use mio::{Token, Poll, PollOpt, Ready, Events};
-use mio::tcp::{TcpStream, TcpListener};
 use std::time::Duration;
 
-const SERVER_TOKEN: Token = Token(0);
+use futures::stream::Stream;
+use futures::{Future, Poll, Async};
+use tokio_core::io::{copy, Io, write_all, read_until};
+use tokio_core::net::{TcpListener, TcpStream};
+use tokio_core::reactor::{Core, Timeout, Handle};
+
+pub fn run<H:Handler+Clone+'static>(config: Arc<Config>, addr: &str, handler: H) {
+
+
+    let addr = addr.to_socket_addrs().unwrap().next().unwrap();
+    let mut l = Core::new().unwrap();
+    let handle = Arc::new(l.handle());
+    let socket = TcpListener::bind(&addr, &handle).unwrap();
+
+    let mut buffer0 = CryptoVec::new();
+    let mut buffer1 = CryptoVec::new();
+
+    let done = socket.incoming().for_each(move |(socket, addr)| {
+        
+        let co = server::Connection::new(config.clone());
+        let rec = ClientRecord {
+            stream: BufReader::new(socket),
+            addr: addr,
+            state: State::Read,
+            connection: co,
+            buffer0: CryptoVec::new(),
+            buffer1: CryptoVec::new(),
+            handler: handler.clone(),
+            config: config.clone(),
+            l: handle.clone()
+        };
+        
+        handle.spawn(rec.map_err(|err| {
+            println!("err {:?}", err)
+        }));
+        Ok(())
+
+    });
+
+    l.run(done).unwrap();
+}
 
 struct ClientRecord<H> {
-    last_seen: time::SteadyTime,
     stream: BufReader<TcpStream>,
     addr: std::net::SocketAddr,
-    is_parked: bool,
+    state: State,
     connection: Connection,
+    buffer0: CryptoVec,
+    buffer1: CryptoVec,
     handler: H,
-}
-
-
-pub struct Server<H: Handler> {
     config: Arc<Config>,
-    events: Events,
-    handler: H,
-    socket: TcpListener,
-    sessions: Sessions<H>,
+    l: Arc<Handle>,
 }
 
-struct Sessions<H> {
-    poll: Poll,
-    last_seen: BTreeSet<(time::SteadyTime, Token)>,
-    sessions: HashMap<Token, ClientRecord<H>>,
-    parked: VecDeque<(Token, time::SteadyTime)>,
+enum State {
+    Read,
+    Write,
+    Timeout(Timeout)
 }
 
-impl<H: Handler + Clone> Server<H> {
-    pub fn new(config: Config, addr: &str, handler: H) -> Self {
-
-        let addr = addr.to_socket_addrs().unwrap().next().unwrap();
-        let socket = TcpListener::bind(&addr).unwrap();
-
-        let poll = Poll::new().unwrap();
-
-        poll.register(&socket, Token(0), Ready::all(), PollOpt::edge()).unwrap();
-
-        Server {
-            config: Arc::new(config),
-            events: Events::with_capacity(1024),
-            handler: handler,
-            socket: socket,
-            sessions: Sessions {
-                poll: poll,
-                last_seen: BTreeSet::new(),
-                parked: VecDeque::new(),
-                sessions: HashMap::new(),
-            },
-        }
-    }
-
-    pub fn run(&mut self) {
-
-        let mut buffer0 = CryptoVec::new();
-        let mut buffer1 = CryptoVec::new();
-
+impl<H:Handler> Future for ClientRecord<H> {
+    type Item = ();
+    type Error = Error;
+    fn poll(&mut self) -> Poll<(), Error> {
         loop {
-            match self.sessions.poll.poll(&mut self.events, Some(Duration::from_secs(1))) {
-                Ok(n) if n > 0 => {
-                    debug!("events: {:?}", n);
-                    for events in self.events.into_iter() {
-                        if events.token() == SERVER_TOKEN {
-
-                            if let Ok((client_socket, addr)) = self.socket.accept() {
-                                let rng = rand::SystemRandom::new();
-
-                                let mut id;
-                                loop {
-                                    let mut id_bytes = [0u8; 8];
-                                    rng.fill(&mut id_bytes).unwrap();
-                                    let id_value = BigEndian::read_u64(&id_bytes) as usize;
-                                    if id_value == 0 {
-                                        continue;
-                                    }
-                                    id = Token(id_value);
-                                    if !self.sessions.sessions.contains_key(&id) {
-                                        break;
-                                    }
-                                }
-                                self.sessions
-                                    .poll
-                                    .register(&client_socket, id, Ready::all(), PollOpt::edge())
-                                    .unwrap();
-                                let co = server::Connection::new(self.config.clone());
-
-                                let rec = ClientRecord {
-                                    stream: BufReader::new(client_socket),
-                                    addr: addr,
-                                    last_seen: time::SteadyTime::now(),
-                                    is_parked: false,
-                                    connection: co,
-                                    handler: self.handler.clone(),
-                                };
-
-                                self.sessions.sessions.insert(id, rec);
-                            }
-                        } else {
-                            let id = events.token();
-                            if events.kind().is_error() || events.kind().is_hup() {
-                                match self.sessions.sessions.entry(id) {
-                                    Entry::Occupied(e) => {
-                                        debug!("Removing, file {}, line {}", file!(), line!());
-                                        let rec = e.remove();
-                                        self.sessions
-                                            .poll
-                                            .deregister(rec.stream.get_ref())
-                                            .unwrap();
-                                    }
-                                    _ => {}
-                                };
-
-                            } else {
-                                if events.kind().is_readable() {
-                                    self.sessions.read(id, false, &mut buffer0, &mut buffer1)
-                                }
-                                if events.kind().is_writable() {
-                                    self.sessions.write(id)
-                                }
-                            }
-                        }
+            println!("looping");
+            match self.state {
+                State::Read => {
+                    println!("state: read, write: {:?}", self.connection.session.0.write_buffer);
+                    let status = try_ready!(
+                        self.connection
+                            .read_one_packet(&mut self.handler, &mut self.stream,
+                                             &mut self.buffer0, &mut self.buffer1)
+                    );
+                    match status {
+                        Status::AuthRejected => {
+                            let t = try!(Timeout::new(
+                                self.config.auth_rejection_time,
+                                &self.l
+                            ));
+                            self.state = State::Timeout(t)
+                        },
+                        Status::Ok => {}
                     }
+                    self.state = State::Write;
+                    continue;
                 }
-                Ok(_) => {
-
-                    // Garbage-collect old connections.
-                    let t = time::SteadyTime::now() + self.config.connection_timeout;
-                    let alive = self.sessions.last_seen.split_off(&(t, Token(0)));
-                    let dead = std::mem::replace(&mut self.sessions.last_seen, alive);
-                    for (_, tok) in dead {
-                        match self.sessions.sessions.entry(tok) {
-                            Entry::Occupied(e) => {
-                                debug!("Removing, file {}, line {}", file!(), line!());
-                                let rec = e.remove();
-                                self.sessions
-                                    .poll
-                                    .deregister(rec.stream.get_ref())
-                                    .unwrap();
-                            }
-                            _ => {}
-                        };
-
+                State::Write => {
+                    println!("state: write");
+                    if try_nb!(self.connection.write(self.stream.get_mut())) {
+                        self.state = State::Read;
                     }
-
-                    // Unpark connections (if needed).
-                    let parking_time = self.config.as_ref().auth_rejection_time;
-                    self.sessions.unpark(parking_time, &mut buffer0, &mut buffer1)
+                    continue;
                 }
-                Err(e) => {
-                    debug!("{:?}", e);
+                State::Timeout(ref mut t) => {
+                    println!("state: timeout");
+                    try_nb!(t.poll());
                 }
-            }
-        }
-    }
-}
-
-impl<H: Handler> Sessions<H> {
-    fn read(&mut self, id: Token, unpark: bool, buffer0: &mut CryptoVec, buffer1: &mut CryptoVec) {
-
-        match self.sessions.entry(id) {
-            Entry::Occupied(mut e) => {
-
-                let time = time::SteadyTime::now();
-                {
-                    let rec = e.get_mut();
-                    self.last_seen.remove(&(rec.last_seen, id));
-                    self.last_seen.insert((time, id));
-                    rec.last_seen = time;
-
-                    if !rec.is_parked || unpark {
-                        debug!("reading from: {:?}", rec.addr);
-                        rec.is_parked = false;
-                        match rec.connection
-                            .read(&mut rec.handler, &mut rec.stream, buffer0, buffer1) {
-
-                            Ok(r) => {
-                                if r & AUTH_REJECTED != 0 {
-                                    debug!("parking");
-                                    self.parked.push_back((id, time));
-                                    rec.is_parked = true;
-                                }
-                                return;
-                            }
-                            Err(err) => debug!("error: {:?}", err),
-                        }
-                    } else {
-                        return;
-                    }
-                }
-                debug!("Removing, file {}, line {}", file!(), line!());
-                let rec = e.remove();
-                self.poll.deregister(rec.stream.get_ref()).unwrap();
-            }
-            _ => {}
-        };
-    }
-
-    fn write(&mut self, id: Token) {
-        match self.sessions.entry(id) {
-            Entry::Occupied(mut e) => {
-
-                let time = time::SteadyTime::now();
-                let result = {
-                    let rec = e.get_mut();
-                    self.last_seen.remove(&(rec.last_seen, id));
-                    self.last_seen.insert((time, id));
-                    rec.last_seen = time;
-                    rec.connection.write(rec.stream.get_mut())
-                };
-                if result.is_err() {
-                    debug!("Removing, file {}, line {}", file!(), line!());
-                    let rec = e.remove();
-                    self.poll.deregister(rec.stream.get_ref()).unwrap();
-                }
-
-            }
-            _ => {}
-        }
-
-    }
-
-    fn unpark(&mut self,
-              parking_time: time::Duration,
-              buffer0: &mut CryptoVec,
-              buffer1: &mut CryptoVec) {
-        if let Some((id, time)) = self.parked.pop_front() {
-            if time + parking_time < time::SteadyTime::now() {
-                // We can go.
-                self.read(id, true, buffer0, buffer1);
-                self.write(id)
-            } else {
-                self.parked.push_front((id, time))
-            }
+            };
+            self.state = State::Read;
         }
     }
 }

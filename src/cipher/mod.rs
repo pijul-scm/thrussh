@@ -105,34 +105,25 @@ fn read(stream: &mut BufRead,
         read_buffer: &mut CryptoVec,
         read_len: usize,
         bytes_read: &mut usize)
-        -> Result<bool, Error> {
+        -> Result<(), Error> {
     // This loop consumes something or returns, it cannot loop forever.
+    debug!("read: {:?}", read_len);
     loop {
-        let consumed_len = match stream.fill_buf() {
-            Ok(buf) => {
-                if read_buffer.len() + buf.len() < read_len + 4 {
-
-                    read_buffer.extend(buf);
-                    buf.len()
-
-                } else {
-                    let consumed_len = read_len + 4 - read_buffer.len();
-                    read_buffer.extend(&buf[0..consumed_len]);
-                    consumed_len
-                }
-            }
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    return Ok(false);
-                } else {
-                    return Err(Error::IO(e));
-                }
+        let consumed_len = {
+            let buf = try!(stream.fill_buf());
+            if read_buffer.len() + buf.len() < read_len + 4 {
+                read_buffer.extend(buf);
+                buf.len()
+            } else {
+                let consumed_len = read_len + 4 - read_buffer.len();
+                read_buffer.extend(&buf[0..consumed_len]);
+                consumed_len
             }
         };
         stream.consume(consumed_len);
         *bytes_read += consumed_len;
         if read_buffer.len() >= 4 + read_len {
-            return Ok(true);
+            return Ok(());
         }
     }
 }
@@ -141,41 +132,46 @@ fn read(stream: &mut BufRead,
 impl CipherPair {
     pub fn read<'a>(&self, stream: &mut BufRead, buffer: &'a mut SSHBuffer)
                     -> Result<Option<&'a [u8]>, Error> {
+
+        debug!("cipherpair::read {:?}", buffer.len);
         let key = self.remote_to_local.as_opening_key();
 
-        // XXX: `buffer.seqn as u32` may truncate.
         let seqn = buffer.seqn.0;
 
         if buffer.len == 0 {
             buffer.buffer.clear();
             let mut len = [0; 4];
             try!(stream.read_exact(&mut len));
+            debug!("len = {:?}", len);
             buffer.buffer.extend(&len);
             let len = key.decrypt_packet_length(seqn, len);
             buffer.len = BigEndian::read_u32(&len) as usize + key.tag_len();
-            debug!("buffer len: {:?}", buffer.len);
         }
+        debug!("buffer len: {:?} {:?}", buffer.len, key.tag_len());
 
-        if try!(read(stream, &mut buffer.buffer, buffer.len, &mut buffer.bytes)) {
-            let ciphertext_len = buffer.buffer.len() - key.tag_len();
-            let (ciphertext, tag) = buffer.buffer.split_at_mut(ciphertext_len);
-            let plaintext = try!(key.open(seqn, ciphertext, tag));
-            let (padding_length, plaintext) = plaintext.split_at(PADDING_LENGTH_LEN);
-            debug_assert_eq!(PADDING_LENGTH_LEN, 1);
-            let padding_length = padding_length[0] as usize;
-            let plaintext_end = try!(plaintext.len()
-                                              .checked_sub(padding_length)
-                                              .ok_or(Error::IndexOutOfBounds));
-            let result = Some(&plaintext[..plaintext_end]);
-
-            // Sequence numbers are on 32 bits and wrap.
-            // https://tools.ietf.org/html/rfc4253#section-6.4
-            buffer.seqn += Wrapping(1);
-            buffer.len = 0;
-            Ok(result)
-        } else {
-            Ok(None)
+        try!(read(stream, &mut buffer.buffer, buffer.len, &mut buffer.bytes));
+        use std::ops::Deref;
+        {
+            let a:&[u8] = buffer.buffer.deref();
+            debug!("buffer: {:?}", a);
         }
+        let ciphertext_len = buffer.buffer.len() - key.tag_len();
+        let (ciphertext, tag) = buffer.buffer.split_at_mut(ciphertext_len);
+        let plaintext = try!(key.open(seqn, ciphertext, tag));
+
+        debug!("clear: {:?}", plaintext);
+        let padding_length = plaintext[0] as usize;
+        let plaintext_end = try!(plaintext.len()
+                                 .checked_sub(padding_length)
+                                 .ok_or(Error::IndexOutOfBounds));
+        debug!("padding length {:?} {:?}", padding_length, plaintext);
+        let result = Some(&plaintext[1..plaintext_end]);
+
+        // Sequence numbers are on 32 bits and wrap.
+        // https://tools.ietf.org/html/rfc4253#section-6.4
+        buffer.seqn += Wrapping(1);
+        buffer.len = 0;
+        Ok(result)
     }
 
     pub fn write(&self, payload: &[u8], buffer: &mut SSHBuffer) {

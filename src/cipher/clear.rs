@@ -33,7 +33,7 @@ impl super::OpeningKey for Key {
     fn open<'a>(&self, _seqn: u32, ciphertext_in_plaintext_out: &'a mut [u8], tag: &[u8])
             -> Result<&'a [u8], Error> {
         debug_assert_eq!(tag.len(), self.tag_len());
-        Ok(ciphertext_in_plaintext_out)
+        Ok(&ciphertext_in_plaintext_out[4..])
     }
 }
 

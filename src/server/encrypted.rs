@@ -34,7 +34,7 @@ impl Session {
                                              buf: &[u8],
                                              buffer: &mut CryptoVec)
                                              -> Result<bool, Error> {
-
+        debug!("read_encrypted");
         // Either this packet is a KEXINIT, in which case we start a key re-exchange.
         if buf[0] == msg::KEXINIT {
             // Now, if we're encrypted:
@@ -60,6 +60,7 @@ impl Session {
         let mut is_authenticated = false;
         if let Some(ref mut enc) = self.0.encrypted {
             let state = std::mem::replace(&mut enc.state, None);
+            debug!("state = {:?} {:?} {:?}", state, buf[0], msg::SERVICE_REQUEST);
             match state {
                 Some(EncryptedState::WaitingServiceRequest) if buf[0] == msg::SERVICE_REQUEST => {
 

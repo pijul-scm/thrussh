@@ -50,9 +50,9 @@
 //!     let server = {
 //!         let mut config = thrussh::server::Config::default();
 //!         config.keys.push(thrussh::key::Algorithm::generate_keypair(thrussh::key::ED25519).unwrap());
+//!         let config = Arc::new(config);
 //!         let sh = sh.clone();
-//!         let mut server = thrussh::server::Server::new(config, "0.0.0.0:2222", sh);
-//!         std::thread::spawn(move || server.run())
+//!         std::thread::spawn(move || thrussh::server::run(config, "0.0.0.0:2222", sh));
 //!     };
 //!     {
 //!         let mut ch = H::default();
@@ -92,6 +92,11 @@ extern crate rustc_serialize; // config: read base 64.
 extern crate untrusted;
 extern crate regex;
 extern crate cryptovec;
+
+#[macro_use]
+extern crate tokio_core;
+#[macro_use]
+extern crate futures;
 
 use std::io::{Read, BufRead, BufReader, Seek, SeekFrom, Write};
 use byteorder::{BigEndian, WriteBytesExt};
@@ -153,7 +158,14 @@ pub enum Error {
     AuthFailed,
     User(user::Error)
 }
-
+impl Error {
+    fn kind(&self) -> std::io::ErrorKind {
+        match *self {
+            Error::IO(ref e) => e.kind(),
+            _ => std::io::ErrorKind::Other
+        }
+    }
+}
 use std::error::Error as StdError;
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {

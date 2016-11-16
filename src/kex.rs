@@ -147,7 +147,10 @@ impl Algorithm {
 
         debug!("{:?} {:?}",
                 std::str::from_utf8(&exchange.client_id),
-                std::str::from_utf8(&exchange.server_id));
+               std::str::from_utf8(&exchange.server_id));
+        let a:&[u8] = exchange.client_kex_init.deref();
+        let b:&[u8] = exchange.server_kex_init.deref();
+        debug!("{:?} {:?}", a, b);
         buffer.clear();
         buffer.extend_ssh_string(&exchange.client_id);
         buffer.extend_ssh_string(&exchange.server_id);
@@ -168,7 +171,9 @@ impl Algorithm {
             buffer.extend_ssh_mpint(&shared);
         }
         debug!("buffer len = {:?}", buffer.len());
-        debug!("buffer: {:?}", &buffer);
+        use std::ops::Deref;
+        let b:&[u8] = buffer.deref();
+        debug!("buffer: {:?}", b);
         // super::hexdump(buffer);
         let hash = digest::digest(&digest::SHA256, &buffer);
         debug!("hash: {:?}", hash);
