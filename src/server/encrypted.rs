@@ -89,6 +89,8 @@ impl Session {
                                                             buffer,
                                                             &mut self.0.auth_user,
                                                             auth_request);
+                    } else if buf[0] == msg::USERAUTH_INFO_REQUEST {
+                        unimplemented!()
                     } else {
                         // Wrong request
                         enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
@@ -474,37 +476,31 @@ impl Encrypted {
                         if is_real != 0 {
 
                             let pos0 = r.position;
+                            if let Some(CurrentRequest::PublicKey { ref key, ref algo, sent_pk_ok }) = auth_request.current {
+                                if (sent_pk_ok && user == auth_user) || (auth_user.len() == 0 && server.auth_publickey(user, &pubkey)) {
 
-                            if (auth_request.sent_pk_ok && user == auth_user) ||
-                               (auth_user.len() == 0 && server.auth_publickey(user, &pubkey)) {
+                                    let signature = try!(r.read_string());
+                                    let mut s = signature.reader(0);
+                                    // let algo_ =
+                                    try!(s.read_string());
+                                    let sig = try!(s.read_string());
 
-                                let signature = try!(r.read_string());
-                                let mut s = signature.reader(0);
-                                // let algo_ =
-                                try!(s.read_string());
-                                let sig = try!(s.read_string());
-
-                                buffer.clear();
-                                buffer.extend_ssh_string(self.session_id.as_ref());
-                                buffer.extend(&buf[0..pos0]);
-                                // Verify signature.
-                                if pubkey.verify_detached(&buffer, sig) {
-                                    debug!("signature verified");
-                                    server_auth_request_success(&mut self.write);
-                                    self.state = Some(EncryptedState::Authenticated);
-                                    Ok(true)
-                                } else {
-                                    debug!("wrong signature");
-                                    auth_user.clear();
-                                    self.reject_auth_request(auth_request);
-                                    Ok(false)
+                                    buffer.clear();
+                                    buffer.extend_ssh_string(self.session_id.as_ref());
+                                    buffer.extend(&buf[0..pos0]);
+                                    // Verify signature.
+                                    if pubkey.verify_detached(&buffer, sig) {
+                                        debug!("signature verified");
+                                        server_auth_request_success(&mut self.write);
+                                        self.state = Some(EncryptedState::Authenticated);
+                                        return Ok(true)
+                                    }
                                 }
-                            } else {
-                                debug!("rejected");
-                                auth_user.clear();
-                                self.reject_auth_request(auth_request);
-                                Ok(false)
                             }
+                            debug!("rejected");
+                            auth_user.clear();
+                            self.reject_auth_request(auth_request);
+                            Ok(false)
 
                         } else {
 
@@ -512,9 +508,25 @@ impl Encrypted {
 
                                 auth_user.clear();
                                 auth_user.push_str(user);
-                                auth_request.public_key.extend(pubkey_key);
-                                auth_request.public_key_algorithm.extend(pubkey_algo);
-                                server_send_pk_ok(&mut self.write, &mut auth_request);
+
+                                let mut public_key = CryptoVec::new();
+                                public_key.extend(pubkey_key);
+
+                                let mut algo = CryptoVec::new();
+                                algo.extend(pubkey_algo);
+
+                                push_packet!(buffer, {
+                                    buffer.push(msg::USERAUTH_PK_OK);
+                                    buffer.extend_ssh_string(&pubkey_algo);
+                                    buffer.extend_ssh_string(&pubkey_key);
+                                });
+
+                                auth_request.current = Some(CurrentRequest::PublicKey {
+                                    key: public_key,
+                                    algo: algo,
+                                    sent_pk_ok: true,
+                                });
+
                                 self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
                                 Ok(true)
                             } else {
@@ -533,6 +545,18 @@ impl Encrypted {
                     Err(e) => return Err(e),
                 }
                 // Other methods of the base specification are insecure or optional.
+            } else if method == b"keyboard-interactive" {
+
+                let language_tag = try!(r.read_string());
+                let submethods = try!(std::str::from_utf8(try!(r.read_string())));
+
+                debug!("{:?}", submethods);
+                server.auth_keyboard_interactive(user, submethods);
+
+                self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+
+                Ok(false)
+                
             } else {
                 let count = auth_request.rejection_count;
                 self.reject_auth_request(auth_request);
@@ -551,7 +575,7 @@ impl Encrypted {
             self.write.extend_list(auth_request.methods);
             self.write.push(if auth_request.partial_success { 1 } else { 0 });
         });
-        auth_request.sent_pk_ok = false;
+        auth_request.current = None;
         auth_request.rejection_count += 1;
         debug!("packet pushed");
         self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
@@ -580,10 +604,7 @@ fn server_accept_service(banner: Option<&str>,
     AuthRequest {
         methods: methods,
         partial_success: false, // not used immediately anway.
-        public_key: CryptoVec::new(),
-        public_key_algorithm: CryptoVec::new(),
-        sent_pk_ok: false,
-        public_key_is_ok: false,
+        current: None,
         rejection_count: 0,
     }
 }
@@ -596,14 +617,8 @@ fn server_auth_request_success(buffer: &mut CryptoVec) {
     })
 }
 
-fn server_send_pk_ok(buffer: &mut CryptoVec, auth_request: &mut AuthRequest) {
-    push_packet!(buffer, {
-        buffer.push(msg::USERAUTH_PK_OK);
-        buffer.extend_ssh_string(&auth_request.public_key_algorithm);
-        buffer.extend_ssh_string(&auth_request.public_key);
-    });
-    auth_request.sent_pk_ok = true;
-}
+/*fn server_send_pk_ok(buffer: &mut CryptoVec, auth_request: &mut AuthRequest) {
+}*/
 
 fn server_confirm_channel_open(buffer: &mut CryptoVec, channel: &Channel, config: &super::Config) {
 

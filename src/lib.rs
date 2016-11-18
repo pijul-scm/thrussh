@@ -156,7 +156,8 @@ pub enum Error {
     NoSSHConfig,
     NoHostName,
     AuthFailed,
-    User(user::Error)
+    User(user::Error),
+    ConnectionTimeout,
 }
 impl Error {
     fn kind(&self) -> std::io::ErrorKind {
@@ -199,6 +200,7 @@ impl std::error::Error for Error {
             Error::NoSSHConfig => "The SSH config file was not found.",
             Error::NoHostName => "No host name was given",
             Error::AuthFailed => "Authentication failed",
+            Error::ConnectionTimeout => "Connection timout",
         }
     }
     fn cause(&self) -> Option<&std::error::Error> {

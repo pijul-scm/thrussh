@@ -70,10 +70,7 @@ impl super::Session {
                             let auth_request = auth::AuthRequest {
                                 methods: auth::MethodSet::all(),
                                 partial_success: false,
-                                public_key: CryptoVec::new(),
-                                public_key_algorithm: CryptoVec::new(),
-                                public_key_is_ok: false,
-                                sent_pk_ok: false,
+                                current: None,
                                 rejection_count: 0,
                             };
 
@@ -112,7 +109,9 @@ impl super::Session {
 
                     } else if buf[0] == msg::USERAUTH_PK_OK {
 
-                        auth_request.public_key_is_ok = true;
+                        if let Some(auth::CurrentRequest::PublicKey { ref mut sent_pk_ok, .. }) = auth_request.current {
+                            *sent_pk_ok = true;
+                        }
                         if let Some(ref auth_method) = self.0.auth_method {
                             enc.client_send_signature(&self.0.auth_user, auth_method, buffer);
                         }

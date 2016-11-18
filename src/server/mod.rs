@@ -30,9 +30,6 @@ use encoding::{Encoding, Reader};
 use session::*;
 use auth;
 
-use byteorder::{BigEndian, ByteOrder};
-use ring::rand;
-
 mod encrypted;
 
 #[derive(Debug)]
@@ -59,7 +56,7 @@ pub struct Config {
     /// Maximal number of allowed authentication attempts.
     pub max_auth_attempts: usize,
     /// Time after which the connection is garbage-collected.
-    pub connection_timeout: std::time::Duration,
+    pub connection_timeout: Option<std::time::Duration>,
 }
 
 impl Default for Config {
@@ -77,7 +74,7 @@ impl Default for Config {
             limits: Limits::default(),
             preferred: Default::default(),
             max_auth_attempts: 10,
-            connection_timeout: std::time::Duration::from_secs(600),
+            connection_timeout: Some(std::time::Duration::from_secs(600)),
         }
     }
 }
@@ -130,6 +127,15 @@ pub trait Handler {
     /// than that.
     #[allow(unused_variables)]
     fn auth_publickey(&mut self, user: &str, public_key: &key::PublicKey) -> bool {
+        false
+    }
+
+    /// Check authentication using the "keyboard-interactive"
+    /// method. Thrussh makes sure rejection happens in time
+    /// `config.auth_rejection_time`, except if this method takes more
+    /// than that.
+    #[allow(unused_variables)]
+    fn auth_keyboard_interactive(&mut self, user: &str, submethods: &str) -> bool {
         false
     }
 
@@ -414,8 +420,6 @@ impl KexDh {
     }
 }
 
-const AT_LEAST_ONE_PACKET: u8 = 1;
-const AUTH_REJECTED: u8 = 2;
 
 enum Status {
     Ok,
@@ -807,15 +811,10 @@ impl Session {
 }
 
 use std::io::BufReader;
-use std::collections::{HashMap, BTreeSet, VecDeque};
-use std::collections::hash_map::Entry;
-
 use std::net::ToSocketAddrs;
-use std::time::Duration;
 
 use futures::stream::Stream;
 use futures::{Future, Poll, Async};
-use tokio_core::io::{copy, Io, write_all, read_until};
 use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::reactor::{Core, Timeout, Handle};
 
@@ -827,15 +826,18 @@ pub fn run<H:Handler+Clone+'static>(config: Arc<Config>, addr: &str, handler: H)
     let handle = Arc::new(l.handle());
     let socket = TcpListener::bind(&addr, &handle).unwrap();
 
-    let mut buffer0 = CryptoVec::new();
-    let mut buffer1 = CryptoVec::new();
-
     let done = socket.incoming().for_each(move |(socket, addr)| {
         
         let co = server::Connection::new(config.clone());
         let rec = ClientRecord {
             stream: BufReader::new(socket),
             addr: addr,
+            timeout:
+            if let Some(t) = config.connection_timeout {
+                Some(try!(Timeout::new(t, &handle)))
+            } else {
+                None
+            },
             state: State::Read,
             connection: co,
             buffer0: CryptoVec::new(),
@@ -849,9 +851,7 @@ pub fn run<H:Handler+Clone+'static>(config: Arc<Config>, addr: &str, handler: H)
             println!("err {:?}", err)
         }));
         Ok(())
-
     });
-
     l.run(done).unwrap();
 }
 
@@ -859,6 +859,7 @@ struct ClientRecord<H> {
     stream: BufReader<TcpStream>,
     addr: std::net::SocketAddr,
     state: State,
+    timeout: Option<Timeout>,
     connection: Connection,
     buffer0: CryptoVec,
     buffer1: CryptoVec,
@@ -877,11 +878,21 @@ impl<H:Handler> Future for ClientRecord<H> {
     type Item = ();
     type Error = Error;
     fn poll(&mut self) -> Poll<(), Error> {
+        if let Some(ref mut timeout) = self.timeout {
+            match try!(timeout.poll()) {
+                Async::Ready(()) => {
+                    try!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
+                    debug!("Timeout, shutdown");
+                    return Ok(Async::Ready(()))
+                },
+                Async::NotReady => {
+                }
+            }
+        }
         loop {
-            println!("looping");
             match self.state {
                 State::Read => {
-                    println!("state: read, write: {:?}", self.connection.session.0.write_buffer);
+                    debug!("state: read");
                     let status = try_ready!(
                         self.connection
                             .read_one_packet(&mut self.handler, &mut self.stream,
@@ -901,14 +912,14 @@ impl<H:Handler> Future for ClientRecord<H> {
                     continue;
                 }
                 State::Write => {
-                    println!("state: write");
+                    debug!("state: write");
                     if try_nb!(self.connection.write(self.stream.get_mut())) {
                         self.state = State::Read;
                     }
                     continue;
                 }
                 State::Timeout(ref mut t) => {
-                    println!("state: timeout");
+                    debug!("state: timeout");
                     try_nb!(t.poll());
                 }
             };

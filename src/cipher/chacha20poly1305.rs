@@ -46,13 +46,17 @@ fn make_sealing_cipher(key: &[u8]) -> super::SealingCipher {
 impl super::OpeningKey for OpeningKey {
     fn decrypt_packet_length(&self,
                              sequence_number: u32,
-                             encrypted_packet_length: [u8; 4]) -> [u8; 4] {
+                             encrypted_packet_length: [u8; 4])
+                             -> [u8; 4] {
         <OpeningKey>::decrypt_packet_length(self, sequence_number, encrypted_packet_length)
     }
 
-    fn tag_len(&self) -> usize { TAG_LEN }
+    fn tag_len(&self) -> usize {
+        TAG_LEN
+    }
 
-    fn open<'a>(&self, sequence_number: u32,
+    fn open<'a>(&self,
+                sequence_number: u32,
                 ciphertext_in_plaintext_out: &'a mut [u8],
                 tag: &[u8])
                 -> Result<&'a [u8], Error> {
@@ -63,6 +67,21 @@ impl super::OpeningKey for OpeningKey {
 }
 
 impl super::SealingKey for SealingKey {
+    fn padding_length(&self, payload: &[u8]) -> usize {
+        let block_size = 8;
+        let extra_len = super::PACKET_LENGTH_LEN + super::PADDING_LENGTH_LEN;
+        let padding_len = if payload.len() + extra_len <= super::MINIMUM_PACKET_LEN {
+            super::MINIMUM_PACKET_LEN - payload.len() - super::PADDING_LENGTH_LEN
+        } else {
+            (block_size - ((super::PADDING_LENGTH_LEN + payload.len()) % block_size))
+        };
+        if padding_len < super::PACKET_LENGTH_LEN {
+            padding_len + block_size
+        } else {
+            padding_len
+        }
+    }
+
     // As explained in "SSH via CTR mode with stateful decryption" in
     // https://openvpn.net/papers/ssh-security.pdf, the padding doesn't need to
     // be random because we're doing stateful counter-mode encryption. Use
@@ -73,13 +92,16 @@ impl super::SealingKey for SealingKey {
         }
     }
 
-    fn tag_len(&self) -> usize { TAG_LEN }
+    fn tag_len(&self) -> usize {
+        TAG_LEN
+    }
 
     /// Append an encrypted packet with contents `packet_content` at the end of `buffer`.
     fn seal(&self,
             sequence_number: u32,
             plaintext_in_ciphertext_out: &mut [u8],
             tag_out: &mut [u8]) {
+
         let tag_out = array_mut_ref![tag_out, 0, TAG_LEN];
         self.seal_in_place(sequence_number, plaintext_in_ciphertext_out, tag_out);
     }

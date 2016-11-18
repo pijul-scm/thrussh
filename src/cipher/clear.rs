@@ -28,16 +28,33 @@ impl super::OpeningKey for Key {
         packet_length
     }
 
-    fn tag_len(&self) -> usize { 0 }
+    fn tag_len(&self) -> usize {
+        0
+    }
 
-    fn open<'a>(&self, _seqn: u32, ciphertext_in_plaintext_out: &'a mut [u8], tag: &[u8])
-            -> Result<&'a [u8], Error> {
+    fn open<'a>(&self,
+                _seqn: u32,
+                ciphertext_in_plaintext_out: &'a mut [u8],
+                tag: &[u8])
+                -> Result<&'a [u8], Error> {
         debug_assert_eq!(tag.len(), self.tag_len());
         Ok(&ciphertext_in_plaintext_out[4..])
     }
 }
 
 impl super::SealingKey for Key {
+    // Cleartext packets (including lengths) must be multiple of 8 in
+    // length.
+    fn padding_length(&self, payload: &[u8]) -> usize {
+        let block_size = 8;
+        let padding_len = block_size - ((5 + payload.len()) % block_size);
+        if padding_len < 4 {
+            padding_len + block_size
+        } else {
+            padding_len
+        }
+    }
+
     fn fill_padding(&self, padding_out: &mut [u8]) {
         // Since the packet is unencrypted anyway, there's no advantage to
         // randomizing the padding, so avoid possibly leaking extra RNG state
@@ -47,7 +64,9 @@ impl super::SealingKey for Key {
         }
     }
 
-    fn tag_len(&self) -> usize { 0 }
+    fn tag_len(&self) -> usize {
+        0
+    }
 
     fn seal(&self, _seqn: u32, _plaintext_in_ciphertext_out: &mut [u8], tag_out: &mut [u8]) {
         debug_assert_eq!(tag_out.len(), self.tag_len());

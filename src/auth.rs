@@ -22,7 +22,8 @@ bitflags! {
         const NONE = 1,
         const PASSWORD = 2,
         const PUBLICKEY = 4,
-        const HOSTBASED = 8
+        const HOSTBASED = 8,
+        const KEYBOARD_INTERACTIVE = 16
     }
 }
 
@@ -45,6 +46,7 @@ impl Iterator for MethodSet {
         iter!(self, PASSWORD);
         iter!(self, PUBLICKEY);
         iter!(self, HOSTBASED);
+        iter!(self, KEYBOARD_INTERACTIVE);
         None
     }
 }
@@ -67,6 +69,7 @@ impl encoding::Bytes for MethodSet {
             PASSWORD => b"password",
             PUBLICKEY => b"publickey",
             HOSTBASED => b"hostbased",
+            KEYBOARD_INTERACTIVE => b"keyboard-interactive",
             _ => b"",
         }
     }
@@ -79,6 +82,7 @@ impl MethodSet {
             b"password" => Some(PASSWORD),
             b"publickey" => Some(PUBLICKEY),
             b"hostbased" => Some(HOSTBASED),
+            b"keyboard-interactive" => Some(KEYBOARD_INTERACTIVE),
             _ => None,
         }
     }
@@ -89,9 +93,16 @@ impl MethodSet {
 pub struct AuthRequest {
     pub methods: MethodSet,
     pub partial_success: bool,
-    pub public_key: CryptoVec,
-    pub public_key_algorithm: CryptoVec,
-    pub public_key_is_ok: bool,
-    pub sent_pk_ok: bool,
+    pub current: Option<CurrentRequest>,
     pub rejection_count: usize
+}
+
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum CurrentRequest {
+    PublicKey {
+        key: CryptoVec,
+        algo: CryptoVec,
+        sent_pk_ok: bool
+    }
 }

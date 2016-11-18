@@ -39,6 +39,11 @@ pub const USERAUTH_SUCCESS: u8 = 52;
 pub const USERAUTH_BANNER: u8 = 53;
 pub const USERAUTH_PK_OK: u8 = 60;
 
+// https://tools.ietf.org/html/rfc4256#section-5
+pub const USERAUTH_INFO_REQUEST:u8 = 60;
+pub const USERAUTH_INFO_RESPONSE:u8 = 61;
+
+
 // https://tools.ietf.org/html/rfc4254#section-9
 pub const GLOBAL_REQUEST: u8 = 80;
 pub const REQUEST_SUCCESS: u8 = 81;

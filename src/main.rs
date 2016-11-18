@@ -29,6 +29,7 @@ impl thrussh::client::Handler for H {
 fn main() {
     env_logger::init().unwrap();
     let mut config = thrussh::server::Config::default();
+    config.connection_timeout = Some(std::time::Duration::from_secs(600));
     config.keys.push(thrussh::load_secret_key("ssh_host_ed25519_key").unwrap());
     let config = Arc::new(config);
     let sh = H::default();

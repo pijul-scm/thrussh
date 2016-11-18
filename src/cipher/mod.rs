@@ -24,6 +24,7 @@ pub mod chacha20poly1305;
 pub mod clear;
 
 
+
 pub struct Cipher {
     pub name: Name,
     pub key_len: usize,
@@ -88,11 +89,16 @@ pub trait OpeningKey {
 
     fn tag_len(&self) -> usize;
 
-    fn open<'a>(&self, seqn: u32, ciphertext_in_plaintext_out: &'a mut [u8], tag: &[u8])
-            -> Result<&'a [u8], Error>;
+    fn open<'a>(&self,
+                seqn: u32,
+                ciphertext_in_plaintext_out: &'a mut [u8],
+                tag: &[u8])
+                -> Result<&'a [u8], Error>;
 }
 
 pub trait SealingKey {
+    fn padding_length(&self, plaintext: &[u8]) -> usize;
+
     fn fill_padding(&self, padding_out: &mut [u8]);
 
     fn tag_len(&self) -> usize;
@@ -130,7 +136,9 @@ fn read(stream: &mut BufRead,
 
 
 impl CipherPair {
-    pub fn read<'a>(&self, stream: &mut BufRead, buffer: &'a mut SSHBuffer)
+    pub fn read<'a>(&self,
+                    stream: &mut BufRead,
+                    buffer: &'a mut SSHBuffer)
                     -> Result<Option<&'a [u8]>, Error> {
 
         debug!("cipherpair::read {:?}", buffer.len);
@@ -152,7 +160,7 @@ impl CipherPair {
         try!(read(stream, &mut buffer.buffer, buffer.len, &mut buffer.bytes));
         use std::ops::Deref;
         {
-            let a:&[u8] = buffer.buffer.deref();
+            let a: &[u8] = buffer.buffer.deref();
             debug!("buffer: {:?}", a);
         }
         let ciphertext_len = buffer.buffer.len() - key.tag_len();
@@ -162,8 +170,8 @@ impl CipherPair {
         debug!("clear: {:?}", plaintext);
         let padding_length = plaintext[0] as usize;
         let plaintext_end = try!(plaintext.len()
-                                 .checked_sub(padding_length)
-                                 .ok_or(Error::IndexOutOfBounds));
+            .checked_sub(padding_length)
+            .ok_or(Error::IndexOutOfBounds));
         debug!("padding length {:?} {:?}", padding_length, plaintext);
         let result = Some(&plaintext[1..plaintext_end]);
 
@@ -180,25 +188,11 @@ impl CipherPair {
         // The variables `payload`, `packet_length` and `padding_length` refer
         // to the protocol fields of the same names.
 
-        // Pad to "a multiple of the cipher block size or 8, whichever is
-        // larger". Currently no block ciphers are supported so there is no
-        // block size to be larger than 8.
-        let block_size = MINIMUM_BLOCK_SIZE_FOR_PADDING;
-        let unpadded_len = PACKET_LENGTH_LEN + PADDING_LENGTH_LEN + payload.len();
-        let mut padding_length = match unpadded_len % block_size {
-            0 => 0,
-            n => block_size - n,
-        };
-        // RFC 4253 says "There MUST be at least four bytes of padding."
-        if padding_length < 4 {
-            padding_length += block_size;
-        };
-        debug_assert_eq!((unpadded_len + padding_length) % block_size, 0);
-
-        let packet_length = PADDING_LENGTH_LEN + payload.len() + padding_length;
-
-        let offset = buffer.buffer.len();
         let key = self.local_to_remote.as_sealing_key();
+
+        let padding_length = key.padding_length(payload);
+        let packet_length = PADDING_LENGTH_LEN + payload.len() + padding_length;
+        let offset = buffer.buffer.len();
 
         // Maximum packet length:
         // https://tools.ietf.org/html/rfc4253#section-6.1
@@ -211,10 +205,13 @@ impl CipherPair {
         key.fill_padding(buffer.buffer.reserve(padding_length));
         buffer.buffer.reserve(key.tag_len());
 
-        let (plaintext, tag) = buffer.buffer[offset..]
-                                     .split_at_mut(PACKET_LENGTH_LEN + packet_length);
+        {
+            let (plaintext, tag) = buffer.buffer[offset..]
+                .split_at_mut(PACKET_LENGTH_LEN + packet_length);
 
-        key.seal(buffer.seqn.0, plaintext, tag);
+            key.seal(buffer.seqn.0, plaintext, tag);
+            debug!("write sealed: {:?}", plaintext);
+        }
 
         // Sequence numbers are on 32 bits and wrap.
         // https://tools.ietf.org/html/rfc4253#section-6.4
@@ -222,10 +219,9 @@ impl CipherPair {
     }
 }
 
-// RFC 4253 makes reference to "the cipher block size or 8, whichever is
-// larger" when specifying how the padding works. This is the "8" in "or 8".
-const MINIMUM_BLOCK_SIZE_FOR_PADDING: usize = 8;
 
 pub const PACKET_LENGTH_LEN: usize = 4;
+
+const MINIMUM_PACKET_LEN: usize = 16;
 
 const PADDING_LENGTH_LEN: usize = 1;
