@@ -18,6 +18,22 @@ impl thrussh::server::Handler for H {
         h.password.push_str(password);
         true
     }
+    fn auth_keyboard_interactive(&mut self, user: &str, submethods: &str, ki: &mut thrussh::server::KeyboardInteractive, response: Option<thrussh::server::Response>) -> bool {
+
+        if let Some(mut resp) = response {
+
+            for resp in resp {
+                println!("resp: {:?}", resp)
+            }
+            true
+
+        } else {
+
+            ki.prompt("Password: ", false);
+            false
+
+        }
+    }
 }
 impl thrussh::client::Handler for H {
     fn check_server_key(&mut self, server_public_key: &thrussh::key::PublicKey) -> Result<bool, thrussh::Error> {

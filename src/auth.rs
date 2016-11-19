@@ -104,5 +104,8 @@ pub enum CurrentRequest {
         key: CryptoVec,
         algo: CryptoVec,
         sent_pk_ok: bool
+    },
+    KeyboardInteractive {
+        submethods: String
     }
 }

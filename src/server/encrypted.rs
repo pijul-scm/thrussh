@@ -89,8 +89,8 @@ impl Session {
                                                             buffer,
                                                             &mut self.0.auth_user,
                                                             auth_request);
-                    } else if buf[0] == msg::USERAUTH_INFO_REQUEST {
-                        unimplemented!()
+                    } else if buf[0] == msg::USERAUTH_INFO_RESPONSE {
+                        return enc.read_userauth_info_response(server, &self.0.auth_user, auth_request, buf)
                     } else {
                         // Wrong request
                         enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
@@ -549,14 +549,17 @@ impl Encrypted {
 
                 let language_tag = try!(r.read_string());
                 let submethods = try!(std::str::from_utf8(try!(r.read_string())));
-
                 debug!("{:?}", submethods);
-                server.auth_keyboard_interactive(user, submethods);
+                let success = try!(userauth_info_request(server, user, submethods, &mut self.write, None));
 
-                self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
-
-                Ok(false)
-                
+                if success {
+                    self.state = Some(EncryptedState::Authenticated);
+                    Ok(true)
+                } else {
+                    auth_request.current = Some(CurrentRequest::KeyboardInteractive { submethods: submethods.to_string() });
+                    self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+                    Ok(false)
+                }
             } else {
                 let count = auth_request.rejection_count;
                 self.reject_auth_request(auth_request);
@@ -566,6 +569,28 @@ impl Encrypted {
             // Unknown service
             Err(Error::Inconsistent)
         }
+    }
+
+    fn read_userauth_info_response<S:Handler>(&mut self, server: &mut S, user: &str, auth_request: AuthRequest, b: &[u8]) -> Result<bool, Error> {
+        let succ =
+            if let Some(CurrentRequest::KeyboardInteractive{ ref submethods }) = auth_request.current {
+
+                let mut r = b.reader(1);
+                let n = try!(r.read_u32());
+                let response = Response {
+                    pos: r,
+                    n: n
+                };
+                try!(userauth_info_request(server, user, submethods, &mut self.write, Some(response)))
+            } else {
+                false
+            };
+        if succ {
+            self.state = Some(EncryptedState::Authenticated);
+        } else {
+            self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+        }
+        Ok(succ)
     }
 
     fn reject_auth_request(&mut self, mut auth_request: AuthRequest) {
@@ -582,6 +607,27 @@ impl Encrypted {
     }
 }
 
+fn userauth_info_request<S:Handler>(server: &mut S, user: &str, submethods: &str, write: &mut CryptoVec, response: Option<Response>) -> Result<bool, Error> {
+    let mut success = false;
+    let l0 = write.len();
+    push_packet!(write, {
+        write.push(msg::USERAUTH_INFO_REQUEST);
+        let (n, l) = {
+            let mut ki = KeyboardInteractive::new(write);
+            success = server.auth_keyboard_interactive(
+                user, submethods, &mut ki, response
+            );
+            (ki.n, ki.l)
+        };
+        use byteorder::{BigEndian, ByteOrder};
+        BigEndian::write_u32(&mut write[l..], n);
+    });
+    if success {
+        write.resize(l0);
+        server_auth_request_success(write);
+    }
+    Ok(success)
+}
 
 fn server_accept_service(banner: Option<&str>,
                          methods: auth::MethodSet,

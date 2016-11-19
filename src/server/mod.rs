@@ -103,6 +103,58 @@ impl std::ops::DerefMut for Connection {
     }
 }
 
+pub struct KeyboardInteractive<'a> {
+    l: usize,
+    n: u32,
+    buf: &'a mut CryptoVec,
+}
+
+impl<'a> KeyboardInteractive<'a> {
+    pub fn new(buf: &'a mut CryptoVec) -> Self {
+        KeyboardInteractive {
+            l: 0,
+            n: 0,
+            buf: buf
+        }
+    }
+    pub fn preamble(&mut self, name: &str, instr: &str) {
+        if self.l != 0 {
+            info!("KeyboardInteractive.preamble() can only be called once")
+        } else {
+            self.buf.extend_ssh_string(name.as_bytes());
+            self.buf.extend_ssh_string(instr.as_bytes());
+            self.buf.extend_ssh_string(b""); // lang, should be empty
+            self.l = self.buf.len();
+            self.buf.extend(b"\0\0\0\0");
+        }
+    }
+    pub fn prompt(&mut self, prompt: &str, echo: bool) {
+        if self.l == 0 {
+            self.preamble("", "")
+        }
+        self.buf.extend_ssh_string(prompt.as_bytes());
+        self.buf.push(if echo { 1 } else { 0 });
+        self.n += 1
+    }
+}
+
+pub struct Response<'a> {
+    pos: super::encoding::Position<'a>,
+    n: u32
+}
+
+impl<'a> Iterator for Response<'a> {
+    type Item = &'a [u8];
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.n == 0 {
+            None
+        } else {
+            self.n -= 1;
+            self.pos.read_string().ok()
+        }
+    }
+}
+
 pub trait Handler {
     /// Check authentication using the "none" method. Thrussh makes
     /// sure rejection happens in time `config.auth_rejection_time`,
@@ -135,7 +187,7 @@ pub trait Handler {
     /// `config.auth_rejection_time`, except if this method takes more
     /// than that.
     #[allow(unused_variables)]
-    fn auth_keyboard_interactive(&mut self, user: &str, submethods: &str) -> bool {
+    fn auth_keyboard_interactive(&mut self, user: &str, submethods: &str, ki: &mut KeyboardInteractive, response: Option<Response>) -> bool {
         false
     }
 
@@ -827,17 +879,17 @@ pub fn run<H:Handler+Clone+'static>(config: Arc<Config>, addr: &str, handler: H)
     let socket = TcpListener::bind(&addr, &handle).unwrap();
 
     let done = socket.incoming().for_each(move |(socket, addr)| {
-        
+
         let co = server::Connection::new(config.clone());
+        let timeout = if let Some(t) = config.connection_timeout {
+            Some(try!(Timeout::new(t, &handle)))
+        } else {
+            None
+        };
         let rec = ClientRecord {
             stream: BufReader::new(socket),
             addr: addr,
-            timeout:
-            if let Some(t) = config.connection_timeout {
-                Some(try!(Timeout::new(t, &handle)))
-            } else {
-                None
-            },
+            timeout: timeout,
             state: State::Read,
             connection: co,
             buffer0: CryptoVec::new(),
@@ -846,7 +898,7 @@ pub fn run<H:Handler+Clone+'static>(config: Arc<Config>, addr: &str, handler: H)
             config: config.clone(),
             l: handle.clone()
         };
-        
+
         handle.spawn(rec.map_err(|err| {
             println!("err {:?}", err)
         }));
