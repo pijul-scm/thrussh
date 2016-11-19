@@ -139,7 +139,7 @@ impl CipherPair {
     pub fn read<'a>(&self,
                     stream: &mut BufRead,
                     buffer: &'a mut SSHBuffer)
-                    -> Result<Option<&'a [u8]>, Error> {
+                    -> Result<&'a [u8], Error> {
 
         debug!("cipherpair::read {:?}", buffer.len);
         let key = self.remote_to_local.as_opening_key();
@@ -173,13 +173,12 @@ impl CipherPair {
             .checked_sub(padding_length)
             .ok_or(Error::IndexOutOfBounds));
         debug!("padding length {:?} {:?}", padding_length, plaintext);
-        let result = Some(&plaintext[1..plaintext_end]);
 
         // Sequence numbers are on 32 bits and wrap.
         // https://tools.ietf.org/html/rfc4253#section-6.4
         buffer.seqn += Wrapping(1);
         buffer.len = 0;
-        Ok(result)
+        Ok(&plaintext[1..plaintext_end])
     }
 
     pub fn write(&self, payload: &[u8], buffer: &mut SSHBuffer) {

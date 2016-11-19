@@ -28,6 +28,7 @@ pub struct SSHBuffer {
     // https://tools.ietf.org/html/rfc4253#section-6.4
     pub seqn: Wrapping<u32>,
 }
+
 impl SSHBuffer {
     pub fn new() -> Self {
         SSHBuffer {
@@ -37,38 +38,8 @@ impl SSHBuffer {
             seqn: Wrapping(0),
         }
     }
-    pub fn read_ssh_id<'a, R: BufRead>(&'a mut self,
-                                       stream: &'a mut R)
-                                       -> Result<Option<&'a [u8]>, Error> {
-        let i = {
-            let buf = try!(stream.fill_buf());
-            let mut i = 0;
-            while i < buf.len() {
-                match (buf.get(i), buf.get(i + 1)) {
-                    (Some(&u), Some(&v)) if u == b'\r' && v == b'\n' => break,
-                    _ => {}
-                }
-                i += 1
-            }
-            if buf.len() <= 8 {
-                // Not enough bytes. Don't consume, wait until we have more bytes.
-                return Ok(None);
-            } else if i >= buf.len() - 1 {
-                return Err(Error::Version);
-            }
-            if &buf[0..8] == b"SSH-2.0-" {
-                self.buffer.clear();
-                self.bytes += i + 2;
-                self.buffer.extend(&buf[0..i + 2]);
-                i
 
-            } else {
-                return Err(Error::Version);
-            }
-        };
-        stream.consume(i + 2);
-        Ok(Some(&self.buffer[0..i]))
-    }
+
     pub fn send_ssh_id(&mut self, id: &[u8]) {
         self.buffer.extend(id);
         self.buffer.push(b'\r');

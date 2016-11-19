@@ -109,6 +109,7 @@ impl Reader for [u8] {
     }
 }
 
+#[derive(Debug)]
 pub struct Position<'a> {
     s: &'a [u8],
     pub position: usize,

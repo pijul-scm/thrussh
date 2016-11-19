@@ -31,6 +31,66 @@ use std::sync::Arc;
 use ring::digest;
 use encoding::Encoding;
 use std::num::Wrapping;
+use futures;
+use futures::{Async, Poll};
+
+use std::io::BufRead;
+
+pub struct ReadSshId {
+    pub client_id: [u8; 256],
+    pub client_id_len: usize,
+}
+
+impl std::fmt::Debug for ReadSshId {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(fmt, "ReadSshId {{ client_id: {:?}, client_id_len: {:?} }}",
+               &self.client_id[..],
+               self.client_id_len)
+    }
+}
+
+impl ReadSshId {
+    pub fn client_id(&self) -> &[u8] {
+        &self.client_id[..self.client_id_len]
+    }
+    pub fn poll<R:BufRead>(&mut self, stream:&mut R) -> Poll<(), Error> {
+        let i = {
+            let buf = try!(stream.fill_buf());
+            let mut i = 0;
+            while i < buf.len() {
+                match (buf.get(i), buf.get(i + 1)) {
+                    (Some(&u), Some(&v)) if u == b'\r' && v == b'\n' => break,
+                    _ => {}
+                }
+                i += 1
+            }
+            if buf.len() <= 8 {
+                // Not enough bytes. Don't consume, wait until we have more bytes.
+                return Ok(Async::NotReady);
+            } else if i >= buf.len() - 1 {
+                return Err(Error::Version);
+            }
+            if &buf[0..8] == b"SSH-2.0-" {
+                (&mut self.client_id[..i]).clone_from_slice(&buf[..i]);
+                self.client_id_len = i;
+                i
+            } else {
+                return Err(Error::Version);
+            }
+        };
+        stream.consume(i + 2);
+        Ok(Async::Ready(()))
+    }
+}
+
+pub fn read_ssh_id() -> ReadSshId {
+    ReadSshId {
+        client_id: [0;256],
+        client_id_len: 0,
+    }
+}
+
+
 
 #[derive(Debug)]
 pub struct Encrypted {

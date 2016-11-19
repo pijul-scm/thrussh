@@ -25,15 +25,50 @@ use key::Verify;
 use negociation;
 use negociation::Select;
 use auth;
+use futures::{Async, Future, Poll};
+use futures;
+
+pub enum ReadEncrypted<H: Handler> {
+    Ok,
+    ReadAuthRequest(ReadAuthRequest<H>),
+    Authenticated(Authenticated<H>),
+}
+
+impl<H: Handler> ReadEncrypted<H> {
+    pub fn poll(&mut self, session: &mut Session, buffer: &mut CryptoVec) -> Poll<Status, Error> {
+        match *self {
+            ReadEncrypted::Ok => {
+                debug!("future: ok");
+                Ok(Async::Ready(Status::Ok))
+            }
+            ReadEncrypted::ReadAuthRequest(ref mut r) => {
+                debug!("future: read_auth_request");
+                if let Some(ref mut enc) = session.0.encrypted {
+                    match try_ready!(r.poll(enc, &mut session.0.auth_user, buffer)) {
+                        Auth::Reject => Ok(Async::Ready(Status::AuthRejected)),
+                        _ => Ok(Async::Ready(Status::Ok)),
+                    }
+                } else {
+                    unreachable!()
+                }
+            }
+            ReadEncrypted::Authenticated(ref mut r) => {
+                debug!("future: authenticated");
+                try_ready!(r.poll(session));
+                Ok(Async::Ready(Status::Ok))
+            }
+        }
+    }
+}
 
 impl Session {
     #[doc(hidden)]
     /// Returns false iff a request was rejected.
-    pub fn server_read_encrypted<S: Handler>(&mut self,
-                                             server: &mut S,
-                                             buf: &[u8],
-                                             buffer: &mut CryptoVec)
-                                             -> Result<bool, Error> {
+    pub fn server_read_encrypted<'a, S: Handler>(&mut self,
+                                                 server: &mut S,
+                                                 buf: &[u8],
+                                                 buffer: &mut CryptoVec)
+                                                 -> Result<ReadEncrypted<S>, Error> {
         debug!("read_encrypted");
         // Either this packet is a KEXINIT, in which case we start a key re-exchange.
         if buf[0] == msg::KEXINIT {
@@ -52,7 +87,7 @@ impl Session {
                                                                 buf,
                                                                 &mut self.0.write_buffer)));
                 }
-                return Ok(true);
+                return Ok(ReadEncrypted::Ok);
             }
         }
         // If we've successfully read a packet.
@@ -60,7 +95,10 @@ impl Session {
         let mut is_authenticated = false;
         if let Some(ref mut enc) = self.0.encrypted {
             let state = std::mem::replace(&mut enc.state, None);
-            debug!("state = {:?} {:?} {:?}", state, buf[0], msg::SERVICE_REQUEST);
+            debug!("state = {:?} {:?} {:?}",
+                   state,
+                   buf[0],
+                   msg::SERVICE_REQUEST);
             match state {
                 Some(EncryptedState::WaitingServiceRequest) if buf[0] == msg::SERVICE_REQUEST => {
 
@@ -84,13 +122,22 @@ impl Session {
                 }
                 Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                     if buf[0] == msg::USERAUTH_REQUEST {
-                        return enc.server_read_auth_request(server,
-                                                            buf,
-                                                            buffer,
-                                                            &mut self.0.auth_user,
-                                                            auth_request);
+                        return Ok(ReadEncrypted::ReadAuthRequest(
+                            try!(enc.server_read_auth_request(server,
+                                                         buf,
+                                                         buffer,
+                                                         &mut self.0.auth_user,
+                                                         auth_request))
+                        ));
                     } else if buf[0] == msg::USERAUTH_INFO_RESPONSE {
-                        return enc.read_userauth_info_response(server, &self.0.auth_user, auth_request, buf)
+
+                        return Ok(ReadEncrypted::ReadAuthRequest(
+                            try!(enc.read_userauth_info_response(server,
+                                                            &mut self.0.auth_user,
+                                                            auth_request,
+                                                            buf,
+                                                            buffer))
+                        ));
                     } else {
                         // Wrong request
                         enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
@@ -106,20 +153,21 @@ impl Session {
             }
         }
         if is_authenticated {
-            try!(self.server_read_authenticated(server, buf))
+            let auth = self.server_read_authenticated(server, buf).unwrap();
+            Ok(ReadEncrypted::Authenticated(auth))
+        } else {
+            Ok(ReadEncrypted::Ok)
         }
-        Ok(true)
     }
 
-    fn server_read_authenticated<S: Handler>(&mut self,
-                                             server: &mut S,
-                                             buf: &[u8])
-                                             -> Result<(), Error> {
+    fn server_read_authenticated<'a, S: Handler>(&'a mut self,
+                                                 server: &mut S,
+                                                 buf: &[u8])
+                                                 -> Result<Authenticated<S>, Error> {
         debug!("authenticated buf = {:?}", buf);
         match buf[0] {
             msg::CHANNEL_OPEN => {
-                try!(self.server_handle_channel_open(server, buf));
-                Ok(())
+                Ok(Authenticated::ChannelOpen(try!(self.server_handle_channel_open(server, buf))))
             }
             msg::CHANNEL_CLOSE => {
                 let mut r = buf.reader(1);
@@ -127,12 +175,12 @@ impl Session {
                 if let Some(ref mut enc) = self.0.encrypted {
                     enc.channels.remove(&channel_num);
                 }
-                server.channel_close(channel_num, self)
+                Ok(Authenticated::future_unit(server.channel_close(channel_num, self)))
             }
             msg::CHANNEL_EOF => {
                 let mut r = buf.reader(1);
                 let channel_num = try!(r.read_u32());
-                server.channel_eof(channel_num, self)
+                Ok(Authenticated::future_unit(server.channel_eof(channel_num, self)))
             }
             msg::CHANNEL_EXTENDED_DATA |
             msg::CHANNEL_DATA => {
@@ -163,14 +211,13 @@ impl Session {
                 } else {
                     unreachable!()
                 };
-                {
-                    if let Some(ext) = ext {
-                        try!(server.extended_data(channel_num, ext, &data, self));
-                    } else {
-                        try!(server.data(channel_num, &data, self));
-                    }
+                if let Some(ext) = ext {
+                    Ok(Authenticated::future_unit(
+                        server.extended_data(channel_num, ext, &data, self))
+                    )
+                } else {
+                    Ok(Authenticated::future_unit(server.data(channel_num, &data, self)))
                 }
-                Ok(())
             }
 
             msg::CHANNEL_WINDOW_ADJUST => {
@@ -184,8 +231,7 @@ impl Session {
                         return Err(Error::WrongChannel);
                     }
                 }
-                try!(server.window_adjusted(channel_num, self));
-                Ok(())
+                Ok(Authenticated::future_unit(server.window_adjusted(channel_num, self)))
             }
 
             msg::CHANNEL_REQUEST => {
@@ -224,59 +270,65 @@ impl Session {
                                 i += 1
                             }
                         }
-                        try!(server.pty_request(channel_num,
-                                                term,
-                                                col_width,
-                                                row_height,
-                                                pix_width,
-                                                pix_height,
-                                                &modes[0..i],
-                                                self));
+                        Ok(Authenticated::future_unit(server.pty_request(channel_num,
+                                                                         term,
+                                                                         col_width,
+                                                                         row_height,
+                                                                         pix_width,
+                                                                         pix_height,
+                                                                         &modes[0..i],
+                                                                         self)))
                     }
                     b"x11-req" => {
                         let single_connection = try!(r.read_byte()) != 0;
                         let x11_auth_protocol = try!(std::str::from_utf8(try!(r.read_string())));
                         let x11_auth_cookie = try!(std::str::from_utf8(try!(r.read_string())));
                         let x11_screen_number = try!(r.read_u32());
-                        try!(server.x11_request(channel_num,
-                                                single_connection,
-                                                x11_auth_protocol,
-                                                x11_auth_cookie,
-                                                x11_screen_number,
-                                                self));
+                        Ok(Authenticated::future_unit(server.x11_request(channel_num,
+                                                                         single_connection,
+                                                                         x11_auth_protocol,
+                                                                         x11_auth_cookie,
+                                                                         x11_screen_number,
+                                                                         self)))
                     }
                     b"env" => {
                         let env_variable = try!(std::str::from_utf8(try!(r.read_string())));
                         let env_value = try!(std::str::from_utf8(try!(r.read_string())));
-                        try!(server.env_request(channel_num, env_variable, env_value, self));
+                        Ok(Authenticated::future_unit(
+                            server.env_request(channel_num, env_variable, env_value, self)
+                        ))
                     }
                     b"shell" => {
-                        try!(server.shell_request(channel_num, self));
+                        Ok(Authenticated::future_unit(server.shell_request(channel_num, self)))
                     }
                     b"exec" => {
                         let req = try!(r.read_string());
-                        try!(server.exec_request(channel_num, req, self));
+                        Ok(Authenticated::future_unit(server.exec_request(channel_num, req, self)))
                     }
                     b"subsystem" => {
                         let name = try!(std::str::from_utf8(try!(r.read_string())));
-                        try!(server.subsystem_request(channel_num, name, self));
+                        Ok(Authenticated::future_unit(
+                            server.subsystem_request(channel_num, name, self)
+                        ))
                     }
                     b"window_change" => {
                         let col_width = try!(r.read_u32());
                         let row_height = try!(r.read_u32());
                         let pix_width = try!(r.read_u32());
                         let pix_height = try!(r.read_u32());
-                        try!(server.window_change_request(channel_num,
-                                                          col_width,
-                                                          row_height,
-                                                          pix_width,
-                                                          pix_height,
-                                                          self));
+                        Ok(Authenticated::future_unit(server.window_change_request(channel_num,
+                                                                                   col_width,
+                                                                                   row_height,
+                                                                                   pix_width,
+                                                                                   pix_height,
+                                                                                   self)))
                     }
                     b"signal" => {
                         try!(r.read_byte()); // should be 0.
                         let signal_name = try!(Sig::from_name(try!(r.read_string())));
-                        try!(server.signal(channel_num, signal_name, self));
+                        Ok(Authenticated::future_unit(
+                            server.signal(channel_num, signal_name, self)
+                        ))
                     }
                     x => {
                         debug!("{:?}, line {:?} req_type = {:?}",
@@ -288,9 +340,9 @@ impl Session {
                                 enc.write.push(msg::CHANNEL_FAILURE);
                             });
                         }
+                        Ok(Authenticated::FutureUnit(FutureUnit::Done(futures::done(Ok(())))))
                     }
                 }
-                Ok(())
             }
             msg::GLOBAL_REQUEST => {
                 let mut r = buf.reader(1);
@@ -300,32 +352,16 @@ impl Session {
                     b"tcpip-forward" => {
                         let address = try!(std::str::from_utf8(try!(r.read_string())));
                         let port = try!(r.read_u32());
-                        let result = server.tcpip_forward(address, port, self);
-                        if self.0.wants_reply {
-                            if let Some(ref mut enc) = self.0.encrypted {
-                                if result.is_ok() {
-                                    push_packet!(enc.write, enc.write.push(msg::REQUEST_SUCCESS))
-                                } else {
-                                    push_packet!(enc.write, enc.write.push(msg::REQUEST_FAILURE))
-                                }
-                            }
-                        }
-                        result
+                        Ok(Authenticated::Forward(Forward {
+                            forward: server.tcpip_forward(address, port, self),
+                        }))
                     }
                     b"cancel-tcpip-forward" => {
                         let address = try!(std::str::from_utf8(try!(r.read_string())));
                         let port = try!(r.read_u32());
-                        let result = server.cancel_tcpip_forward(address, port, self);
-                        if self.0.wants_reply {
-                            if let Some(ref mut enc) = self.0.encrypted {
-                                if result.is_ok() {
-                                    push_packet!(enc.write, enc.write.push(msg::REQUEST_SUCCESS))
-                                } else {
-                                    push_packet!(enc.write, enc.write.push(msg::REQUEST_FAILURE))
-                                }
-                            }
-                        }
-                        result
+                        Ok(Authenticated::Forward(Forward {
+                            forward: server.cancel_tcpip_forward(address, port, self),
+                        }))
                     }
                     _ => {
                         if let Some(ref mut enc) = self.0.encrypted {
@@ -333,21 +369,21 @@ impl Session {
                                 enc.write.push(msg::REQUEST_FAILURE);
                             });
                         }
-                        Ok(())
+                        Ok(Authenticated::FutureUnit(FutureUnit::Done(futures::done(Ok(())))))
                     }
                 }
             }
             m => {
                 debug!("unknown message received: {:?}", m);
-                Ok(())
+                Ok(Authenticated::FutureUnit(FutureUnit::Done(futures::done(Ok(())))))
             }
         }
     }
 
-    fn server_handle_channel_open<S: Handler>(&mut self,
-                                              server: &mut S,
-                                              buf: &[u8])
-                                              -> Result<(), Error> {
+    fn server_handle_channel_open<'a, S: Handler>(&mut self,
+                                                  server: &mut S,
+                                                  buf: &[u8])
+                                                  -> Result<ChannelOpen<S>, Error> {
 
         // https://tools.ietf.org/html/rfc4254#section-5.1
         let mut r = buf.reader(1);
@@ -361,38 +397,6 @@ impl Session {
         } else {
             unreachable!()
         };
-
-
-        match typ {
-            b"session" => {
-                server.channel_open_session(sender_channel, self);
-            }
-            b"x11" => {
-                let a = try!(std::str::from_utf8(try!(r.read_string())));
-                let b = try!(r.read_u32());
-                server.channel_open_x11(sender_channel, a, b, self);
-            }
-            b"direct-tcpip" => {
-                let a = try!(std::str::from_utf8(try!(r.read_string())));
-                let b = try!(r.read_u32());
-                let c = try!(std::str::from_utf8(try!(r.read_string())));
-                let d = try!(r.read_u32());
-                server.channel_open_direct_tcpip(sender_channel, a, b, c, d, self);
-            }
-            t => {
-                debug!("unknown channel type: {:?}", t);
-                if let Some(ref mut enc) = self.0.encrypted {
-                    push_packet!(enc.write, {
-                        enc.write.push(msg::CHANNEL_OPEN_FAILURE);
-                        enc.write.push_u32_be(sender);
-                        enc.write.push_u32_be(3); // SSH_OPEN_UNKNOWN_CHANNEL_TYPE
-                        enc.write.extend_ssh_string(b"Unknown channel type");
-                        enc.write.extend_ssh_string(b"en");
-                    });
-                }
-                return Ok(());
-            }
-        }
         let channel = Channel {
             recipient_channel: sender,
 
@@ -406,29 +410,306 @@ impl Session {
             confirmed: true,
             wants_reply: false,
         };
-        debug!("waiting channel open: {:?}", channel);
-        // Write the response immediately, so that we're ready when the stream becomes writable.
-        if let Some(ref mut enc) = self.0.encrypted {
-            server_confirm_channel_open(&mut enc.write, &channel, self.0.config.as_ref());
+        Ok(match typ {
+            b"session" => {
+                ChannelOpen {
+                    fut: FutureUnit::H(server.channel_open_session(sender_channel, self)),
+                    channel: Some(channel),
+                }
+            }
+            b"x11" => {
+                let a = try!(std::str::from_utf8(try!(r.read_string())));
+                let b = try!(r.read_u32());
+                ChannelOpen {
+                    fut: FutureUnit::H(server.channel_open_x11(sender_channel, a, b, self)),
+                    channel: Some(channel),
+                }
+            }
+            b"direct-tcpip" => {
+                let a = try!(std::str::from_utf8(try!(r.read_string())));
+                let b = try!(r.read_u32());
+                let c = try!(std::str::from_utf8(try!(r.read_string())));
+                let d = try!(r.read_u32());
+                ChannelOpen {
+                    fut: FutureUnit::H(
+                        server.channel_open_direct_tcpip(sender_channel, a, b, c, d, self)
+                    ),
+                    channel: Some(channel),
+                }
+            }
+            t => {
+                debug!("unknown channel type: {:?}", t);
+                if let Some(ref mut enc) = self.0.encrypted {
+                    push_packet!(enc.write, {
+                        enc.write.push(msg::CHANNEL_OPEN_FAILURE);
+                        enc.write.push_u32_be(sender);
+                        enc.write.push_u32_be(3); // SSH_OPEN_UNKNOWN_CHANNEL_TYPE
+                        enc.write.extend_ssh_string(b"Unknown channel type");
+                        enc.write.extend_ssh_string(b"en");
+                    });
+                }
+                ChannelOpen {
+                    fut: FutureUnit::Done(futures::done(Ok(()))),
+                    channel: Some(channel),
+                }
+            }
+        })
+    }
+}
+
+pub enum Authenticated<H: Handler> {
+    ChannelOpen(ChannelOpen<H>),
+    FutureUnit(FutureUnit<H>),
+    Forward(Forward<H>),
+}
+
+impl<H: Handler> Authenticated<H> {
+    fn poll(&mut self, session: &mut Session) -> futures::Poll<(), Error> {
+        match *self {
+            Authenticated::ChannelOpen(ref mut a) => a.poll(session),
+            Authenticated::FutureUnit(ref mut a) => a.poll(),
+            Authenticated::Forward(ref mut a) => a.poll(session),
+        }
+    }
+}
+
+impl<H: Handler> Authenticated<H> {
+    fn future_unit(h: H::FutureUnit) -> Self {
+        Authenticated::FutureUnit(FutureUnit::H(h))
+    }
+}
+
+pub struct ChannelOpen<H: Handler> {
+    fut: FutureUnit<H>,
+    channel: Option<Channel>,
+}
+
+pub enum FutureUnit<H: Handler> {
+    H(H::FutureUnit),
+    Done(futures::Done<(), Error>),
+}
+impl<H: Handler> Future for FutureUnit<H> {
+    type Item = ();
+    type Error = Error;
+
+    fn poll(&mut self) -> futures::Poll<Self::Item, Self::Error> {
+        match *self {
+            FutureUnit::H(ref mut a) => a.poll(),
+            FutureUnit::Done(ref mut a) => a.poll(),
+        }
+    }
+}
+
+impl<H: Handler> ChannelOpen<H> {
+    fn poll(&mut self, session: &mut Session) -> futures::Poll<(), Error> {
+        let fut = try_ready!(self.fut.poll());
+        debug!("waiting channel open: {:?}", self.channel);
+        // Write the response immediately, so that we're ready when
+        // the stream becomes writable.
+        if let Some(ref mut enc) = session.0.encrypted {
+
+            let channel = std::mem::replace(&mut self.channel, None).unwrap();
+
+            server_confirm_channel_open(&mut enc.write, &channel, session.0.config.as_ref());
             //
             let sender_channel = channel.sender_channel;
             enc.channels.insert(sender_channel, channel);
             enc.state = Some(EncryptedState::Authenticated);
         }
-        Ok(())
+        Ok(Async::Ready(()))
     }
 }
 
+pub struct Forward<H: Handler> {
+    forward: H::FutureBool,
+}
+
+impl<H: Handler> Forward<H> {
+    pub fn poll(&mut self, session: &mut Session) -> futures::Poll<(), Error> {
+        let result = try_ready!(self.forward.poll());
+        if let Some(ref mut enc) = session.0.encrypted {
+            if result {
+                push_packet!(enc.write, enc.write.push(msg::REQUEST_SUCCESS))
+            } else {
+                push_packet!(enc.write, enc.write.push(msg::REQUEST_FAILURE))
+            }
+        }
+        Ok(Async::Ready(()))
+    }
+}
+
+pub enum ReadAuthRequest<H: Handler> {
+    Req {
+        future: FutureAuth<H>,
+        auth_request: Option<AuthRequest>,
+    },
+    Reject,
+    Accept,
+}
+
+pub enum FutureAuth<H: Handler> {
+    Password(H::FutureBool),
+    Pubkey {
+        validate: ValidatePubkey<H>,
+        sig: Vec<u8>,
+        init: Vec<u8>,
+        key: key::PublicKey,
+    },
+    PubkeyProbe {
+        probe: H::FutureBool,
+        pubkey_algo: Vec<u8>,
+        pubkey_key: Vec<u8>,
+        key: key::PublicKey,
+    },
+    KeyboardInteractive { ki: H::FutureAuth },
+}
+
+pub enum ValidatePubkey<H: Handler> {
+    Valid,
+    Future(H::FutureBool),
+    Invalid,
+}
+
+impl<H: Handler> ReadAuthRequest<H> {
+    fn poll(&mut self,
+            enc: &mut Encrypted,
+            auth_user: &mut String,
+            buffer: &mut CryptoVec)
+            -> futures::Poll<Auth, Error> {
+        match *self {
+            ReadAuthRequest::Req { ref mut future, ref mut auth_request } => {
+                match *future {
+                    FutureAuth::Password(ref mut fut) => {
+                        if try_ready!(fut.poll()) {
+                            server_auth_request_success(&mut enc.write);
+                            enc.state = Some(EncryptedState::Authenticated);
+                            Ok(Async::Ready(Auth::Accept))
+                        } else {
+                            auth_user.clear();
+                            let mut auth_request = std::mem::replace(auth_request, None).unwrap();
+                            auth_request.methods = auth_request.methods - auth::PASSWORD;
+                            auth_request.partial_success = false;
+                            enc.reject_auth_request(auth_request);
+                            Ok(Async::Ready(Auth::Reject))
+                        }
+                    }
+                    FutureAuth::Pubkey { ref mut validate, ref sig, ref init, ref key } => {
+                        let is_valid = match *validate {
+                            ValidatePubkey::Valid => true,
+                            ValidatePubkey::Future(ref mut h) => try_ready!(h.poll()),
+                            _ => false,
+                        };
+                        if is_valid {
+                            buffer.clear();
+                            buffer.extend_ssh_string(enc.session_id.as_ref());
+                            buffer.extend(init);
+                            // Verify signature.
+                            if key.verify_detached(buffer, sig) {
+                                debug!("signature verified");
+                                server_auth_request_success(&mut enc.write);
+                                enc.state = Some(EncryptedState::Authenticated);
+                                return Ok(Async::Ready(Auth::Accept));
+                            }
+                        }
+                        Ok(Async::Ready(Auth::Reject))
+                    }
+                    FutureAuth::PubkeyProbe { ref mut probe,
+                                              ref pubkey_algo,
+                                              ref pubkey_key,
+                                              ref key } => {
+                        if try_ready!(probe.poll()) {
+
+                            let mut public_key = CryptoVec::new();
+                            public_key.extend(pubkey_key);
+
+                            let mut algo = CryptoVec::new();
+                            algo.extend(pubkey_algo);
+
+                            push_packet!(buffer, {
+                                buffer.push(msg::USERAUTH_PK_OK);
+                                buffer.extend_ssh_string(&pubkey_algo);
+                                buffer.extend_ssh_string(&pubkey_key);
+                            });
+
+                            let mut auth_request = std::mem::replace(auth_request, None).unwrap();
+                            auth_request.current = Some(CurrentRequest::PublicKey {
+                                key: public_key,
+                                algo: algo,
+                                sent_pk_ok: true,
+                            });
+
+                            enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+                            Ok(Async::Ready(Auth::Accept))
+                        } else {
+                            let mut auth_request = std::mem::replace(auth_request, None).unwrap();
+                            auth_request.methods -= auth::PUBLICKEY;
+                            auth_request.partial_success = false;
+                            auth_user.clear();
+                            enc.reject_auth_request(auth_request);
+                            Ok(Async::Ready(Auth::Reject))
+                        }
+                    }
+                    FutureAuth::KeyboardInteractive { ref mut ki } => {
+
+                        match try_ready!(ki.poll()) {
+                            Auth::Accept => {
+                                server_auth_request_success(&mut enc.write);
+                                enc.state = Some(EncryptedState::Authenticated);
+                                Ok(Async::Ready(Auth::Accept))
+                            }
+                            Auth::Reject => {
+                                let mut auth_request = std::mem::replace(auth_request, None)
+                                    .unwrap();
+                                auth_request.methods -= auth::KEYBOARD_INTERACTIVE;
+                                auth_request.partial_success = false;
+                                auth_user.clear();
+                                enc.reject_auth_request(auth_request);
+                                Ok(Async::Ready(Auth::Reject))
+                            }
+                            Auth::Partial { name, instructions, prompts } => {
+
+                                push_packet!(enc.write, {
+                                    enc.write.push(msg::USERAUTH_INFO_REQUEST);
+                                    enc.write.extend_ssh_string(name.as_bytes());
+                                    enc.write.extend_ssh_string(instructions.as_bytes());
+                                    enc.write.extend_ssh_string(b""); // lang, should be empty
+                                    enc.write.push_u32_be(prompts.len() as u32);
+                                    for &(ref a, b) in prompts.iter() {
+                                        enc.write.extend_ssh_string(a.as_bytes());
+                                        enc.write.push(if b { 1 } else { 0 });
+                                    }
+                                });
+                                let mut auth_request = std::mem::replace(auth_request, None)
+                                    .unwrap();
+                                enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
+                                Ok(Async::Ready(Auth::Partial {
+                                    name: name,
+                                    instructions: instructions,
+                                    prompts: prompts,
+                                }))
+                            }
+                        }
+
+                    }
+                }
+
+            }
+            ReadAuthRequest::Reject => Ok(Async::Ready(Auth::Reject)),
+            ReadAuthRequest::Accept => Ok(Async::Ready(Auth::Accept)),
+        }
+    }
+}
 
 impl Encrypted {
     /// Returns false iff the request was rejected.
-    pub fn server_read_auth_request<S: Handler>(&mut self,
-                                                server: &mut S,
-                                                buf: &[u8],
-                                                buffer: &mut CryptoVec,
-                                                auth_user: &mut String,
-                                                mut auth_request: AuthRequest)
-                                                -> Result<bool, Error> {
+    fn server_read_auth_request<S: Handler>(&mut self,
+                                            server: &mut S,
+                                            buf: &[u8],
+                                            buffer: &mut CryptoVec,
+                                            auth_user: &mut String,
+                                            mut auth_request: AuthRequest)
+                                            -> Result<ReadAuthRequest<S>, Error> {
+
         // https://tools.ietf.org/html/rfc4252#section-5
         let mut r = buf.reader(1);
         let user = try!(r.read_string());
@@ -451,18 +732,10 @@ impl Encrypted {
                 let password = try!(r.read_string());
                 let password = try!(std::str::from_utf8(password));
 
-                if server.auth_password(user, password) {
-                    server_auth_request_success(&mut self.write);
-                    self.state = Some(EncryptedState::Authenticated);
-                    Ok(true)
-                } else {
-
-                    auth_user.clear();
-                    auth_request.methods = auth_request.methods - auth::PASSWORD;
-                    auth_request.partial_success = false;
-                    self.reject_auth_request(auth_request);
-                    Ok(false)
-                }
+                Ok(ReadAuthRequest::Req {
+                    future: FutureAuth::Password(server.auth_password(user, password)),
+                    auth_request: Some(auth_request),
+                })
 
             } else if method == b"publickey" {
 
@@ -476,94 +749,83 @@ impl Encrypted {
                         if is_real != 0 {
 
                             let pos0 = r.position;
-                            if let Some(CurrentRequest::PublicKey { ref key, ref algo, sent_pk_ok }) = auth_request.current {
-                                if (sent_pk_ok && user == auth_user) || (auth_user.len() == 0 && server.auth_publickey(user, &pubkey)) {
+                            let sent_pk_ok =
+                                if let Some(CurrentRequest::PublicKey { sent_pk_ok, .. }) =
+                                       auth_request.current {
+                                    sent_pk_ok
+                                } else {
+                                    false
+                                };
 
-                                    let signature = try!(r.read_string());
-                                    let mut s = signature.reader(0);
-                                    // let algo_ =
-                                    try!(s.read_string());
-                                    let sig = try!(s.read_string());
+                            let signature = try!(r.read_string());
+                            let mut s = signature.reader(0);
+                            // let algo_ =
+                            try!(s.read_string());
+                            let sig = try!(s.read_string());
+                            let init = &buf[0..pos0];
 
-                                    buffer.clear();
-                                    buffer.extend_ssh_string(self.session_id.as_ref());
-                                    buffer.extend(&buf[0..pos0]);
-                                    // Verify signature.
-                                    if pubkey.verify_detached(&buffer, sig) {
-                                        debug!("signature verified");
-                                        server_auth_request_success(&mut self.write);
-                                        self.state = Some(EncryptedState::Authenticated);
-                                        return Ok(true)
-                                    }
-                                }
-                            }
-                            debug!("rejected");
-                            auth_user.clear();
-                            self.reject_auth_request(auth_request);
-                            Ok(false)
-
-                        } else {
-
-                            if server.auth_publickey(user, &pubkey) {
-
+                            let validate = if sent_pk_ok && user == auth_user {
+                                ValidatePubkey::Valid
+                            } else if auth_user.len() == 0 {
                                 auth_user.clear();
                                 auth_user.push_str(user);
-
-                                let mut public_key = CryptoVec::new();
-                                public_key.extend(pubkey_key);
-
-                                let mut algo = CryptoVec::new();
-                                algo.extend(pubkey_algo);
-
-                                push_packet!(buffer, {
-                                    buffer.push(msg::USERAUTH_PK_OK);
-                                    buffer.extend_ssh_string(&pubkey_algo);
-                                    buffer.extend_ssh_string(&pubkey_key);
-                                });
-
-                                auth_request.current = Some(CurrentRequest::PublicKey {
-                                    key: public_key,
-                                    algo: algo,
-                                    sent_pk_ok: true,
-                                });
-
-                                self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
-                                Ok(true)
+                                ValidatePubkey::Future(server.auth_publickey(user, &pubkey))
                             } else {
-                                auth_request.methods -= auth::PUBLICKEY;
-                                auth_request.partial_success = false;
-                                auth_user.clear();
-                                self.reject_auth_request(auth_request);
-                                Ok(false)
-                            }
+                                ValidatePubkey::Invalid
+                            };
+
+                            Ok(ReadAuthRequest::Req {
+                                future: FutureAuth::Pubkey {
+                                    validate: validate,
+                                    sig: sig.to_vec(),
+                                    init: init.to_vec(),
+                                    key: pubkey,
+                                },
+                                auth_request: Some(auth_request),
+                            })
+
+                        } else {
+                            auth_user.clear();
+                            auth_user.push_str(user);
+                            Ok(ReadAuthRequest::Req {
+                                future: FutureAuth::PubkeyProbe {
+                                    probe: server.auth_publickey(user, &pubkey),
+                                    pubkey_algo: pubkey_algo.to_vec(),
+                                    pubkey_key: pubkey_key.to_vec(),
+                                    key: pubkey,
+                                },
+                                auth_request: Some(auth_request),
+                            })
                         }
                     }
                     Err(Error::UnknownKey) => {
                         self.reject_auth_request(auth_request);
-                        Ok(false)
+                        Ok(ReadAuthRequest::Reject)
                     }
                     Err(e) => return Err(e),
                 }
                 // Other methods of the base specification are insecure or optional.
             } else if method == b"keyboard-interactive" {
 
+                auth_user.clear();
+                auth_user.push_str(user);
                 let language_tag = try!(r.read_string());
                 let submethods = try!(std::str::from_utf8(try!(r.read_string())));
                 debug!("{:?}", submethods);
-                let success = try!(userauth_info_request(server, user, submethods, &mut self.write, None));
+                auth_request.current = Some(CurrentRequest::KeyboardInteractive {
+                    submethods: submethods.to_string(),
+                });
+                Ok(ReadAuthRequest::Req {
+                    future: FutureAuth::KeyboardInteractive {
+                        ki: server.auth_keyboard_interactive(user, submethods, None),
+                    },
+                    auth_request: Some(auth_request),
+                })
 
-                if success {
-                    self.state = Some(EncryptedState::Authenticated);
-                    Ok(true)
-                } else {
-                    auth_request.current = Some(CurrentRequest::KeyboardInteractive { submethods: submethods.to_string() });
-                    self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
-                    Ok(false)
-                }
             } else {
                 let count = auth_request.rejection_count;
                 self.reject_auth_request(auth_request);
-                Ok(count <= 1)
+                Ok(ReadAuthRequest::Reject)
             }
         } else {
             // Unknown service
@@ -571,26 +833,28 @@ impl Encrypted {
         }
     }
 
-    fn read_userauth_info_response<S:Handler>(&mut self, server: &mut S, user: &str, auth_request: AuthRequest, b: &[u8]) -> Result<bool, Error> {
-        let succ =
-            if let Some(CurrentRequest::KeyboardInteractive{ ref submethods }) = auth_request.current {
+    fn read_userauth_info_response<S: Handler>(&mut self,
+                                               server: &mut S,
+                                               user: &mut String,
+                                               auth_request: AuthRequest,
+                                               b: &[u8],
+                                               buffer: &mut CryptoVec)
+                                               -> Result<ReadAuthRequest<S>, Error> {
 
-                let mut r = b.reader(1);
-                let n = try!(r.read_u32());
-                let response = Response {
-                    pos: r,
-                    n: n
-                };
-                try!(userauth_info_request(server, user, submethods, &mut self.write, Some(response)))
-            } else {
-                false
-            };
-        if succ {
-            self.state = Some(EncryptedState::Authenticated);
+        let ki = if let Some(CurrentRequest::KeyboardInteractive { ref submethods }) =
+                        auth_request.current {
+            let mut r = b.reader(1);
+            let n = try!(r.read_u32());
+            let response = Response { pos: r, n: n };
+            server.auth_keyboard_interactive(user, submethods, Some(response))
         } else {
-            self.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
-        }
-        Ok(succ)
+            return Ok(ReadAuthRequest::Reject);
+        };
+
+        Ok(ReadAuthRequest::Req {
+            future: FutureAuth::KeyboardInteractive { ki: ki },
+            auth_request: Some(auth_request),
+        })
     }
 
     fn reject_auth_request(&mut self, mut auth_request: AuthRequest) {
@@ -607,27 +871,9 @@ impl Encrypted {
     }
 }
 
-fn userauth_info_request<S:Handler>(server: &mut S, user: &str, submethods: &str, write: &mut CryptoVec, response: Option<Response>) -> Result<bool, Error> {
-    let mut success = false;
-    let l0 = write.len();
-    push_packet!(write, {
-        write.push(msg::USERAUTH_INFO_REQUEST);
-        let (n, l) = {
-            let mut ki = KeyboardInteractive::new(write);
-            success = server.auth_keyboard_interactive(
-                user, submethods, &mut ki, response
-            );
-            (ki.n, ki.l)
-        };
-        use byteorder::{BigEndian, ByteOrder};
-        BigEndian::write_u32(&mut write[l..], n);
-    });
-    if success {
-        write.resize(l0);
-        server_auth_request_success(write);
-    }
-    Ok(success)
-}
+
+
+
 
 fn server_accept_service(banner: Option<&str>,
                          methods: auth::MethodSet,
@@ -663,8 +909,8 @@ fn server_auth_request_success(buffer: &mut CryptoVec) {
     })
 }
 
-/*fn server_send_pk_ok(buffer: &mut CryptoVec, auth_request: &mut AuthRequest) {
-}*/
+// fn server_send_pk_ok(buffer: &mut CryptoVec, auth_request: &mut AuthRequest) {
+// }
 
 fn server_confirm_channel_open(buffer: &mut CryptoVec, channel: &Channel, config: &super::Config) {
 
