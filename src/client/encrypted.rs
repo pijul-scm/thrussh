@@ -252,6 +252,11 @@ impl super::Session {
                     }
                     try!(client.window_adjusted(channel_num, self));
                 }
+                msg::GLOBAL_REQUEST => {
+                    let mut r = buf.reader(1);
+                    let req = try!(r.read_string());
+                    info!("Unhandled global request: {:?}", std::str::from_utf8(req));
+                }
                 _ => {
                     info!("Unhandled packet: {:?}", buf);
                 }

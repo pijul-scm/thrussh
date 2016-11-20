@@ -11,7 +11,7 @@ struct HH {
     user: String,
     password: String,
 }
-
+x
 impl thrussh::server::Handler for H {
     type FutureAuth = futures::Finished<Auth, Error>;
     type FutureUnit = futures::Finished<(), Error>;

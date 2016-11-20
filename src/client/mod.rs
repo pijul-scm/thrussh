@@ -14,8 +14,12 @@
 //
 
 use std::sync::Arc;
-use std::io::{Write, BufRead};
+use std::io::{Read, Write, BufRead, BufReader};
 use std;
+use futures::stream::Stream;
+use futures::{Future, Poll, Async};
+use tokio_core::net::{TcpListener, TcpStream};
+use tokio_core::reactor::{Core, Timeout, Handle};
 
 use {Disconnect, Error, Limits, Sig, ChannelOpenFailure, parse_public_key};
 use encoding::Reader;
@@ -48,6 +52,8 @@ pub struct Config {
     pub maximum_packet_size: u32,
     /// Lists of preferred algorithms.
     pub preferred: negociation::Preferred,
+    /// Time after which the connection is garbage-collected.
+    pub connection_timeout: Option<std::time::Duration>,
 }
 
 impl std::default::Default for Config {
@@ -60,26 +66,41 @@ impl std::default::Default for Config {
             window_size: 200000,
             maximum_packet_size: 200000,
             preferred: Default::default(),
+            connection_timeout: None
         }
     }
 }
 
 /// Client connection.
-#[derive(Debug)]
 #[doc(hidden)]
-pub struct Connection {
+pub struct Connection<R, H> {
     read_buffer: SSHBuffer,
     pub session: Session,
+    stream: BufReader<R>,
+    state: Option<ConnectionState>,
+    encrypted_future: (), // Option<encrypted::ReadEncrypted<H>>,
+    buffer: CryptoVec,
+    buffer2: CryptoVec,
+    handler: H,
+    timeout: Option<Timeout>
 }
 
-impl std::ops::Deref for Connection {
+#[derive(Debug)]
+enum ConnectionState {
+    ReadSshId { sshid: ReadSshId },
+    WriteSshId,
+    Read,
+    Write
+}
+
+impl<R,H> std::ops::Deref for Connection<R,H> {
     type Target = Session;
     fn deref(&self) -> &Session {
         &self.session
     }
 }
 
-impl std::ops::DerefMut for Connection {
+impl<R,H> std::ops::DerefMut for Connection<R,H> {
     fn deref_mut(&mut self) -> &mut Session {
         &mut self.session
     }
@@ -338,168 +359,206 @@ impl KexDhDone {
 }
 
 
-impl Connection {
-    pub fn new(config: Arc<Config>) -> Self {
+impl<R:Read+Write, H:Handler> Connection<R, H> {
+    pub fn new(config: Arc<Config>, stream: R, handler: H, timeout: Option<Timeout>) -> Self {
         let mut write_buffer = SSHBuffer::new();
         write_buffer.send_ssh_id(config.as_ref().client_id.as_bytes());
-        let session = Connection {
+        let mut connection = Connection {
             read_buffer: SSHBuffer::new(),
+            timeout: timeout,
             session: Session(CommonSession {
                 write_buffer: write_buffer,
-                auth_user: String::new(),
-                auth_method: None,
                 kex: None,
+                auth_user: String::new(),
+                auth_method: None, // Client only.
                 cipher: cipher::CLEAR_PAIR,
                 encrypted: None,
                 config: config,
                 wants_reply: false,
                 disconnected: false,
             }),
+            stream: BufReader::new(stream),
+            state: Some(ConnectionState::WriteSshId),
+            encrypted_future: (),
+            handler: handler,
+            buffer: CryptoVec::new(),
+            buffer2: CryptoVec::new()
         };
-        session
+        connection.session.flush();
+        connection
     }
+}
 
+
+impl<H: Handler> Future for Connection<TcpStream, H> {
+
+    type Item = ();
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        debug!("client poll");
+        // If timeout, shutdown the socket.
+        if let Some(ref mut timeout) = self.timeout {
+            match try_nb!(timeout.poll()) {
+                Async::Ready(()) => {
+                    try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
+                    debug!("Timeout, shutdown");
+                    return Ok(Async::Ready(()));
+                }
+                Async::NotReady => {}
+            }
+        }
+        loop {
+            debug!("polling, state = {:?}", self.state);
+            try_ready!(self.atomic_poll())
+        }
+    }
+}
+
+impl<H:Handler> Connection<TcpStream, H> {
     /// Process all packets available in the buffer, and returns
     /// whether at least one complete packet was read.  `buffer` and
     /// `buffer2` are work spaces mostly used to compute keys. They
     /// are cleared before using, hence nothing is expected from them.
-    pub fn read<R: BufRead, C: Handler>(&mut self,
-                                        client: &mut C,
-                                        stream: &mut R,
-                                        buffer: &mut CryptoVec,
-                                        buffer2: &mut CryptoVec)
-                                        -> Result<bool, Error> {
-        if self.session.0.disconnected {
-            return Err(Error::Disconnect);
+    fn atomic_poll(&mut self) -> Poll<(), Error> {
+
+        /*
+        let encrypted_future_done = if let Some(ref mut read_encrypted) = self.encrypted_future {
+            debug!("Running encrypted future");
+            try_nb!(read_encrypted.poll(&mut self.session, &mut self.buffer));
+            true
+        } else {
+            false
+        };
+        if encrypted_future_done {
+            self.encrypted_future = None;
         }
-        let mut at_least_one_was_read = false;
-        loop {
-            match self.read_one_packet(client, stream, buffer, buffer2) {
-                Ok(true) => at_least_one_was_read = true,
-                Ok(false) => return Ok(at_least_one_was_read),
-                Err(Error::IO(e)) => {
-                    match e.kind() {
-                        std::io::ErrorKind::UnexpectedEof |
-                        std::io::ErrorKind::WouldBlock => return Ok(at_least_one_was_read),
-                        _ => return Err(Error::IO(e)),
+         */
+
+        debug!("atomic_poll {:?}", self.state);
+        // Special case for the beginning.
+        match std::mem::replace(&mut self.state, None) {
+            None => {
+                Ok(Async::Ready(()))
+            }
+            Some(ConnectionState::WriteSshId) => {
+                self.state = Some(ConnectionState::ReadSshId { sshid: read_ssh_id() });
+                Ok(Async::Ready(()))
+            }
+            Some(ConnectionState::ReadSshId { mut sshid }) => {
+
+                match sshid.poll(&mut self.stream) {
+                    Ok(Async::NotReady) => {
+                        self.state = Some(ConnectionState::ReadSshId { sshid: sshid });
+                        Ok(Async::NotReady)
+                    }
+                    Err(Error::IO(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        self.state = Some(ConnectionState::ReadSshId { sshid: sshid });
+                        Ok(Async::NotReady)
+                    }
+                    Err(e) => Err(e),
+                    _ => {
+                        debug!("ssh id ready");
+                        self.read_buffer.bytes += sshid.id_len + 2;
+                        let mut exchange = Exchange::new();
+                        exchange.server_id.extend(sshid.id());
+                        // Preparing the response
+                        exchange.client_id.extend(self.session.0.config.as_ref().client_id.as_bytes());
+                        let mut kexinit = KexInit {
+                            exchange: exchange,
+                            algo: None,
+                            sent: false,
+                            session_id: None,
+                        };
+                        kexinit.client_write(self.session.0.config.as_ref(),
+                                             &mut self.session.0.cipher,
+                                             &mut self.session.0.write_buffer);
+                        self.session.0.kex = Some(Kex::KexInit(kexinit));
+                        self.state = Some(ConnectionState::Write);
+                        Ok(Async::Ready(()))
                     }
                 }
-                Err(e) => return Err(e),
-            }
-        }
-    }
+            },
+            Some(ConnectionState::Write) => {
+                self.state = Some(ConnectionState::Write);
+                self.session.flush();
+                try_nb!(self.session.0.write_buffer.write_all(self.stream.get_mut()));
+                self.state = Some(ConnectionState::Read);
+                Ok(Async::Ready(()))
+            },
+            Some(ConnectionState::Read) => {
 
-    fn read_one_packet<R: BufRead, C: Handler>(&mut self,
-                                               client: &mut C,
-                                               stream: &mut R,
-                                               buffer: &mut CryptoVec,
-                                               buffer2: &mut CryptoVec)
-                                               -> Result<bool, Error> {
-
-        if self.session.0.encrypted.is_none() && self.session.0.kex.is_none() {
-
-            let mut exchange;
-            {
-                let server_id = try!(self.read_buffer.read_ssh_id(stream));
-                if let Some(server_id) = server_id {
-                    exchange = Exchange::new();
-                    exchange.server_id.extend(server_id);
-                    debug!("server id, exchange = {:?}", exchange);
-                } else {
-                    return Ok(false);
+                self.state = Some(ConnectionState::Read);
+                // In all other cases:
+                let buf = try_nb!(self.session.0.cipher.read(&mut self.stream, &mut self.read_buffer));
+                debug!("read buf = {:?}", buf);
+                // Handle the transport layer.
+                if buf[0] == msg::DISCONNECT {
+                    // transport
+                    return Ok(Async::Ready(()));
                 }
-            }
-            // Preparing the response
-            exchange.client_id.extend(self.session.0.config.as_ref().client_id.as_bytes());
-            let mut kexinit = KexInit {
-                exchange: exchange,
-                algo: None,
-                sent: false,
-                session_id: None,
-            };
-            kexinit.client_write(self.session.0.config.as_ref(),
-                                 &mut self.session.0.cipher,
-                                 &mut self.session.0.write_buffer);
-            self.session.0.kex = Some(Kex::KexInit(kexinit));
-            return Ok(true);
-        }
+                // If we don't disconnect, keep the state.
+                self.state = Some(ConnectionState::Write);
 
+                // Handle transport layer packets.
+                if buf[0] <= 4 {
+                    return Ok(Async::Ready(()))
+                }
 
+                // Handle key exchange/re-exchange.
+                match std::mem::replace(&mut self.session.0.kex, None) {
+                    Some(Kex::KexInit(kexinit)) => {
+                        if kexinit.algo.is_some() || buf[0] == msg::KEXINIT ||
+                            self.session.0.encrypted.is_none() {
+                                let kexdhdone = kexinit.client_parse(self.session.0.config.as_ref(),
+                                                                     &mut self.session.0.cipher,
+                                                                     buf,
+                                                                     &mut self.session.0.write_buffer);
 
-        // In all other cases:
-        if let Some(buf) = try!(self.session.0.cipher.read(stream, &mut self.read_buffer)) {
-            debug!("read buf = {:?}", buf);
-            // Handle the transport layer.
-            if buf[0] == msg::DISCONNECT {
-                // transport
-                return Err(Error::Disconnect);
-            }
-            if buf[0] <= 4 {
-                return Ok(true);
-            }
-
-            // Handle key exchange/re-exchange.
-            match std::mem::replace(&mut self.session.0.kex, None) {
-                Some(Kex::KexInit(kexinit)) => {
-                    if kexinit.algo.is_some() || buf[0] == msg::KEXINIT ||
-                       self.session.0.encrypted.is_none() {
-                        let kexdhdone = kexinit.client_parse(self.session.0.config.as_ref(),
-                                                             &mut self.session.0.cipher,
-                                                             buf,
-                                                             &mut self.session.0.write_buffer);
-
-                        match kexdhdone {
-                            Ok(kexdhdone) => {
-                                self.session.0.kex = Some(Kex::KexDhDone(kexdhdone));
-                                return Ok(true);
+                                match kexdhdone {
+                                    Ok(kexdhdone) => {
+                                        self.session.0.kex = Some(Kex::KexDhDone(kexdhdone));
+                                        return Ok(Async::Ready(()));
+                                    }
+                                    Err(e) => return Err(e),
+                                }
+                            } else {
+                                try_nb!(self.session.client_read_encrypted(&mut self.handler, buf, &mut self.buffer));
+                            }
+                    }
+                    Some(Kex::KexDhDone(kexdhdone)) => {
+                        let kex = kexdhdone.client_parse(&mut self.buffer,
+                                                         &mut self.buffer2,
+                                                         &mut self.handler,
+                                                         &mut self.session.0.cipher,
+                                                         buf,
+                                                         &mut self.session.0.write_buffer);
+                        match kex {
+                            Ok(kex) => {
+                                self.session.0.kex = Some(kex);
+                                return Ok(Async::Ready(()));
                             }
                             Err(e) => return Err(e),
                         }
-                    } else {
-                        try!(self.session.client_read_encrypted(client, buf, buffer));
                     }
-                }
-                Some(Kex::KexDhDone(kexdhdone)) => {
-                    let kex = kexdhdone.client_parse(buffer,
-                                                     buffer2,
-                                                     client,
-                                                     &mut self.session.0.cipher,
-                                                     buf,
-                                                     &mut self.session.0.write_buffer);
-                    match kex {
-                        Ok(kex) => {
-                            self.session.0.kex = Some(kex);
-                            return Ok(true);
+                    Some(Kex::NewKeys(newkeys)) => {
+                        if buf[0] != msg::NEWKEYS {
+                            return Err(Error::NewKeys);
                         }
-                        Err(e) => return Err(e),
+                        self.session.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
+                        // Ok, NEWKEYS received, now encrypted.
+                        let p = b"\x05\0\0\0\x0Cssh-userauth";
+                        self.session.0.cipher.write(p, &mut self.session.0.write_buffer);
+                    }
+                    Some(kex) => self.session.0.kex = Some(kex),
+                    None => {
+                        debug!("calling read_encrypted");
+                        try_nb!(self.session.client_read_encrypted(&mut self.handler, buf, &mut self.buffer));
                     }
                 }
-                Some(Kex::NewKeys(newkeys)) => {
-                    if buf[0] != msg::NEWKEYS {
-                        return Err(Error::NewKeys);
-                    }
-                    self.session.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
-                    // Ok, NEWKEYS received, now encrypted.
-                    // We can't use flush here, because self.buffers is borrowed.
-                    let p = b"\x05\0\0\0\x0Cssh-userauth";
-                    self.session.0.cipher.write(p, &mut self.session.0.write_buffer);
-                }
-                Some(kex) => self.session.0.kex = Some(kex),
-                None => {
-                    debug!("calling read_encrypted");
-                    try!(self.session.client_read_encrypted(client, buf, buffer));
-                }
+                Ok(Async::Ready(()))
             }
-            self.session.flush();
-            Ok(true)
-        } else {
-            Ok(false)
         }
-    }
-
-    /// Write all computed packets to the stream. Returns whether all packets have been sent.
-    pub fn write<W: Write>(&mut self, stream: &mut W) -> Result<bool, Error> {
-        self.session.0.write_buffer.write_all(stream)
     }
 }
 
@@ -971,20 +1030,7 @@ impl Session {
 
 
 
-
-use mio::{Token, Events, Ready, Poll, PollOpt};
-use mio::tcp::TcpStream;
-
-use std::default::Default;
-
-use regex::Regex;
-use std::net::ToSocketAddrs;
-use std::fs::File;
-
-use std::io::BufReader;
-
-use std::path::{Path, PathBuf};
-
+/*
 #[derive(Debug)]
 enum RunUntil {
     ChannelOpened(u32),
@@ -1371,6 +1417,7 @@ impl Connected {
         Ok(())
     }
 }
+*/
 
 
 /// Record a host's public key into the user's known_hosts file.

@@ -37,21 +37,19 @@ use futures::{Async, Poll};
 use std::io::BufRead;
 
 pub struct ReadSshId {
-    pub client_id: [u8; 256],
-    pub client_id_len: usize,
+    pub id: [u8; 256],
+    pub id_len: usize,
 }
 
 impl std::fmt::Debug for ReadSshId {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(fmt, "ReadSshId {{ client_id: {:?}, client_id_len: {:?} }}",
-               &self.client_id[..],
-               self.client_id_len)
+        write!(fmt, "ReadSshId {:?}", self.id())
     }
 }
 
 impl ReadSshId {
-    pub fn client_id(&self) -> &[u8] {
-        &self.client_id[..self.client_id_len]
+    pub fn id(&self) -> &[u8] {
+        &self.id[..self.id_len]
     }
     pub fn poll<R:BufRead>(&mut self, stream:&mut R) -> Poll<(), Error> {
         let i = {
@@ -71,8 +69,8 @@ impl ReadSshId {
                 return Err(Error::Version);
             }
             if &buf[0..8] == b"SSH-2.0-" {
-                (&mut self.client_id[..i]).clone_from_slice(&buf[..i]);
-                self.client_id_len = i;
+                (&mut self.id[..i]).clone_from_slice(&buf[..i]);
+                self.id_len = i;
                 i
             } else {
                 return Err(Error::Version);
@@ -85,8 +83,8 @@ impl ReadSshId {
 
 pub fn read_ssh_id() -> ReadSshId {
     ReadSshId {
-        client_id: [0;256],
-        client_id_len: 0,
+        id: [0;256],
+        id_len: 0,
     }
 }
 

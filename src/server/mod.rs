@@ -16,6 +16,14 @@ use std::io::{Write, Read, BufRead};
 use std;
 use std::sync::Arc;
 use futures;
+use std::io::BufReader;
+use std::net::ToSocketAddrs;
+
+use futures::stream::Stream;
+use futures::{Future, Poll, Async};
+use tokio_core::net::{TcpListener, TcpStream};
+use tokio_core::reactor::{Core, Timeout, Handle};
+
 use super::*;
 
 use negociation::{Select, Named};
@@ -406,42 +414,7 @@ enum ConnectionState {
     Read,
     Write
 }
-/*
-impl<'a, H:Handler, R:BufRead> futures::Future for NextPacket<'a, H, R> {
-    type Item = Status;
-    type Error = Error;
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match *self {
-            NextPacket::Done(status) => Ok(Async::Ready(status)),
-            NextPacket::Transport => Ok(Async::Ready(Status::Ok)),
-            NextPacket::ReadEncrypted(ref mut enc) => {
-                try_ready!(enc.poll());
-                // session.flush();
-                Ok(Async::Ready(Status::Ok))
-            },
-            NextPacket::ReadSshId { ref mut sshid, ref mut connection } => {
-                try_ready!(sshid.poll());
-            }
-        }
-    }
-}
-struct ClientRecord<H:Handler> {
-    stream: BufReader<TcpStream>,
-    addr: std::net::SocketAddr,
-    connection: Connection,
-    buffer0: CryptoVec,
-    buffer1: CryptoVec,
-    handler: H,
-    config: Arc<Config>,
-    l: Arc<Handle>,
-}
 
-enum State<'a, H:Handler, R:BufRead+'a> {
-    Read(NextPacket<'a, H, R>),
-    Write,
-    Timeout(Timeout),
-}
-*/
 impl<R: Read + Write, H:Handler> Connection<R, H> {
     #[doc(hidden)]
     pub fn new(config: Arc<Config>, stream: R, handler: H, timeout: Option<Timeout>) -> Self {
@@ -516,6 +489,7 @@ impl<H:Handler> Connection<TcpStream, H> {
         match std::mem::replace(&mut self.state, None) {
             None => {
                 Ok(Async::Ready(()))
+
             }
             Some(ConnectionState::ReadSshId { mut sshid }) => {
 
@@ -530,9 +504,9 @@ impl<H:Handler> Connection<TcpStream, H> {
                     }
                     Err(e) => Err(e),
                     _ => {
-                        self.read_buffer.bytes += sshid.client_id_len + 2;
+                        self.read_buffer.bytes += sshid.id_len + 2;
                         let mut exchange = Exchange::new();
-                        exchange.client_id.extend(sshid.client_id());
+                        exchange.client_id.extend(sshid.id());
                         // Preparing the response
                         exchange.server_id.extend(self.session.0.config.as_ref().server_id.as_bytes());
                         let mut kexinit = KexInit {
@@ -558,7 +532,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                 Ok(Async::Ready(()))
             },
             Some(ConnectionState::Read) => {
-                
+
                 self.state = Some(ConnectionState::Read);
                 let buf = try_nb!(self.session.0.cipher.read(&mut self.stream, &mut self.read_buffer));
                 debug!("read buf = {:?}", buf);
@@ -894,16 +868,8 @@ impl Session {
     }
 }
 
-use std::io::BufReader;
-use std::net::ToSocketAddrs;
-
-use futures::stream::Stream;
-use futures::{Future, Poll, Async};
-use tokio_core::net::{TcpListener, TcpStream};
-use tokio_core::reactor::{Core, Timeout, Handle};
 
 pub fn run<H: Handler + Clone + 'static>(config: Arc<Config>, addr: &str, handler: H) {
-
 
     let addr = addr.to_socket_addrs().unwrap().next().unwrap();
     let mut l = Core::new().unwrap();
