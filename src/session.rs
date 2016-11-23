@@ -21,7 +21,7 @@ use kex;
 use cipher;
 use msg;
 use key;
-use {Error, Channel, Disconnect};
+use {Error, ChannelId, Channel, Disconnect};
 use cryptovec::CryptoVec;
 use std::collections::HashMap;
 use Limits;
@@ -101,7 +101,7 @@ pub struct Encrypted {
     pub mac: Option<&'static str>,
     pub session_id: digest::Digest,
     pub rekey: Option<Kex>,
-    pub channels: HashMap<u32, Channel>,
+    pub channels: HashMap<ChannelId, Channel>,
     pub last_channel_id: Wrapping<u32>,
     pub wants_reply: bool,
     pub write: CryptoVec,
@@ -165,7 +165,7 @@ impl<C> CommonSession<C> {
         }
     }
 
-    pub fn byte(&mut self, channel: u32, msg: u8) {
+    pub fn byte(&mut self, channel: ChannelId, msg: u8) {
         if let Some(ref mut enc) = self.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
@@ -178,7 +178,7 @@ impl<C> CommonSession<C> {
 }
 
 impl Encrypted {
-    pub fn adjust_window_size(&mut self, channel: u32, data: &[u8], target: u32) {
+    pub fn adjust_window_size(&mut self, channel: ChannelId, data: &[u8], target: u32) {
         if let Some(ref mut channel) = self.channels.get_mut(&channel) {
             channel.sender_window_size -= data.len() as u32;
             if channel.sender_window_size < target / 2 {
@@ -193,7 +193,7 @@ impl Encrypted {
     }
 
     pub fn data(&mut self,
-                channel: u32,
+                channel: ChannelId,
                 extended: Option<u32>,
                 buf: &[u8])
                 -> Result<usize, Error> {
@@ -275,21 +275,21 @@ impl Encrypted {
         }
         false
     }
-    pub fn new_channel_id(&mut self) -> u32 {
+    pub fn new_channel_id(&mut self) -> ChannelId {
         self.last_channel_id += Wrapping(1);
-        while self.channels.contains_key(&self.last_channel_id.0) {
+        while self.channels.contains_key(&ChannelId(self.last_channel_id.0)) {
             self.last_channel_id += Wrapping(1)
         }
-        self.last_channel_id.0
+        ChannelId(self.last_channel_id.0)
     }
-    pub fn new_channel(&mut self, window_size: u32, maxpacket: u32) -> u32 {
+    pub fn new_channel(&mut self, window_size: u32, maxpacket: u32) -> ChannelId {
         loop {
             self.last_channel_id += Wrapping(1);
             if let std::collections::hash_map::Entry::Vacant(vacant_entry) = self.channels
-                .entry(self.last_channel_id.0) {
+                .entry(ChannelId(self.last_channel_id.0)) {
                 vacant_entry.insert(Channel {
                     recipient_channel: 0,
-                    sender_channel: self.last_channel_id.0,
+                    sender_channel: ChannelId(self.last_channel_id.0),
                     sender_window_size: window_size,
                     recipient_window_size: 0,
                     sender_maximum_packet_size: maxpacket,
@@ -297,7 +297,7 @@ impl Encrypted {
                     confirmed: false,
                     wants_reply: false,
                 });
-                return self.last_channel_id.0;
+                return ChannelId(self.last_channel_id.0);
             }
         }
     }

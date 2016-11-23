@@ -11,7 +11,7 @@ struct HH {
     user: String,
     password: String,
 }
-x
+
 impl thrussh::server::Handler for H {
     type FutureAuth = futures::Finished<Auth, Error>;
     type FutureUnit = futures::Finished<(), Error>;
@@ -44,26 +44,26 @@ impl thrussh::server::Handler for H {
     }
 
     fn auth_none(&mut self, user: &str) -> Self::FutureBool {
-        futures::finished(false)
+        futures::finished(true)
     }
 
     fn auth_publickey(&mut self, user: &str, public_key: &key::PublicKey) -> Self::FutureBool {
-        futures::finished(false)
+        futures::finished(true)
     }
 
-    fn channel_close(&mut self, channel: u32, session: &mut Session) -> Self::FutureUnit {
+    fn channel_close(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
         futures::finished(())
     }
 
-    fn channel_eof(&mut self, channel: u32, session: &mut Session) -> Self::FutureUnit {
+    fn channel_eof(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
         futures::finished(())
     }
 
-    fn channel_open_session(&mut self, channel: u32, session: &mut Session) -> Self::FutureUnit {
+    fn channel_open_session(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
         futures::finished(())
     }
     fn channel_open_x11(&mut self,
-                        channel: u32,
+                        channel: ChannelId,
                         originator_address: &str,
                         originator_port: u32,
                         session: &mut Session)
@@ -72,7 +72,7 @@ impl thrussh::server::Handler for H {
     }
 
     fn channel_open_direct_tcpip(&mut self,
-                                 channel: u32,
+                                 channel: ChannelId,
                                  host_to_connect: &str,
                                  port_to_connect: u32,
                                  originator_address: &str,
@@ -82,20 +82,21 @@ impl thrussh::server::Handler for H {
         futures::finished(())
     }
 
-    fn data(&mut self, channel: u32, data: &[u8], session: &mut Session) -> Self::FutureUnit {
+    fn data(&mut self, channel: ChannelId, data: &[u8], session: &mut Session) -> Self::FutureUnit {
+        println!("======== data: {:?} =======", std::str::from_utf8(data));
         futures::finished(())
     }
 
-    fn extended_data(&mut self, channel: u32, code: u32, data: &[u8], session: &mut Session) -> Self::FutureUnit {
+    fn extended_data(&mut self, channel: ChannelId, code: u32, data: &[u8], session: &mut Session) -> Self::FutureUnit {
         futures::finished(())
     }
 
-    fn window_adjusted(&mut self, channel: u32, session: &mut Session) -> Self::FutureUnit {
+    fn window_adjusted(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
         futures::finished(())
     }
 
     fn pty_request(&mut self,
-                   channel: u32,
+                   channel: ChannelId,
                    term: &str,
                    col_width: u32,
                    row_height: u32,
@@ -108,7 +109,7 @@ impl thrussh::server::Handler for H {
     }
 
     fn x11_request(&mut self,
-                   channel: u32,
+                   channel: ChannelId,
                    single_connection: bool,
                    x11_auth_protocol: &str,
                    x11_auth_cookie: &str,
@@ -119,7 +120,7 @@ impl thrussh::server::Handler for H {
     }
 
     fn env_request(&mut self,
-                   channel: u32,
+                   channel: ChannelId,
                    variable_name: &str,
                    variable_value: &str,
                    session: &mut Session)
@@ -127,20 +128,20 @@ impl thrussh::server::Handler for H {
         futures::finished(())
     }
 
-    fn shell_request(&mut self, channel: u32, session: &mut Session) -> Self::FutureUnit {
+    fn shell_request(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
         futures::finished(())
     }
 
-    fn exec_request(&mut self, channel: u32, data: &[u8], session: &mut Session) -> Self::FutureUnit {
+    fn exec_request(&mut self, channel: ChannelId, data: &[u8], session: &mut Session) -> Self::FutureUnit {
         futures::finished(())
     }
 
-    fn subsystem_request(&mut self, channel: u32, name: &str, session: &mut Session) -> Self::FutureUnit {
+    fn subsystem_request(&mut self, channel: ChannelId, name: &str, session: &mut Session) -> Self::FutureUnit {
         futures::finished(())
     }
 
     fn window_change_request(&mut self,
-                             channel: u32,
+                             channel: ChannelId,
                              col_width: u32,
                              row_height: u32,
                              pix_width: u32,
@@ -150,7 +151,7 @@ impl thrussh::server::Handler for H {
         futures::finished(())
     }
 
-    fn signal(&mut self, channel: u32, signal_name: Sig, session: &mut Session) -> Self::FutureUnit {
+    fn signal(&mut self, channel: ChannelId, signal_name: Sig, session: &mut Session) -> Self::FutureUnit {
         futures::finished(())
     }
 

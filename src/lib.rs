@@ -392,12 +392,17 @@ impl ChannelOpenFailure {
     }
 }
 
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[doc(hidden)]
+pub struct ChannelId(u32);
+
 /// The parameters of a channel.
 #[derive(Debug)]
 #[doc(hidden)]
 pub struct Channel {
     recipient_channel: u32,
-    sender_channel: u32,
+    sender_channel: ChannelId,
     recipient_window_size: u32,
     sender_window_size: u32,
     recipient_maximum_packet_size: u32,

@@ -46,7 +46,10 @@ impl<H: Handler> ReadEncrypted<H> {
                 if let Some(ref mut enc) = session.0.encrypted {
                     match try_ready!(r.poll(enc, &mut session.0.auth_user, buffer)) {
                         Auth::Reject => Ok(Async::Ready(Status::AuthRejected)),
-                        _ => Ok(Async::Ready(Status::Ok)),
+                        auth => {
+                            debug!("auth status: {:?}", auth);
+                            Ok(Async::Ready(Status::Ok))
+                        },
                     }
                 } else {
                     unreachable!()
@@ -171,7 +174,7 @@ impl Session {
             }
             msg::CHANNEL_CLOSE => {
                 let mut r = buf.reader(1);
-                let channel_num = try!(r.read_u32());
+                let channel_num = ChannelId(try!(r.read_u32()));
                 if let Some(ref mut enc) = self.0.encrypted {
                     enc.channels.remove(&channel_num);
                 }
@@ -179,13 +182,13 @@ impl Session {
             }
             msg::CHANNEL_EOF => {
                 let mut r = buf.reader(1);
-                let channel_num = try!(r.read_u32());
+                let channel_num = ChannelId(try!(r.read_u32()));
                 Ok(Authenticated::future_unit(server.channel_eof(channel_num, self)))
             }
             msg::CHANNEL_EXTENDED_DATA |
             msg::CHANNEL_DATA => {
                 let mut r = buf.reader(1);
-                let channel_num = try!(r.read_u32());
+                let channel_num = ChannelId(try!(r.read_u32()));
 
                 let ext = if buf[0] == msg::CHANNEL_DATA {
                     None
@@ -222,7 +225,7 @@ impl Session {
 
             msg::CHANNEL_WINDOW_ADJUST => {
                 let mut r = buf.reader(1);
-                let channel_num = try!(r.read_u32());
+                let channel_num = ChannelId(try!(r.read_u32()));
                 let amount = try!(r.read_u32());
                 if let Some(ref mut enc) = self.0.encrypted {
                     if let Some(channel) = enc.channels.get_mut(&channel_num) {
@@ -236,7 +239,7 @@ impl Session {
 
             msg::CHANNEL_REQUEST => {
                 let mut r = buf.reader(1);
-                let channel_num = try!(r.read_u32());
+                let channel_num = ChannelId(try!(r.read_u32()));
                 let req_type = try!(r.read_string());
                 let wants_reply = try!(r.read_byte());
                 if let Some(ref mut enc) = self.0.encrypted {
@@ -580,6 +583,7 @@ impl<H: Handler> ReadAuthRequest<H> {
             ReadAuthRequest::Req { ref mut future, ref mut auth_request } => {
                 match *future {
                     FutureAuth::Password(ref mut fut) => {
+                        debug!("ReadAuthRequest.poll(): Password");
                         if try_ready!(fut.poll()) {
                             server_auth_request_success(&mut enc.write);
                             enc.state = Some(EncryptedState::Authenticated);
@@ -594,6 +598,7 @@ impl<H: Handler> ReadAuthRequest<H> {
                         }
                     }
                     FutureAuth::Pubkey { ref mut validate, ref sig, ref init, ref key } => {
+                        debug!("ReadAuthRequest.poll(): Pubkey");
                         let is_valid = match *validate {
                             ValidatePubkey::Valid => true,
                             ValidatePubkey::Future(ref mut h) => try_ready!(h.poll()),
@@ -617,6 +622,7 @@ impl<H: Handler> ReadAuthRequest<H> {
                                               ref pubkey_algo,
                                               ref pubkey_key,
                                               ref key } => {
+                        debug!("ReadAuthRequest.poll(): PubkeyProbe");
                         if try_ready!(probe.poll()) {
 
                             let mut public_key = CryptoVec::new();
@@ -625,10 +631,10 @@ impl<H: Handler> ReadAuthRequest<H> {
                             let mut algo = CryptoVec::new();
                             algo.extend(pubkey_algo);
 
-                            push_packet!(buffer, {
-                                buffer.push(msg::USERAUTH_PK_OK);
-                                buffer.extend_ssh_string(&pubkey_algo);
-                                buffer.extend_ssh_string(&pubkey_key);
+                            push_packet!(enc.write, {
+                                enc.write.push(msg::USERAUTH_PK_OK);
+                                enc.write.extend_ssh_string(&pubkey_algo);
+                                enc.write.extend_ssh_string(&pubkey_key);
                             });
 
                             let mut auth_request = std::mem::replace(auth_request, None).unwrap();
@@ -787,6 +793,7 @@ impl Encrypted {
                         } else {
                             auth_user.clear();
                             auth_user.push_str(user);
+
                             Ok(ReadAuthRequest::Req {
                                 future: FutureAuth::PubkeyProbe {
                                     probe: server.auth_publickey(user, &pubkey),
@@ -909,15 +916,12 @@ fn server_auth_request_success(buffer: &mut CryptoVec) {
     })
 }
 
-// fn server_send_pk_ok(buffer: &mut CryptoVec, auth_request: &mut AuthRequest) {
-// }
-
 fn server_confirm_channel_open(buffer: &mut CryptoVec, channel: &Channel, config: &super::Config) {
 
     push_packet!(buffer, {
         buffer.push(msg::CHANNEL_OPEN_CONFIRMATION);
         buffer.push_u32_be(channel.recipient_channel); // remote channel number.
-        buffer.push_u32_be(channel.sender_channel); // our channel number.
+        buffer.push_u32_be(channel.sender_channel.0); // our channel number.
         buffer.push_u32_be(config.window_size);
         buffer.push_u32_be(config.maximum_packet_size);
     });

@@ -19,7 +19,7 @@ fn run<H: Handler + 'static>(config: Arc<Config>, addr: &str, handler: H) {
     let addr = addr.to_socket_addrs().unwrap().next().unwrap();
     let mut l = Core::new().unwrap();
     let handle = l.handle();
-    let done:futures::future::AndThen<_,Connection<TcpStream, H>,_> =
+    let done =
         TcpStream::connect(&addr, &handle).map_err(|err| thrussh::Error::IO(err)).and_then(|socket| {
 
             println!("connected");
@@ -33,7 +33,15 @@ fn run<H: Handler + 'static>(config: Arc<Config>, addr: &str, handler: H) {
             connection.set_auth_user("pe");
             connection.set_auth_public_key(thrussh::load_secret_key("/home/pe/.ssh/id_ed25519").unwrap());
             debug!("connection");
-            connection
+            connection.authenticate().and_then(|mut connection| {
+
+                connection.channel_open_session().and_then(|(mut connection, chan)| {
+
+                    try!(connection.data(chan, None, b"blabla"));
+                    Ok(())
+                        
+                })
+            })
         });
     l.run(done).unwrap();
 }
@@ -54,5 +62,5 @@ fn main() {
 
     let config = Arc::new(config);
     let sh = H {};
-    run(config, "127.0.0.1:22", sh);
+    run(config, "127.0.0.1:2222", sh);
 }

@@ -150,29 +150,21 @@ impl CipherPair {
             buffer.buffer.clear();
             let mut len = [0; 4];
             try!(stream.read_exact(&mut len));
-            debug!("len = {:?}", len);
             buffer.buffer.extend(&len);
             let len = key.decrypt_packet_length(seqn, len);
             buffer.len = BigEndian::read_u32(&len) as usize + key.tag_len();
         }
-        debug!("buffer len: {:?} {:?}", buffer.len, key.tag_len());
 
         try!(read(stream, &mut buffer.buffer, buffer.len, &mut buffer.bytes));
-        use std::ops::Deref;
-        {
-            let a: &[u8] = buffer.buffer.deref();
-            debug!("buffer: {:?}", a);
-        }
+
         let ciphertext_len = buffer.buffer.len() - key.tag_len();
         let (ciphertext, tag) = buffer.buffer.split_at_mut(ciphertext_len);
         let plaintext = try!(key.open(seqn, ciphertext, tag));
 
-        debug!("clear: {:?}", plaintext);
         let padding_length = plaintext[0] as usize;
         let plaintext_end = try!(plaintext.len()
             .checked_sub(padding_length)
             .ok_or(Error::IndexOutOfBounds));
-        debug!("padding length {:?} {:?}", padding_length, plaintext);
 
         // Sequence numbers are on 32 bits and wrap.
         // https://tools.ietf.org/html/rfc4253#section-6.4
@@ -204,13 +196,10 @@ impl CipherPair {
         key.fill_padding(buffer.buffer.reserve(padding_length));
         buffer.buffer.reserve(key.tag_len());
 
-        {
-            let (plaintext, tag) = buffer.buffer[offset..]
-                .split_at_mut(PACKET_LENGTH_LEN + packet_length);
+        let (plaintext, tag) = buffer.buffer[offset..]
+            .split_at_mut(PACKET_LENGTH_LEN + packet_length);
 
-            key.seal(buffer.seqn.0, plaintext, tag);
-            debug!("write sealed: {:?}", plaintext);
-        }
+        key.seal(buffer.seqn.0, plaintext, tag);
 
         // Sequence numbers are on 32 bits and wrap.
         // https://tools.ietf.org/html/rfc4253#section-6.4

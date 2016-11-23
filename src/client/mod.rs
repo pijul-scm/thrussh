@@ -21,7 +21,7 @@ use futures::{Future, Poll, Async};
 use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::reactor::{Core, Timeout, Handle};
 
-use {Disconnect, Error, Limits, Sig, ChannelOpenFailure, parse_public_key};
+use {Disconnect, Error, Limits, Sig, ChannelOpenFailure, parse_public_key, ChannelId};
 use encoding::Reader;
 use key;
 use msg;
@@ -130,7 +130,7 @@ pub trait Handler {
     /// message (this library panics otherwise).
     #[allow(unused_variables)]
     fn channel_open_confirmation(&mut self,
-                                 channel: u32,
+                                 channel: ChannelId,
                                  session: &mut Session)
                                  -> Result<(), Error> {
         Ok(())
@@ -138,20 +138,20 @@ pub trait Handler {
 
     /// Called when the server closes a channel.
     #[allow(unused_variables)]
-    fn channel_close(&mut self, channel: u32, session: &mut Session) -> Result<(), Error> {
+    fn channel_close(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Error> {
         Ok(())
     }
 
     /// Called when the server sends EOF to a channel.
     #[allow(unused_variables)]
-    fn channel_eof(&mut self, channel: u32, session: &mut Session) -> Result<(), Error> {
+    fn channel_eof(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Error> {
         Ok(())
     }
 
     /// Called when the server rejected our request to open a channel.
     #[allow(unused_variables)]
     fn channel_open_failure(&mut self,
-                            channel: u32,
+                            channel: ChannelId,
                             reason: ChannelOpenFailure,
                             description: &str,
                             language: &str,
@@ -163,7 +163,7 @@ pub trait Handler {
     /// Called when a new channel is created.
     #[allow(unused_variables)]
     fn channel_open_forwarded_tcpip(&mut self,
-                                    channel: u32,
+                                    channel: ChannelId,
                                     connected_address: &str,
                                     connected_port: u32,
                                     originator_address: &str,
@@ -177,7 +177,7 @@ pub trait Handler {
     /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-5.2).
     #[allow(unused_variables)]
     fn data(&mut self,
-            channel: u32,
+            channel: ChannelId,
             extended_code: Option<u32>,
             data: &[u8],
             session: &mut Session)
@@ -190,7 +190,7 @@ pub trait Handler {
     /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-6.8).
     #[allow(unused_variables)]
     fn xon_xoff(&mut self,
-                channel: u32,
+                channel: ChannelId,
                 client_can_do: bool,
                 session: &mut Session)
                 -> Result<(), Error> {
@@ -200,7 +200,7 @@ pub trait Handler {
     /// The remote process has exited, with the given exit status.
     #[allow(unused_variables)]
     fn exit_status(&mut self,
-                   channel: u32,
+                   channel: ChannelId,
                    exit_status: u32,
                    session: &mut Session)
                    -> Result<(), Error> {
@@ -210,7 +210,7 @@ pub trait Handler {
     /// The remote process exited upon receiving a signal.
     #[allow(unused_variables)]
     fn exit_signal(&mut self,
-                   channel: u32,
+                   channel: ChannelId,
                    signal_name: Sig,
                    core_dumped: bool,
                    error_message: &str,
@@ -226,7 +226,7 @@ pub trait Handler {
     /// `Session::data` before, and it returned less than the
     /// full amount of data.
     #[allow(unused_variables)]
-    fn window_adjusted(&mut self, channel: u32, session: &mut Session) -> Result<(), Error> {
+    fn window_adjusted(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -398,16 +398,7 @@ impl<H: Handler> Future for Connection<TcpStream, H> {
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         debug!("client poll");
         // If timeout, shutdown the socket.
-        if let Some(ref mut timeout) = self.timeout {
-            match try_nb!(timeout.poll()) {
-                Async::Ready(()) => {
-                    try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
-                    debug!("Timeout, shutdown");
-                    return Ok(Async::Ready(()));
-                }
-                Async::NotReady => {}
-            }
-        }
+        try_ready!(self.poll_timeout());
         loop {
             debug!("polling, state = {:?}", self.state);
             try_ready!(self.atomic_poll())
@@ -416,6 +407,18 @@ impl<H: Handler> Future for Connection<TcpStream, H> {
 }
 
 impl<H:Handler> Connection<TcpStream, H> {
+
+    fn poll_timeout(&mut self) -> Poll<(), Error> {
+        if let Some(ref mut timeout) = self.timeout {
+            if let Async::Ready(()) = try!(timeout.poll()) {
+                debug!("Timeout, shutdown");
+                try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
+                return Err(Error::ConnectionTimeout)
+            }
+        }
+        Ok(Async::Ready(()))
+    }
+
     /// Process all packets available in the buffer, and returns
     /// whether at least one complete packet was read.  `buffer` and
     /// `buffer2` are work spaces mostly used to compute keys. They
@@ -560,7 +563,167 @@ impl<H:Handler> Connection<TcpStream, H> {
             }
         }
     }
+
+    pub fn authenticate(self) -> Authenticate<TcpStream, H> {
+        Authenticate(Some(self))
+    }
+
+    pub fn channel_open_session(mut self) -> ChannelOpen<TcpStream, H, SessionChannel> {
+        let num = self.session.channel_open_session().unwrap();
+        ChannelOpen {
+            connection: Some(self),
+            channel: num,
+            channel_type: PhantomData
+        }
+    }
+
+    pub fn channel_open_x11(mut self,
+                            originator_address: &str,
+                            originator_port: u32) -> ChannelOpen<TcpStream, H, X11Channel> {
+        let num = self.session.channel_open_x11(originator_address, originator_port).unwrap();
+        ChannelOpen {
+            connection: Some(self),
+            channel: num,
+            channel_type: PhantomData
+        }
+    }
+    pub fn channel_open_direct_tcpip(mut self,
+                                     host_to_connect: &str,
+                                     port_to_connect: u32,
+                                     originator_address: &str,
+                                     originator_port: u32) -> ChannelOpen<TcpStream, H, DirectTcpIpChannel> {
+        let num = self.session.channel_open_x11(originator_address, originator_port).unwrap();
+        ChannelOpen {
+            connection: Some(self),
+            channel: num,
+            channel_type: PhantomData
+        }
+    }
+
+    pub fn channel_close(mut self, channel: ChannelId) -> ChannelClose<TcpStream, H> {
+        self.0.byte(channel, msg::CHANNEL_CLOSE);
+        self.flush();
+        ChannelClose {
+            connection: Some(self),
+            channel: channel,
+        }
+    }
 }
+
+
+pub struct Authenticate<R, H>(Option<Connection<R, H>>);
+
+impl<H: Handler> Future for Authenticate<TcpStream, H> {
+
+    type Item = Connection<TcpStream, H>;
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        if let Some(ref mut c) = self.0 {
+            try_ready!(c.poll_timeout());
+        }
+        loop {
+            let is_authenticated = if let Some(ref c) = self.0 { c.is_authenticated() }  else { false };
+            if is_authenticated {
+                return Ok(Async::Ready(std::mem::replace(&mut self.0, None).unwrap()))
+            }
+            if let Some(ref mut c) = self.0 {
+                try_ready!(c.atomic_poll());
+            }
+        }
+    }
+}
+
+use std::marker::PhantomData;
+pub enum X11Channel{}
+pub enum SessionChannel{}
+pub enum DirectTcpIpChannel{}
+pub struct ChannelOpen<R, H, ChannelType> {
+    connection: Option<Connection<R, H>>,
+    channel: ChannelId,
+    channel_type: PhantomData<ChannelType>
+}
+
+pub struct ChannelClose<R, H> {
+    connection: Option<Connection<R, H>>,
+    channel: ChannelId,
+}
+
+pub struct ChannelFlush<R, H> {
+    connection: Option<Connection<R, H>>,
+}
+
+impl<H: Handler, ChannelType> Future for ChannelOpen<TcpStream, H, ChannelType> {
+
+    type Item = (Connection<TcpStream,H>, ChannelId);
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        if let Some(ref mut c) = self.connection {
+            try_ready!(c.poll_timeout());
+        }
+
+        loop {
+            let is_open = if let Some(ref c) = self.connection {
+                c.channel_is_open(self.channel)
+            }  else { false };
+            if is_open {
+                return Ok(Async::Ready((std::mem::replace(&mut self.connection, None).unwrap(), self.channel)))
+            }
+            if let Some(ref mut c) = self.connection {
+                try_ready!(c.atomic_poll());
+            }
+        }
+    }
+}
+
+impl<H: Handler> Future for ChannelClose<TcpStream, H> {
+
+    type Item = Connection<TcpStream,H>;
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        if let Some(ref mut c) = self.connection {
+            try_ready!(c.poll_timeout());
+        }
+
+        loop {
+            let is_open = if let Some(ref c) = self.connection {
+                c.channel_is_open(self.channel)
+            }  else { false };
+            if !is_open {
+                return Ok(Async::Ready(std::mem::replace(&mut self.connection, None).unwrap()))
+            }
+            if let Some(ref mut c) = self.connection {
+                try_ready!(c.atomic_poll());
+            }
+        }
+    }
+}
+
+impl<H: Handler> Future for ChannelFlush<TcpStream, H> {
+
+    type Item = Connection<TcpStream,H>;
+    type Error = Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        if let Some(ref mut c) = self.connection {
+            try_ready!(c.poll_timeout());
+        }
+        loop {
+            let completely_written = if let Some(ref mut c) = self.connection {
+                try_nb!(c.session.0.write_buffer.write_all(c.stream.get_mut()))
+            } else {
+                unreachable!()
+            };
+            if completely_written {
+                return Ok(Async::Ready(std::mem::replace(&mut self.connection, None).unwrap()))
+            }
+        }
+    }
+}
+
+
 
 impl Session {
     fn flush(&mut self) {
@@ -626,7 +789,7 @@ impl Session {
     }
 
     /// Check whether a channel has been confirmed.
-    pub fn channel_is_open(&self, channel: u32) -> bool {
+    pub fn channel_is_open(&self, channel: ChannelId) -> bool {
         if let Some(ref enc) = self.0.encrypted {
             if let Some(ref channel) = enc.channels.get(&channel) {
                 return channel.confirmed;
@@ -661,7 +824,7 @@ impl Session {
     /// connection is authenticated, but the channel only becomes
     /// usable when it's confirmed by the server, as indicated by the
     /// `confirmed` field of the corresponding `Channel`.
-    pub fn channel_open_session(&mut self) -> Option<u32> {
+    fn channel_open_session(&mut self) -> Option<ChannelId> {
         let result = if let Some(ref mut enc) = self.0.encrypted {
             match enc.state {
                 Some(EncryptedState::Authenticated) => {
@@ -675,7 +838,7 @@ impl Session {
                         enc.write.extend_ssh_string(b"session");
 
                         // sender channel id.
-                        enc.write.push_u32_be(sender_channel);
+                        enc.write.push_u32_be(sender_channel.0);
 
                         // window.
                         enc.write.push_u32_be(self.0.config.as_ref().window_size);
@@ -696,10 +859,10 @@ impl Session {
 
 
     /// Request an X11 channel, on which the X11 protocol may be tunneled.
-    pub fn channel_open_x11(&mut self,
-                            originator_address: &str,
-                            originator_port: u32)
-                            -> Option<u32> {
+    fn channel_open_x11(&mut self,
+                        originator_address: &str,
+                        originator_port: u32)
+                        -> Option<ChannelId> {
         let result = if let Some(ref mut enc) = self.0.encrypted {
             match enc.state {
                 Some(EncryptedState::Authenticated) => {
@@ -713,7 +876,7 @@ impl Session {
                         enc.write.extend_ssh_string(b"x11");
 
                         // sender channel id.
-                        enc.write.push_u32_be(sender_channel);
+                        enc.write.push_u32_be(sender_channel.0);
 
                         // window.
                         enc.write.push_u32_be(self.0.config.as_ref().window_size);
@@ -740,12 +903,12 @@ impl Session {
     /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-7). The
     /// TCP/IP packets can then be tunneled through the channel using
     /// `.data()`.
-    pub fn channel_open_direct_tcpip(&mut self,
-                                     host_to_connect: &str,
-                                     port_to_connect: u32,
-                                     originator_address: &str,
-                                     originator_port: u32)
-                                     -> Option<u32> {
+    fn channel_open_direct_tcpip(&mut self,
+                                 host_to_connect: &str,
+                                 port_to_connect: u32,
+                                 originator_address: &str,
+                                 originator_port: u32)
+                                 -> Option<ChannelId> {
         let result = if let Some(ref mut enc) = self.0.encrypted {
             match enc.state {
                 Some(EncryptedState::Authenticated) => {
@@ -759,7 +922,7 @@ impl Session {
                         enc.write.extend_ssh_string(b"direct-tcpip");
 
                         // sender channel id.
-                        enc.write.push_u32_be(sender_channel);
+                        enc.write.push_u32_be(sender_channel.0);
 
                         // window.
                         enc.write.push_u32_be(self.0.config.as_ref().window_size);
@@ -783,14 +946,8 @@ impl Session {
         result
     }
 
-    /// Close a channel.
-    pub fn close(&mut self, channel: u32) {
-        self.0.byte(channel, msg::CHANNEL_CLOSE);
-        self.flush();
-    }
-
     /// Send EOF to a channel
-    pub fn eof(&mut self, channel: u32) {
+    pub fn channel_eof(&mut self, channel: ChannelId) {
         self.0.byte(channel, msg::CHANNEL_EOF);
         self.flush();
     }
@@ -799,7 +956,7 @@ impl Session {
     /// data can be used to multiplex different data streams into a
     /// single channel.
     pub fn data(&mut self,
-                channel: u32,
+                channel: ChannelId,
                 extended: Option<u32>,
                 data: &[u8])
                 -> Result<usize, Error> {
@@ -814,7 +971,7 @@ impl Session {
 
     /// Request a pseudo-terminal with the given characteristics.
     pub fn request_pty(&mut self,
-                       channel: u32,
+                       channel: ChannelId,
                        want_reply: bool,
                        term: &str,
                        col_width: u32,
@@ -856,7 +1013,7 @@ impl Session {
     /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-6.3.1)
     /// for security issues related to cookies.
     pub fn request_x11(&mut self,
-                       channel: u32,
+                       channel: ChannelId,
                        want_reply: bool,
                        single_connection: bool,
                        x11_authentication_protocol: &str,
@@ -882,7 +1039,7 @@ impl Session {
 
     /// Set a remote environment variable.
     pub fn set_env(&mut self,
-                   channel: u32,
+                   channel: ChannelId,
                    want_reply: bool,
                    variable_name: &str,
                    variable_value: &str) {
@@ -904,7 +1061,7 @@ impl Session {
 
 
     /// Request a remote shell.
-    pub fn request_shell(&mut self, want_reply: bool, channel: u32) {
+    pub fn request_shell(&mut self, want_reply: bool, channel: ChannelId) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
@@ -922,7 +1079,7 @@ impl Session {
     /// Execute a remote program (will be passed to a shell). This can
     /// be used to implement scp (by calling a remote scp and
     /// tunneling to its standard input).
-    pub fn exec(&mut self, channel: u32, want_reply: bool, command: &str) {
+    pub fn exec(&mut self, channel: ChannelId, want_reply: bool, command: &str) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
@@ -939,7 +1096,7 @@ impl Session {
     }
 
     /// Signal a remote process.
-    pub fn signal(&mut self, channel: u32, signal: Sig) {
+    pub fn signal(&mut self, channel: ChannelId, signal: Sig) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
@@ -956,7 +1113,7 @@ impl Session {
     }
 
     /// Request the start of a subsystem with the given name.
-    pub fn request_subsystem(&mut self, want_reply: bool, channel: u32, name: &str) {
+    pub fn request_subsystem(&mut self, want_reply: bool, channel: ChannelId, name: &str) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
@@ -974,7 +1131,7 @@ impl Session {
 
     /// Inform the server that our window size has changed.
     pub fn window_change(&mut self,
-                         channel: u32,
+                         channel: ChannelId,
                          col_width: u32,
                          row_height: u32,
                          pix_width: u32,

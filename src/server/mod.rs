@@ -134,6 +134,7 @@ impl<'a> Iterator for Response<'a> {
     }
 }
 
+#[derive(Debug)]
 pub enum Auth {
     Reject,
     Accept,
@@ -178,20 +179,20 @@ pub trait Handler {
 
     /// Called when the client closes a channel.
     #[allow(unused_variables)]
-    fn channel_close(&mut self, channel: u32, session: &mut Session) -> Self::FutureUnit;
+    fn channel_close(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit;
 
     /// Called when the client sends EOF to a channel.
     #[allow(unused_variables)]
-    fn channel_eof(&mut self, channel: u32, session: &mut Session) -> Self::FutureUnit;
+    fn channel_eof(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit;
 
     /// Called when a new session channel is created.
     #[allow(unused_variables)]
-    fn channel_open_session(&mut self, channel: u32, session: &mut Session) -> Self::FutureUnit;
+    fn channel_open_session(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit;
 
     /// Called when a new X11 channel is created.
     #[allow(unused_variables)]
     fn channel_open_x11(&mut self,
-                        channel: u32,
+                        channel: ChannelId,
                         originator_address: &str,
                         originator_port: u32,
                         session: &mut Session)
@@ -200,7 +201,7 @@ pub trait Handler {
     /// Called when a new channel is created.
     #[allow(unused_variables)]
     fn channel_open_direct_tcpip(&mut self,
-                                 channel: u32,
+                                 channel: ChannelId,
                                  host_to_connect: &str,
                                  port_to_connect: u32,
                                  originator_address: &str,
@@ -211,22 +212,22 @@ pub trait Handler {
     /// Called when a data packet is received. A response can be
     /// written to the `response` argument.
     #[allow(unused_variables)]
-    fn data(&mut self, channel: u32, data: &[u8], session: &mut Session) -> Self::FutureUnit;
+    fn data(&mut self, channel: ChannelId, data: &[u8], session: &mut Session) -> Self::FutureUnit;
 
     /// Called when an extended data packet is received. Code 1 means
     /// that this packet comes from stderr, other codes are not
     /// defined (see [RFC4254](https://tools.ietf.org/html/rfc4254#section-5.2)).
     #[allow(unused_variables)]
-    fn extended_data(&mut self, channel: u32, code: u32, data: &[u8], session: &mut Session) -> Self::FutureUnit;
+    fn extended_data(&mut self, channel: ChannelId, code: u32, data: &[u8], session: &mut Session) -> Self::FutureUnit;
 
     /// Called when the network window is adjusted, meaning that we can send more bytes.
     #[allow(unused_variables)]
-    fn window_adjusted(&mut self, channel: u32, session: &mut Session) -> Self::FutureUnit;
+    fn window_adjusted(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit;
 
     /// The client requests a pseudo-terminal with the given specifications.
     #[allow(unused_variables)]
     fn pty_request(&mut self,
-                   channel: u32,
+                   channel: ChannelId,
                    term: &str,
                    col_width: u32,
                    row_height: u32,
@@ -239,7 +240,7 @@ pub trait Handler {
     /// The client requests an X11 connection.
     #[allow(unused_variables)]
     fn x11_request(&mut self,
-                   channel: u32,
+                   channel: ChannelId,
                    single_connection: bool,
                    x11_auth_protocol: &str,
                    x11_auth_cookie: &str,
@@ -252,7 +253,7 @@ pub trait Handler {
     /// environment to be set.
     #[allow(unused_variables)]
     fn env_request(&mut self,
-                   channel: u32,
+                   channel: ChannelId,
                    variable_name: &str,
                    variable_value: &str,
                    session: &mut Session)
@@ -260,21 +261,21 @@ pub trait Handler {
 
     /// The client requests a shell.
     #[allow(unused_variables)]
-    fn shell_request(&mut self, channel: u32, session: &mut Session) -> Self::FutureUnit;
+    fn shell_request(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit;
 
     /// The client sends a command to execute, to be passed to a
     /// shell. Make sure to check the command before doing so.
     #[allow(unused_variables)]
-    fn exec_request(&mut self, channel: u32, data: &[u8], session: &mut Session) -> Self::FutureUnit;
+    fn exec_request(&mut self, channel: ChannelId, data: &[u8], session: &mut Session) -> Self::FutureUnit;
 
     /// The client asks to start the subsystem with the given name (such as sftp).
     #[allow(unused_variables)]
-    fn subsystem_request(&mut self, channel: u32, name: &str, session: &mut Session) -> Self::FutureUnit;
+    fn subsystem_request(&mut self, channel: ChannelId, name: &str, session: &mut Session) -> Self::FutureUnit;
 
     /// The client's pseudo-terminal window size has changed.
     #[allow(unused_variables)]
     fn window_change_request(&mut self,
-                             channel: u32,
+                             channel: ChannelId,
                              col_width: u32,
                              row_height: u32,
                              pix_width: u32,
@@ -284,7 +285,7 @@ pub trait Handler {
 
     /// The client is sending a signal (usually to pass to the currently running process).
     #[allow(unused_variables)]
-    fn signal(&mut self, channel: u32, signal_name: Sig, session: &mut Session) -> Self::FutureUnit;
+    fn signal(&mut self, channel: ChannelId, signal_name: Sig, session: &mut Session) -> Self::FutureUnit;
 
     /// Used for reverse-forwarding ports, see
     /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
@@ -411,6 +412,7 @@ pub enum Status {
 #[derive(Debug)]
 enum ConnectionState {
     ReadSshId { sshid: ReadSshId },
+    WriteSshId,
     Read,
     Write
 }
@@ -435,7 +437,7 @@ impl<R: Read + Write, H:Handler> Connection<R, H> {
                 disconnected: false,
             }),
             stream: BufReader::new(stream),
-            state: Some(ConnectionState::ReadSshId { sshid: read_ssh_id() }),
+            state: Some(ConnectionState::WriteSshId),
             encrypted_future: None,
             handler: handler,
             buffer: CryptoVec::new(),
@@ -475,10 +477,12 @@ impl<H:Handler> Connection<TcpStream, H> {
         let encrypted_future_done = if let Some(ref mut read_encrypted) = self.encrypted_future {
             debug!("Running encrypted future");
             try_nb!(read_encrypted.poll(&mut self.session, &mut self.buffer));
+            self.state = Some(ConnectionState::Write);
             true
         } else {
             false
         };
+        debug!("connection state: {:?}", self.state);
         if encrypted_future_done {
             self.encrypted_future = None;
         }
@@ -490,6 +494,15 @@ impl<H:Handler> Connection<TcpStream, H> {
             None => {
                 Ok(Async::Ready(()))
 
+            }
+            Some(ConnectionState::WriteSshId) => {
+                self.state = Some(ConnectionState::WriteSshId);
+                self.session.flush();
+                try_nb!(self.session.0.write_buffer.write_all(self.stream.get_mut()));
+
+                self.state = Some(ConnectionState::ReadSshId { sshid: read_ssh_id() });
+                
+                Ok(Async::Ready(()))
             }
             Some(ConnectionState::ReadSshId { mut sshid }) => {
 
@@ -682,7 +695,7 @@ impl Session {
     /// Send a "success" reply to a channel request. Always call this
     /// function if the request was successful (it checks whether the
     /// client expects an answer).
-    pub fn channel_success(&mut self, channel: u32) {
+    pub fn channel_success(&mut self, channel: ChannelId) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get_mut(&channel) {
                 assert!(channel.confirmed);
@@ -698,7 +711,7 @@ impl Session {
     }
 
     /// Send a "failure" reply to a global request.
-    pub fn channel_failure(&mut self, channel: u32) {
+    pub fn channel_failure(&mut self, channel: ChannelId) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get_mut(&channel) {
                 assert!(channel.confirmed);
@@ -715,14 +728,14 @@ impl Session {
 
     /// Send a "failure" reply to a request to open a channel open.
     pub fn channel_open_failure(&mut self,
-                                channel: u32,
+                                channel: ChannelId,
                                 reason: ChannelOpenFailure,
                                 description: &str,
                                 language: &str) {
         if let Some(ref mut enc) = self.0.encrypted {
             push_packet!(enc.write, {
                 enc.write.push(msg::CHANNEL_OPEN_FAILURE);
-                enc.write.push_u32_be(channel);
+                enc.write.push_u32_be(channel.0);
                 enc.write.push_u32_be(reason as u32);
                 enc.write.extend_ssh_string(description.as_bytes());
                 enc.write.extend_ssh_string(language.as_bytes());
@@ -732,13 +745,13 @@ impl Session {
 
 
     /// Close a channel.
-    pub fn close(&mut self, channel: u32) {
+    pub fn close(&mut self, channel: ChannelId) {
         self.0.byte(channel, msg::CHANNEL_CLOSE);
         self.flush();
     }
 
     /// Send EOF to a channel
-    pub fn eof(&mut self, channel: u32) {
+    pub fn eof(&mut self, channel: ChannelId) {
         self.0.byte(channel, msg::CHANNEL_EOF);
         self.flush();
     }
@@ -747,7 +760,7 @@ impl Session {
     /// used to encode standard error by passing `Some(1)`, and stdout
     /// by passing `None`.
     pub fn data(&mut self,
-                channel: u32,
+                channel: ChannelId,
                 extended: Option<u32>,
                 data: &[u8])
                 -> Result<usize, Error> {
@@ -761,7 +774,7 @@ impl Session {
     /// Inform the client of whether they may perform
     /// control-S/control-Q flow control. See
     /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-6.8).
-    pub fn xon_xoff_request(&mut self, channel: u32, client_can_do: bool) {
+    pub fn xon_xoff_request(&mut self, channel: ChannelId, client_can_do: bool) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 assert!(channel.confirmed);
@@ -778,7 +791,7 @@ impl Session {
     }
 
     /// Send the exit status of a program.
-    pub fn exit_status_request(&mut self, channel: u32, exit_status: u32) {
+    pub fn exit_status_request(&mut self, channel: ChannelId, exit_status: u32) {
         if let Some(ref mut enc) = self.0.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {
                 assert!(channel.confirmed);
@@ -796,7 +809,7 @@ impl Session {
 
     /// If the program was killed by a signal, send the details about the signal to the client.
     pub fn exit_signal_request(&mut self,
-                               channel: u32,
+                               channel: ChannelId,
                                signal: Sig,
                                core_dumped: bool,
                                error_message: &str,
@@ -829,7 +842,7 @@ impl Session {
                                         connected_port: u32,
                                         originator_address: &str,
                                         originator_port: u32)
-                                        -> Option<u32> {
+                                        -> Option<ChannelId> {
         let result = if let Some(ref mut enc) = self.0.encrypted {
             match enc.state {
                 Some(EncryptedState::Authenticated) => {
@@ -843,7 +856,7 @@ impl Session {
                         enc.write.extend_ssh_string(b"forwarded-tcpip");
 
                         // sender channel id.
-                        enc.write.push_u32_be(sender_channel);
+                        enc.write.push_u32_be(sender_channel.0);
 
                         // window.
                         enc.write.push_u32_be(self.0.config.as_ref().window_size);

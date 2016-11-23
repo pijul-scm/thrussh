@@ -13,7 +13,7 @@
 // limitations under the License.
 //
 use cryptovec::CryptoVec;
-use {Sig, Error, ChannelOpenFailure};
+use {Sig, Error, ChannelOpenFailure, ChannelId};
 use std;
 use auth;
 use session::*;
@@ -133,7 +133,7 @@ impl super::Session {
                 msg::CHANNEL_OPEN_CONFIRMATION => {
                     debug!("channel_confirmation? {:?}", buf);
                     let mut reader = buf.reader(1);
-                    let id_send = try!(reader.read_u32());
+                    let id_send = ChannelId(try!(reader.read_u32()));
                     let id_recv = try!(reader.read_u32());
                     let window = try!(reader.read_u32());
                     let max_packet = try!(reader.read_u32());
@@ -156,7 +156,7 @@ impl super::Session {
                 }
                 msg::CHANNEL_CLOSE => {
                     let mut r = buf.reader(1);
-                    let channel_num = try!(r.read_u32());
+                    let channel_num = ChannelId(try!(r.read_u32()));
                     if let Some(ref mut enc) = self.0.encrypted {
                         enc.channels.remove(&channel_num);
                     }
@@ -164,12 +164,12 @@ impl super::Session {
                 }
                 msg::CHANNEL_EOF => {
                     let mut r = buf.reader(1);
-                    let channel_num = try!(r.read_u32());
+                    let channel_num = ChannelId(try!(r.read_u32()));
                     try!(client.channel_eof(channel_num, self));
                 }
                 msg::CHANNEL_OPEN_FAILURE => {
                     let mut r = buf.reader(1);
-                    let channel_num = try!(r.read_u32());
+                    let channel_num = ChannelId(try!(r.read_u32()));
                     let reason_code = ChannelOpenFailure::from_u32(try!(r.read_u32())).unwrap();
                     let descr = try!(std::str::from_utf8(try!(r.read_string())));
                     let language = try!(std::str::from_utf8(try!(r.read_string())));
@@ -182,7 +182,7 @@ impl super::Session {
                 }
                 msg::CHANNEL_DATA => {
                     let mut r = buf.reader(1);
-                    let channel_num = try!(r.read_u32());
+                    let channel_num = ChannelId(try!(r.read_u32()));
                     let data = try!(r.read_string());
                     try!(client.data(channel_num, None, &data, self));
                     let target = self.0.config.window_size;
@@ -192,7 +192,7 @@ impl super::Session {
                 }
                 msg::CHANNEL_EXTENDED_DATA => {
                     let mut r = buf.reader(1);
-                    let channel_num = try!(r.read_u32());
+                    let channel_num = ChannelId(try!(r.read_u32()));
                     let extended_code = try!(r.read_u32());
                     let data = try!(r.read_string());
                     try!(client.data(channel_num, Some(extended_code), &data, self));
@@ -203,7 +203,7 @@ impl super::Session {
                 }
                 msg::CHANNEL_REQUEST => {
                     let mut r = buf.reader(1);
-                    let channel_num = try!(r.read_u32());
+                    let channel_num = ChannelId(try!(r.read_u32()));
                     let req = try!(r.read_string());
                     match req {
                         b"forwarded_tcpip" => {
@@ -241,7 +241,7 @@ impl super::Session {
                 }
                 msg::CHANNEL_WINDOW_ADJUST => {
                     let mut r = buf.reader(1);
-                    let channel_num = try!(r.read_u32());
+                    let channel_num = ChannelId(try!(r.read_u32()));
                     let amount = try!(r.read_u32());
                     if let Some(ref mut enc) = self.0.encrypted {
                         if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
