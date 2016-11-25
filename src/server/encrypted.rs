@@ -25,53 +25,16 @@ use key::Verify;
 use negociation;
 use negociation::Select;
 use auth;
-use futures::{Async, Future, Poll};
+use futures::{Async, Future};
 use futures;
-
-pub enum ReadEncrypted<H: Handler> {
-    Ok,
-    ReadAuthRequest(ReadAuthRequest<H>),
-    Authenticated(Authenticated<H>),
-}
-
-impl<H: Handler> ReadEncrypted<H> {
-    pub fn poll(&mut self, session: &mut Session, buffer: &mut CryptoVec) -> Poll<Status, Error> {
-        match *self {
-            ReadEncrypted::Ok => {
-                debug!("future: ok");
-                Ok(Async::Ready(Status::Ok))
-            }
-            ReadEncrypted::ReadAuthRequest(ref mut r) => {
-                debug!("future: read_auth_request");
-                if let Some(ref mut enc) = session.0.encrypted {
-                    match try_ready!(r.poll(enc, &mut session.0.auth_user, buffer)) {
-                        Auth::Reject => Ok(Async::Ready(Status::AuthRejected)),
-                        auth => {
-                            debug!("auth status: {:?}", auth);
-                            Ok(Async::Ready(Status::Ok))
-                        },
-                    }
-                } else {
-                    unreachable!()
-                }
-            }
-            ReadEncrypted::Authenticated(ref mut r) => {
-                debug!("future: authenticated");
-                try_ready!(r.poll(session));
-                Ok(Async::Ready(Status::Ok))
-            }
-        }
-    }
-}
 
 impl Session {
     #[doc(hidden)]
     /// Returns false iff a request was rejected.
     pub fn server_read_encrypted<'a, S: Handler>(&mut self,
                                                  server: &mut S,
-                                                 buf: &[u8],
-                                                 buffer: &mut CryptoVec)
-                                                 -> Result<ReadEncrypted<S>, Error> {
+                                                 buf: &[u8])
+                                                 -> Result<PendingFuture<S>, Error> {
         debug!("read_encrypted");
         // Either this packet is a KEXINIT, in which case we start a key re-exchange.
         if buf[0] == msg::KEXINIT {
@@ -90,7 +53,7 @@ impl Session {
                                                                 buf,
                                                                 &mut self.0.write_buffer)));
                 }
-                return Ok(ReadEncrypted::Ok);
+                return Ok(PendingFuture::Ok);
             }
         }
         // If we've successfully read a packet.
@@ -125,21 +88,19 @@ impl Session {
                 }
                 Some(EncryptedState::WaitingAuthRequest(auth_request)) => {
                     if buf[0] == msg::USERAUTH_REQUEST {
-                        return Ok(ReadEncrypted::ReadAuthRequest(
+                        return Ok(PendingFuture::ReadAuthRequest(
                             try!(enc.server_read_auth_request(server,
-                                                         buf,
-                                                         buffer,
+                                                              buf,
                                                          &mut self.0.auth_user,
                                                          auth_request))
                         ));
                     } else if buf[0] == msg::USERAUTH_INFO_RESPONSE {
 
-                        return Ok(ReadEncrypted::ReadAuthRequest(
+                        return Ok(PendingFuture::ReadAuthRequest(
                             try!(enc.read_userauth_info_response(server,
                                                             &mut self.0.auth_user,
                                                             auth_request,
-                                                            buf,
-                                                            buffer))
+                                                            buf))
                         ));
                     } else {
                         // Wrong request
@@ -157,9 +118,9 @@ impl Session {
         }
         if is_authenticated {
             let auth = self.server_read_authenticated(server, buf).unwrap();
-            Ok(ReadEncrypted::Authenticated(auth))
+            Ok(PendingFuture::Authenticated(auth))
         } else {
-            Ok(ReadEncrypted::Ok)
+            Ok(PendingFuture::Ok)
         }
     }
 
@@ -467,7 +428,7 @@ pub enum Authenticated<H: Handler> {
 }
 
 impl<H: Handler> Authenticated<H> {
-    fn poll(&mut self, session: &mut Session) -> futures::Poll<(), Error> {
+    pub fn poll(&mut self, session: &mut Session) -> futures::Poll<(), Error> {
         match *self {
             Authenticated::ChannelOpen(ref mut a) => a.poll(session),
             Authenticated::FutureUnit(ref mut a) => a.poll(),
@@ -504,8 +465,8 @@ impl<H: Handler> Future for FutureUnit<H> {
 }
 
 impl<H: Handler> ChannelOpen<H> {
-    fn poll(&mut self, session: &mut Session) -> futures::Poll<(), Error> {
-        let fut = try_ready!(self.fut.poll());
+    pub fn poll(&mut self, session: &mut Session) -> futures::Poll<(), Error> {
+        try_ready!(self.fut.poll());
         debug!("waiting channel open: {:?}", self.channel);
         // Write the response immediately, so that we're ready when
         // the stream becomes writable.
@@ -574,7 +535,7 @@ pub enum ValidatePubkey<H: Handler> {
 }
 
 impl<H: Handler> ReadAuthRequest<H> {
-    fn poll(&mut self,
+    pub fn poll(&mut self,
             enc: &mut Encrypted,
             auth_user: &mut String,
             buffer: &mut CryptoVec)
@@ -621,7 +582,7 @@ impl<H: Handler> ReadAuthRequest<H> {
                     FutureAuth::PubkeyProbe { ref mut probe,
                                               ref pubkey_algo,
                                               ref pubkey_key,
-                                              ref key } => {
+                                              .. } => {
                         debug!("ReadAuthRequest.poll(): PubkeyProbe");
                         if try_ready!(probe.poll()) {
 
@@ -685,8 +646,7 @@ impl<H: Handler> ReadAuthRequest<H> {
                                         enc.write.push(if b { 1 } else { 0 });
                                     }
                                 });
-                                let mut auth_request = std::mem::replace(auth_request, None)
-                                    .unwrap();
+                                let auth_request = std::mem::replace(auth_request, None).unwrap();
                                 enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
                                 Ok(Async::Ready(Auth::Partial {
                                     name: name,
@@ -711,7 +671,6 @@ impl Encrypted {
     fn server_read_auth_request<S: Handler>(&mut self,
                                             server: &mut S,
                                             buf: &[u8],
-                                            buffer: &mut CryptoVec,
                                             auth_user: &mut String,
                                             mut auth_request: AuthRequest)
                                             -> Result<ReadAuthRequest<S>, Error> {
@@ -816,7 +775,7 @@ impl Encrypted {
 
                 auth_user.clear();
                 auth_user.push_str(user);
-                let language_tag = try!(r.read_string());
+                let _ = try!(r.read_string()); // language_tag, deprecated.
                 let submethods = try!(std::str::from_utf8(try!(r.read_string())));
                 debug!("{:?}", submethods);
                 auth_request.current = Some(CurrentRequest::KeyboardInteractive {
@@ -830,7 +789,6 @@ impl Encrypted {
                 })
 
             } else {
-                let count = auth_request.rejection_count;
                 self.reject_auth_request(auth_request);
                 Ok(ReadAuthRequest::Reject)
             }
@@ -844,8 +802,7 @@ impl Encrypted {
                                                server: &mut S,
                                                user: &mut String,
                                                auth_request: AuthRequest,
-                                               b: &[u8],
-                                               buffer: &mut CryptoVec)
+                                               b: &[u8])
                                                -> Result<ReadAuthRequest<S>, Error> {
 
         let ki = if let Some(CurrentRequest::KeyboardInteractive { ref submethods }) =

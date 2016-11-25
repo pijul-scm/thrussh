@@ -13,12 +13,7 @@
 // limitations under the License.
 //
 
-use {Error, Disconnect};
-use sshbuffer::SSHBuffer;
-
-use msg;
-use encoding::Encoding;
-use std::num::Wrapping;
+use Error;
 
 #[derive(Debug)]
 pub struct Key;
@@ -71,44 +66,4 @@ impl super::SealingKey for Key {
     fn seal(&self, _seqn: u32, _plaintext_in_ciphertext_out: &mut [u8], tag_out: &mut [u8]) {
         debug_assert_eq!(tag_out.len(), self.tag_len());
     }
-}
-
-pub fn disconnect(reason: Disconnect,
-                  description: &str,
-                  language_tag: &str,
-                  buffer: &mut SSHBuffer) {
-    // XXX This duplicates the logic of `CipherPair::write()` and
-    // `clear::Key::seal()`. TODO: Replace this duplication by using
-    // `CipherPair::write()` with `super::CLEAR_PAIR`.
-
-    let payload_len = 13 + description.len() + language_tag.len();
-
-    // Unencrypted packets should be of lengths multiple of 8.
-    let block_size = 8;
-    let padding_len = block_size - ((5 + payload_len) % block_size);
-    let padding_len = if padding_len < 4 {
-        padding_len + block_size
-    } else {
-        padding_len
-    };
-
-    let packet_len = payload_len + 1 + padding_len;
-    buffer.buffer.push_u32_be(packet_len as u32);
-    buffer.buffer.push(padding_len as u8);
-
-
-    buffer.buffer.push(msg::DISCONNECT);
-    buffer.buffer.push_u32_be(reason as u32);
-    buffer.buffer.extend_ssh_string(description.as_bytes());
-    buffer.buffer.extend_ssh_string(language_tag.as_bytes());
-
-    // Since the packet is unencrypted anyway, there's no advantage to
-    // randomizing the padding, so avoid possibly leaking extra RNG state
-    // by padding with zeros.
-    for padding_byte in buffer.buffer.reserve(padding_len) {
-        *padding_byte = 0;
-    }
-
-    debug!("write: {:?}", buffer.buffer);
-    buffer.seqn += Wrapping(1)
 }

@@ -131,6 +131,15 @@ macro_rules! push_packet {
 
 mod session;
 
+pub trait FromFinished<T, E>:futures::Future<Item=T, Error=E> {
+    fn finished(t: T) -> Self;
+}
+impl<T, E> FromFinished<T, E> for futures::Finished<T, E> {
+    fn finished(t: T) -> Self {
+        futures::finished(t)
+    }
+}
+
 #[derive(Debug)]
 pub enum Error {
     CouldNotReadKey,

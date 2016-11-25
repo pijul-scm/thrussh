@@ -154,7 +154,7 @@ impl CipherPair {
             let len = key.decrypt_packet_length(seqn, len);
             buffer.len = BigEndian::read_u32(&len) as usize + key.tag_len();
         }
-
+        debug!("buffer len: {:?}", buffer.len);
         try!(read(stream, &mut buffer.buffer, buffer.len, &mut buffer.bytes));
 
         let ciphertext_len = buffer.buffer.len() - key.tag_len();
@@ -178,7 +178,7 @@ impl CipherPair {
         //
         // The variables `payload`, `packet_length` and `padding_length` refer
         // to the protocol fields of the same names.
-
+        debug!("writing {:?}", payload);
         let key = self.local_to_remote.as_sealing_key();
 
         let padding_length = key.padding_length(payload);

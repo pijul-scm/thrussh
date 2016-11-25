@@ -31,7 +31,6 @@ use std::sync::Arc;
 use ring::digest;
 use encoding::Encoding;
 use std::num::Wrapping;
-use futures;
 use futures::{Async, Poll};
 
 use std::io::BufRead;
@@ -151,17 +150,18 @@ impl<C> CommonSession<C> {
     }
 
     pub fn disconnect(&mut self, reason: Disconnect, description: &str, language_tag: &str) {
-        self.disconnected = true;
+        let disconnect = |buf: &mut CryptoVec| {
+            push_packet!(buf, {
+                buf.push(msg::DISCONNECT);
+                buf.push_u32_be(reason as u32);
+                buf.extend_ssh_string(description.as_bytes());
+                buf.extend_ssh_string(language_tag.as_bytes());
+            });
+        };
         if let Some(ref mut enc) = self.encrypted {
-            let i0 = enc.write.len();
-            enc.write.push(msg::DISCONNECT);
-            enc.write.push_u32_be(reason as u32);
-            enc.write.extend_ssh_string(description.as_bytes());
-            enc.write.extend_ssh_string(language_tag.as_bytes());
-            self.cipher.write(&enc.write[i0..], &mut self.write_buffer);
-            enc.write.truncate(i0)
+            disconnect(&mut enc.write)
         } else {
-            cipher::clear::disconnect(reason, description, language_tag, &mut self.write_buffer)
+            disconnect(&mut self.write_buffer.buffer)
         }
     }
 
@@ -224,6 +224,8 @@ impl Encrypted {
                     }
                     self.write.extend_ssh_string(&buf[..off]);
                 });
+                use std::ops::Deref;
+                debug!("buffer: {:?}", self.write.deref());
                 channel.recipient_window_size -= off as u32;
                 buf = &buf[off..]
             }
@@ -248,11 +250,11 @@ impl Encrypted {
                 if write_buffer.bytes >= limits.rekey_write_limit ||
                    dur >= limits.rekey_time_limit {
 
-                    // Resetting those now is incorrect (since
-                    // we're resetting before the rekeying), but
-                    // since the bytes sent during rekeying will
-                    // be counted, the limits are still an upper
-                    // bound on the size that can be sent.
+                    // Resetting those now is not strictly correct
+                    // (since we're resetting before the rekeying),
+                    // but since the bytes sent during rekeying will
+                    // be counted, the limits are still an upper bound
+                    // on the size that can be sent.
                     write_buffer.bytes = 0;
                     self.last_rekey = now;
                     return true;

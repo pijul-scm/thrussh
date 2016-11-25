@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-use std::io::{Write, Read, BufRead};
+use std::io::{Write, Read};
 use std;
 use std::sync::Arc;
-use futures;
 use std::io::BufReader;
 use std::net::ToSocketAddrs;
 
@@ -93,28 +92,16 @@ pub struct Connection<R, H:Handler> {
     session: Session,
     stream: BufReader<R>,
     state: Option<ConnectionState>,
-    encrypted_future: Option<encrypted::ReadEncrypted<H>>,
+    pending_future: Option<PendingFuture<H>>,
     buffer: CryptoVec,
     buffer2: CryptoVec,
+    handle: Arc<Handle>,
     handler: H,
     timeout: Option<Timeout>
 }
 
 
 pub struct Session(CommonSession<Config>);
-
-impl<R,H:Handler> std::ops::Deref for Connection<R, H> {
-    type Target = Session;
-    fn deref(&self) -> &Session {
-        &self.session
-    }
-}
-
-impl<R,H:Handler> std::ops::DerefMut for Connection<R,H> {
-    fn deref_mut(&mut self) -> &mut Session {
-        &mut self.session
-    }
-}
 
 #[derive(Debug)]
 pub struct Response<'a> {
@@ -142,29 +129,35 @@ pub enum Auth {
 }
 
 pub trait Handler {
-    type FutureAuth: Future<Item = Auth, Error = Error>;
-    type FutureUnit: Future<Item = (), Error = Error>;
-    type FutureBool: Future<Item = bool, Error = Error>;
+    type FutureAuth: Future<Item = Auth, Error = Error> + FromFinished<Auth, Error>;
+    type FutureUnit: Future<Item = (), Error = Error> + FromFinished<(), Error>;
+    type FutureBool: Future<Item = bool, Error = Error> + FromFinished<bool, Error>;
 
     /// Check authentication using the "none" method. Thrussh makes
     /// sure rejection happens in time `config.auth_rejection_time`,
     /// except if this method takes more than that.
     #[allow(unused_variables)]
-    fn auth_none(&mut self, user: &str) -> Self::FutureBool;
+    fn auth_none(&mut self, user: &str) -> Self::FutureBool {
+        Self::FutureBool::finished(false)
+    }
 
     /// Check authentication using the "password" method. Thrussh
     /// makes sure rejection happens in time
     /// `config.auth_rejection_time`, except if this method takes more
     /// than that.
     #[allow(unused_variables)]
-    fn auth_password(&mut self, user: &str, password: &str) -> Self::FutureBool;
+    fn auth_password(&mut self, user: &str, password: &str) -> Self::FutureBool {
+        Self::FutureBool::finished(false)
+    }
 
     /// Check authentication using the "publickey" method. Thrussh
     /// makes sure rejection happens in time
     /// `config.auth_rejection_time`, except if this method takes more
     /// than that.
     #[allow(unused_variables)]
-    fn auth_publickey(&mut self, user: &str, public_key: &key::PublicKey) -> Self::FutureBool;
+    fn auth_publickey(&mut self, user: &str, public_key: &key::PublicKey) -> Self::FutureBool {
+        Self::FutureBool::finished(false)
+    }
 
     /// Check authentication using the "keyboard-interactive"
     /// method. Thrussh makes sure rejection happens in time
@@ -179,15 +172,21 @@ pub trait Handler {
 
     /// Called when the client closes a channel.
     #[allow(unused_variables)]
-    fn channel_close(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit;
+    fn channel_close(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
+    }
 
     /// Called when the client sends EOF to a channel.
     #[allow(unused_variables)]
-    fn channel_eof(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit;
+    fn channel_eof(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
+    }
 
     /// Called when a new session channel is created.
     #[allow(unused_variables)]
-    fn channel_open_session(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit;
+    fn channel_open_session(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
+    }
 
     /// Called when a new X11 channel is created.
     #[allow(unused_variables)]
@@ -196,7 +195,9 @@ pub trait Handler {
                         originator_address: &str,
                         originator_port: u32,
                         session: &mut Session)
-                        -> Self::FutureUnit;
+                        -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
+    }
 
     /// Called when a new channel is created.
     #[allow(unused_variables)]
@@ -207,22 +208,30 @@ pub trait Handler {
                                  originator_address: &str,
                                  originator_port: u32,
                                  session: &mut Session)
-                                 -> Self::FutureUnit;
+                                 -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
+    }
 
     /// Called when a data packet is received. A response can be
     /// written to the `response` argument.
     #[allow(unused_variables)]
-    fn data(&mut self, channel: ChannelId, data: &[u8], session: &mut Session) -> Self::FutureUnit;
+    fn data(&mut self, channel: ChannelId, data: &[u8], session: &mut Session) -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
+    }
 
     /// Called when an extended data packet is received. Code 1 means
     /// that this packet comes from stderr, other codes are not
     /// defined (see [RFC4254](https://tools.ietf.org/html/rfc4254#section-5.2)).
     #[allow(unused_variables)]
-    fn extended_data(&mut self, channel: ChannelId, code: u32, data: &[u8], session: &mut Session) -> Self::FutureUnit;
+    fn extended_data(&mut self, channel: ChannelId, code: u32, data: &[u8], session: &mut Session) -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
+    }
 
     /// Called when the network window is adjusted, meaning that we can send more bytes.
     #[allow(unused_variables)]
-    fn window_adjusted(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit;
+    fn window_adjusted(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
+    }
 
     /// The client requests a pseudo-terminal with the given specifications.
     #[allow(unused_variables)]
@@ -235,7 +244,9 @@ pub trait Handler {
                    pix_height: u32,
                    modes: &[(Pty, u32)],
                    session: &mut Session)
-                   -> Self::FutureUnit;
+                   -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
+    }
 
     /// The client requests an X11 connection.
     #[allow(unused_variables)]
@@ -246,7 +257,9 @@ pub trait Handler {
                    x11_auth_cookie: &str,
                    x11_screen_number: u32,
                    session: &mut Session)
-                   -> Self::FutureUnit;
+                   -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
+    }
 
     /// The client wants to set the given environment variable. Check
     /// these carefully, as it is dangerous to allow any variable
@@ -257,20 +270,28 @@ pub trait Handler {
                    variable_name: &str,
                    variable_value: &str,
                    session: &mut Session)
-                   -> Self::FutureUnit;
+                   -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
+    }
 
     /// The client requests a shell.
     #[allow(unused_variables)]
-    fn shell_request(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit;
+    fn shell_request(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
+    }
 
     /// The client sends a command to execute, to be passed to a
     /// shell. Make sure to check the command before doing so.
     #[allow(unused_variables)]
-    fn exec_request(&mut self, channel: ChannelId, data: &[u8], session: &mut Session) -> Self::FutureUnit;
+    fn exec_request(&mut self, channel: ChannelId, data: &[u8], session: &mut Session) -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
+    }
 
     /// The client asks to start the subsystem with the given name (such as sftp).
     #[allow(unused_variables)]
-    fn subsystem_request(&mut self, channel: ChannelId, name: &str, session: &mut Session) -> Self::FutureUnit;
+    fn subsystem_request(&mut self, channel: ChannelId, name: &str, session: &mut Session) -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
+    }
 
     /// The client's pseudo-terminal window size has changed.
     #[allow(unused_variables)]
@@ -281,21 +302,28 @@ pub trait Handler {
                              pix_width: u32,
                              pix_height: u32,
                              session: &mut Session)
-                             -> Self::FutureUnit;
+                             -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
+    }
 
     /// The client is sending a signal (usually to pass to the currently running process).
     #[allow(unused_variables)]
-    fn signal(&mut self, channel: ChannelId, signal_name: Sig, session: &mut Session) -> Self::FutureUnit;
+    fn signal(&mut self, channel: ChannelId, signal_name: Sig, session: &mut Session) -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
+    }
 
     /// Used for reverse-forwarding ports, see
     /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
     #[allow(unused_variables)]
-    fn tcpip_forward(&mut self, address: &str, port: u32, session: &mut Session) -> Self::FutureBool;
-
+    fn tcpip_forward(&mut self, address: &str, port: u32, session: &mut Session) -> Self::FutureBool {
+        Self::FutureBool::finished(false)
+    }
     /// Used to stop the reverse-forwarding of a port, see
     /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
     #[allow(unused_variables)]
-    fn cancel_tcpip_forward(&mut self, address: &str, port: u32, session: &mut Session) -> Self::FutureBool;
+    fn cancel_tcpip_forward(&mut self, address: &str, port: u32, session: &mut Session) -> Self::FutureBool {
+        Self::FutureBool::finished(false)
+    }
 }
 
 impl KexInit {
@@ -419,9 +447,14 @@ enum ConnectionState {
 
 impl<R: Read + Write, H:Handler> Connection<R, H> {
     #[doc(hidden)]
-    pub fn new(config: Arc<Config>, stream: R, handler: H, timeout: Option<Timeout>) -> Self {
+    pub fn new(config: Arc<Config>, handle: Arc<Handle>, stream: R, handler: H) -> Self {
         let mut write_buffer = SSHBuffer::new();
         write_buffer.send_ssh_id(config.as_ref().server_id.as_bytes());
+        let timeout = if let Some(t) = config.connection_timeout {
+            Some(Timeout::new(t, &handle).unwrap())
+        } else {
+            None
+        };
         let mut connection = Connection {
             read_buffer: SSHBuffer::new(),
             timeout: timeout,
@@ -438,7 +471,8 @@ impl<R: Read + Write, H:Handler> Connection<R, H> {
             }),
             stream: BufReader::new(stream),
             state: Some(ConnectionState::WriteSshId),
-            encrypted_future: None,
+            pending_future: None,
+            handle: handle,
             handler: handler,
             buffer: CryptoVec::new(),
             buffer2: CryptoVec::new()
@@ -455,45 +489,122 @@ impl<H: Handler> Future for Connection<TcpStream, H> {
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         // If timeout, shutdown the socket.
-        if let Some(ref mut timeout) = self.timeout {
-            match try_nb!(timeout.poll()) {
-                Async::Ready(()) => {
-                    try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
-                    debug!("Timeout, shutdown");
-                    return Ok(Async::Ready(()));
-                }
-                Async::NotReady => {}
-            }
-        }
         loop {
+            /*if let Some(ref mut timeout) = self.timeout {
+                match try_ready!(timeout.poll()) {
+                    Async::Ready(()) => {
+                        try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
+                        debug!("Disconnected, shutdown");
+                        return Ok(Async::Ready(()));
+                    }
+                    Async::NotReady => {}
+                }
+            }*/
             debug!("polling, state = {:?}", self.state);
-            try_ready!(self.atomic_poll())
+            try_ready!(self.atomic_poll());
+            if self.state.is_none() {
+                return Ok(Async::Ready(()))
+            }
         }
     }
 }
 
+
+
+#[doc(hidden)]
+pub enum PendingFuture<H: Handler> {
+    Ok,
+    RejectTimeout(Timeout),
+    ReadAuthRequest(encrypted::ReadAuthRequest<H>),
+    Authenticated(encrypted::Authenticated<H>),
+}
+
+
+
+
+
+
 impl<H:Handler> Connection<TcpStream, H> {
-    fn atomic_poll(&mut self) -> Poll<(), Error> {
-        let encrypted_future_done = if let Some(ref mut read_encrypted) = self.encrypted_future {
-            debug!("Running encrypted future");
-            try_nb!(read_encrypted.poll(&mut self.session, &mut self.buffer));
-            self.state = Some(ConnectionState::Write);
-            true
-        } else {
-            false
-        };
-        debug!("connection state: {:?}", self.state);
-        if encrypted_future_done {
-            self.encrypted_future = None;
+
+    fn poll_pending(&mut self) -> Poll<bool, Error> {
+        debug!("Running encrypted future");
+        match std::mem::replace(&mut self.pending_future, None) {
+            Some(PendingFuture::Ok) => {
+                debug!("future: ok");
+                Ok(Async::Ready(true))
+            }
+            Some(PendingFuture::RejectTimeout(mut time)) => {
+                debug!("future: rejectTimeout");
+                match try!(time.poll()) {
+                    Async::NotReady => {
+                        self.pending_future = Some(PendingFuture::RejectTimeout(time));
+                        Ok(Async::NotReady)
+                    },
+                    Async::Ready(()) => {
+                        debug!("future: rejectTimeout done");
+                        self.state = Some(ConnectionState::Write);
+                        Ok(Async::Ready(true))
+                    }
+                }
+            }
+            Some(PendingFuture::ReadAuthRequest(mut r)) => {
+                debug!("future: read_auth_request");
+                if let Some(ref mut enc) = self.session.0.encrypted {
+                    match try!(r.poll(enc, &mut self.session.0.auth_user, &mut self.buffer)) {
+                        Async::Ready(Auth::Reject) => {
+                            debug!("reject");
+                            let t = try!(Timeout::new(self.session.0.config.auth_rejection_time, &self.handle));
+                            self.pending_future = Some(PendingFuture::RejectTimeout(t));
+                            Ok(Async::Ready(true))
+                        },
+                        Async::Ready(auth) => {
+                            debug!("auth: other");
+                            self.state = Some(ConnectionState::Write);
+                            debug!("auth status: {:?}", auth);
+                            Ok(Async::Ready(true))
+                        },
+                        Async::NotReady => {
+                            self.pending_future = Some(PendingFuture::ReadAuthRequest(r));
+                            Ok(Async::NotReady)
+                        }
+                    }
+                } else {
+                    unreachable!()
+                }
+            }
+            Some(PendingFuture::Authenticated(mut r)) => {
+                debug!("future: authenticated");
+                if let Async::Ready(()) = try!(r.poll(&mut self.session)) {
+                    self.state = Some(ConnectionState::Write);
+                    Ok(Async::Ready(true))
+                } else {
+                    self.pending_future = Some(PendingFuture::Authenticated(r));
+                    Ok(Async::NotReady)
+                }
+            }
+            None => {
+                debug!("future: None");
+                Ok(Async::Ready(false))
+            }
         }
 
+    }
 
-        debug!("read");
-        // Special case for the beginning.
+    fn atomic_poll(&mut self) -> Poll<Status, Error> {
+
+        if try_ready!(self.poll_pending()) {
+            self.state = Some(ConnectionState::Write);
+            return Ok(Async::Ready(Status::Ok))
+        }
+
+        debug!("connection state: {:?}", self.state);
+
         match std::mem::replace(&mut self.state, None) {
+            None if self.session.0.disconnected => Ok(Async::Ready(Status::Ok)),
             None => {
-                Ok(Async::Ready(()))
-
+                try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
+                self.session.0.disconnected = true;
+                Ok(Async::Ready(Status::Disconnect))
             }
             Some(ConnectionState::WriteSshId) => {
                 self.state = Some(ConnectionState::WriteSshId);
@@ -501,8 +612,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                 try_nb!(self.session.0.write_buffer.write_all(self.stream.get_mut()));
 
                 self.state = Some(ConnectionState::ReadSshId { sshid: read_ssh_id() });
-                
-                Ok(Async::Ready(()))
+                Ok(Async::Ready(Status::Ok))
             }
             Some(ConnectionState::ReadSshId { mut sshid }) => {
 
@@ -533,7 +643,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                                              &mut self.session.0.write_buffer);
                         self.session.0.kex = Some(Kex::KexInit(kexinit));
                         self.state = Some(ConnectionState::Write);
-                        Ok(Async::Ready(()))
+                        Ok(Async::Ready(Status::Ok))
                     }
                 }
             },
@@ -542,7 +652,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                 self.session.flush();
                 try_nb!(self.session.0.write_buffer.write_all(self.stream.get_mut()));
                 self.state = Some(ConnectionState::Read);
-                Ok(Async::Ready(()))
+                Ok(Async::Ready(Status::Ok))
             },
             Some(ConnectionState::Read) => {
 
@@ -552,14 +662,18 @@ impl<H:Handler> Connection<TcpStream, H> {
                 // Handle the transport layer.
                 if buf[0] == msg::DISCONNECT {
                     // transport
-                    return Ok(Async::Ready(()));
+                    self.state = None;
+                    debug!("Received disconnect, shutdown");
+                    self.session.0.disconnected = true;
+                    try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
+                    return Ok(Async::Ready(Status::Ok));
                 }
                 // If we don't disconnect, keep the state.
                 self.state = Some(ConnectionState::Write);
 
                 // Handle transport layer packets.
                 if buf[0] <= 4 {
-                    return Ok(Async::Ready(()))
+                    return Ok(Async::Ready(Status::Ok));
                 }
 
                 // Handle key exchange/re-exchange.
@@ -576,7 +690,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                                 match next_kex {
                                     Ok(next_kex) => {
                                         self.session.0.kex = Some(next_kex);
-                                        return Ok(Async::Ready(()))
+                                        return Ok(Async::Ready(Status::Ok))
                                     }
                                     Err(e) => return Err(e),
                                 }
@@ -595,7 +709,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                         match next_kex {
                             Ok(next_kex) => {
                                 self.session.0.kex = Some(next_kex);
-                                return Ok(Async::Ready(()));
+                                return Ok(Async::Ready(Status::Ok));
                             }
                             Err(e) => return Err(e),
                         }
@@ -606,11 +720,11 @@ impl<H:Handler> Connection<TcpStream, H> {
                         }
                         // Ok, NEWKEYS received, now encrypted.
                         self.session.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
-                        return Ok(Async::Ready(()));
+                        return Ok(Async::Ready(Status::Ok));
                     }
                     Some(kex) => {
                         self.session.0.kex = Some(kex);
-                        return Ok(Async::Ready(()));
+                        return Ok(Async::Ready(Status::Ok));
                     }
                     None => {}
                 }
@@ -632,13 +746,13 @@ impl<H:Handler> Connection<TcpStream, H> {
                                                                                 buf,
                                                                                 &mut self.session.0.write_buffer)));
                         }
-                        return Ok(Async::Ready(()))
+                        return Ok(Async::Ready(Status::Ok))
                     }
                 }
 
                 // No kex going on, and the version id is done.
-                self.encrypted_future = Some(try!(self.session.server_read_encrypted(&mut self.handler, buf, &mut self.buffer)));
-                Ok(Async::Ready(()))
+                self.pending_future = Some(try!(self.session.server_read_encrypted(&mut self.handler, buf)));
+                Ok(Async::Ready(Status::Ok))
             }
         }
     }
@@ -647,7 +761,7 @@ impl<H:Handler> Connection<TcpStream, H> {
 impl Session {
     fn flush(&mut self) {
         if let Some(ref mut enc) = self.0.encrypted {
-            if enc.flush(&self.0.config.as_ref().limits,
+              if enc.flush(&self.0.config.as_ref().limits,
                          &mut self.0.cipher,
                          &mut self.0.write_buffer) {
                 if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
@@ -889,18 +1003,12 @@ pub fn run<H: Handler + Clone + 'static>(config: Arc<Config>, addr: &str, handle
     let handle = Arc::new(l.handle());
     let socket = TcpListener::bind(&addr, &handle).unwrap();
 
-    let done = socket.incoming().for_each(move |(socket, addr)| {
-
-        let timeout = if let Some(t) = config.connection_timeout {
-            Some(try!(Timeout::new(t, &handle)))
-        } else {
-            None
-        };
+    let done = socket.incoming().for_each(move |(socket, _)| {
         let connection = server::Connection::new(
             config.clone(),
+            handle.clone(),
             socket,
-            handler.clone(),
-            timeout
+            handler.clone()
         );
         handle.spawn(connection.map_err(|err| println!("err {:?}", err)));
         Ok(())

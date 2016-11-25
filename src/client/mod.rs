@@ -14,14 +14,13 @@
 //
 
 use std::sync::Arc;
-use std::io::{Read, Write, BufRead, BufReader};
+use std::io::{Read, Write, BufReader};
 use std;
-use futures::stream::Stream;
 use futures::{Future, Poll, Async};
-use tokio_core::net::{TcpListener, TcpStream};
-use tokio_core::reactor::{Core, Timeout, Handle};
+use tokio_core::net::TcpStream;
+use tokio_core::reactor::Timeout;
 
-use {Disconnect, Error, Limits, Sig, ChannelOpenFailure, parse_public_key, ChannelId};
+use {Disconnect, Error, Limits, Sig, ChannelOpenFailure, parse_public_key, ChannelId, FromFinished};
 use encoding::Reader;
 use key;
 use msg;
@@ -71,14 +70,15 @@ impl std::default::Default for Config {
     }
 }
 
+
 /// Client connection.
 #[doc(hidden)]
-pub struct Connection<R, H> {
+pub struct Connection<R, H:Handler> {
     read_buffer: SSHBuffer,
     pub session: Session,
     stream: BufReader<R>,
     state: Option<ConnectionState>,
-    encrypted_future: (), // Option<encrypted::ReadEncrypted<H>>,
+    pending_future: Option<PendingFuture<H>>,
     buffer: CryptoVec,
     buffer2: CryptoVec,
     handler: H,
@@ -93,14 +93,14 @@ enum ConnectionState {
     Write
 }
 
-impl<R,H> std::ops::Deref for Connection<R,H> {
+impl<R,H:Handler> std::ops::Deref for Connection<R,H> {
     type Target = Session;
     fn deref(&self) -> &Session {
         &self.session
     }
 }
 
-impl<R,H> std::ops::DerefMut for Connection<R,H> {
+impl<R,H:Handler> std::ops::DerefMut for Connection<R,H> {
     fn deref_mut(&mut self) -> &mut Session {
         &mut self.session
     }
@@ -110,6 +110,10 @@ impl<R,H> std::ops::DerefMut for Connection<R,H> {
 pub struct Session(CommonSession<Config>);
 
 pub trait Handler {
+
+    type FutureBool: Future<Item=bool, Error=Error>;
+    type FutureUnit: Future<Item=(), Error=Error> + FromFinished<(), Error>;
+
     /// Called when the server sends us an authentication banner. This
     /// is usually meant to be shown to the user, see
     /// [RFC4252](https://tools.ietf.org/html/rfc4252#section-5.4) for
@@ -121,9 +125,7 @@ pub trait Handler {
     /// step to help prevent man-in-the-middle attacks. The default
     /// implementation rejects all keys.
     #[allow(unused_variables)]
-    fn check_server_key(&mut self, server_public_key: &key::PublicKey) -> Result<bool, Error> {
-        Ok(false)
-    }
+    fn check_server_key(&mut self, server_public_key: &key::PublicKey) -> Self::FutureBool;
 
     /// Called when the server confirmed our request to open a
     /// channel. A channel can only be written to after receiving this
@@ -132,20 +134,20 @@ pub trait Handler {
     fn channel_open_confirmation(&mut self,
                                  channel: ChannelId,
                                  session: &mut Session)
-                                 -> Result<(), Error> {
-        Ok(())
+                                 -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
     }
 
     /// Called when the server closes a channel.
     #[allow(unused_variables)]
-    fn channel_close(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Error> {
-        Ok(())
+    fn channel_close(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
     }
 
     /// Called when the server sends EOF to a channel.
     #[allow(unused_variables)]
-    fn channel_eof(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Error> {
-        Ok(())
+    fn channel_eof(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
     }
 
     /// Called when the server rejected our request to open a channel.
@@ -156,8 +158,8 @@ pub trait Handler {
                             description: &str,
                             language: &str,
                             session: &mut Session)
-                            -> Result<(), Error> {
-        Ok(())
+                            -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
     }
 
     /// Called when a new channel is created.
@@ -168,7 +170,8 @@ pub trait Handler {
                                     connected_port: u32,
                                     originator_address: &str,
                                     originator_port: u32,
-                                    session: &mut Session) {
+                                    session: &mut Session) -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
     }
 
     /// Called when the server sends us data. The `extended_code`
@@ -181,8 +184,8 @@ pub trait Handler {
             extended_code: Option<u32>,
             data: &[u8],
             session: &mut Session)
-            -> Result<(), Error> {
-        Ok(())
+            -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
     }
 
     /// The server informs this client of whether the client may
@@ -193,8 +196,8 @@ pub trait Handler {
                 channel: ChannelId,
                 client_can_do: bool,
                 session: &mut Session)
-                -> Result<(), Error> {
-        Ok(())
+                -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
     }
 
     /// The remote process has exited, with the given exit status.
@@ -203,8 +206,8 @@ pub trait Handler {
                    channel: ChannelId,
                    exit_status: u32,
                    session: &mut Session)
-                   -> Result<(), Error> {
-        Ok(())
+                   -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
     }
 
     /// The remote process exited upon receiving a signal.
@@ -216,8 +219,8 @@ pub trait Handler {
                    error_message: &str,
                    lang_tag: &str,
                    session: &mut Session)
-                   -> Result<(), Error> {
-        Ok(())
+                   -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
     }
 
     /// Called when the network window is adjusted, meaning that we
@@ -226,8 +229,8 @@ pub trait Handler {
     /// `Session::data` before, and it returned less than the
     /// full amount of data.
     #[allow(unused_variables)]
-    fn window_adjusted(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Error> {
-        Ok(())
+    fn window_adjusted(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
+        Self::FutureUnit::finished(())
     }
 }
 
@@ -294,70 +297,6 @@ impl KexInit {
 }
 
 
-impl KexDhDone {
-    pub fn client_parse<H: Handler>(mut self,
-                                    buffer: &mut CryptoVec,
-                                    buffer2: &mut CryptoVec,
-                                    client: &mut H,
-                                    cipher: &mut CipherPair,
-                                    buf: &[u8],
-                                    write_buffer: &mut SSHBuffer)
-                                    -> Result<Kex, Error> {
-
-        if self.names.ignore_guessed {
-            self.names.ignore_guessed = false;
-            Ok(Kex::KexDhDone(self))
-        } else {
-            debug!("kexdhdone");
-            // We've sent ECDH_INIT, waiting for ECDH_REPLY
-            if buf[0] == msg::KEX_ECDH_REPLY {
-                let hash = {
-                    let mut reader = buf.reader(1);
-                    let pubkey = try!(reader.read_string()); // server public key.
-                    let pubkey = try!(parse_public_key(pubkey));
-                    if !try!(client.check_server_key(&pubkey)) {
-                        return Err(Error::UnknownKey);
-                    }
-                    let server_ephemeral = try!(reader.read_string());
-                    self.exchange.server_ephemeral.extend(server_ephemeral);
-                    let signature = try!(reader.read_string());
-
-                    try!(self.kex.compute_shared_secret(&self.exchange.server_ephemeral));
-
-                    let hash = try!(self.kex
-                        .compute_exchange_hash(&pubkey, &self.exchange, buffer));
-
-                    let signature = {
-                        let mut sig_reader = signature.reader(0);
-                        let sig_type = try!(sig_reader.read_string());
-                        assert_eq!(sig_type, b"ssh-ed25519");
-                        try!(sig_reader.read_string())
-                    };
-
-                    match pubkey {
-                        key::PublicKey::Ed25519(ref pubkey) => {
-                            assert!(signature::verify(&signature::ED25519,
-                                                      untrusted::Input::from(&pubkey),
-                                                      untrusted::Input::from(hash.as_ref()),
-                                                      untrusted::Input::from(signature))
-                                .is_ok());
-                        }
-                    };
-                    debug!("signature = {:?}", signature);
-                    debug!("exchange = {:?}", self.exchange);
-                    hash
-                };
-                let mut newkeys = try!(self.compute_keys(hash, buffer, buffer2, false));
-                cipher.write(&[msg::NEWKEYS], write_buffer);
-                newkeys.sent = true;
-                Ok(Kex::NewKeys(newkeys))
-            } else {
-                return Err(Error::Inconsistent);
-            }
-        }
-    }
-}
-
 
 impl<R:Read+Write, H:Handler> Connection<R, H> {
     pub fn new(config: Arc<Config>, stream: R, handler: H, timeout: Option<Timeout>) -> Self {
@@ -379,7 +318,7 @@ impl<R:Read+Write, H:Handler> Connection<R, H> {
             }),
             stream: BufReader::new(stream),
             state: Some(ConnectionState::WriteSshId),
-            encrypted_future: (),
+            pending_future: None,
             handler: handler,
             buffer: CryptoVec::new(),
             buffer2: CryptoVec::new()
@@ -406,6 +345,17 @@ impl<H: Handler> Future for Connection<TcpStream, H> {
     }
 }
 
+#[doc(hidden)]
+pub enum PendingFuture<H:Handler> {
+    ServerKeyCheck {
+        check: H::FutureBool,
+        kexdhdone: KexDhDone,
+        buf_len: usize
+    },
+    FutureUnit(H::FutureUnit)
+}
+
+
 impl<H:Handler> Connection<TcpStream, H> {
 
     fn poll_timeout(&mut self) -> Poll<(), Error> {
@@ -419,24 +369,82 @@ impl<H:Handler> Connection<TcpStream, H> {
         Ok(Async::Ready(()))
     }
 
+    fn pending_poll(&mut self) -> Poll<(), Error> {
+        debug!("pending_poll {:?}", self.pending_future.is_some());
+        match std::mem::replace(&mut self.pending_future, None) {
+
+            Some(PendingFuture::FutureUnit(mut f)) => {
+                if let Async::Ready(()) = try!(f.poll()) {
+                    Ok(Async::Ready(()))
+                } else {
+                    self.pending_future = Some(PendingFuture::FutureUnit(f));
+                    Ok(Async::NotReady)
+                }
+            },
+            Some(PendingFuture::ServerKeyCheck { mut check, mut kexdhdone, buf_len }) => {
+
+                match try!(check.poll()) {
+                    Async::Ready(false) => Err(Error::UnknownKey),
+                    Async::NotReady => {
+                        self.pending_future = Some(PendingFuture::ServerKeyCheck { check: check, kexdhdone: kexdhdone, buf_len: buf_len });
+                        Ok(Async::NotReady)
+                    }
+                    Async::Ready(true) => {
+                        let buf = &self.read_buffer.buffer[5 .. 5 + buf_len];
+                        debug!("poll buf {:?}", buf);
+                        let hash = {
+                            let mut reader = buf.reader(1);
+                            let pubkey = try!(reader.read_string()); // server public key.
+                            let pubkey = try!(parse_public_key(pubkey));
+                            let server_ephemeral = try!(reader.read_string());
+                            kexdhdone.exchange.server_ephemeral.extend(server_ephemeral);
+                            let signature = try!(reader.read_string());
+
+                            try!(kexdhdone.kex.compute_shared_secret(&kexdhdone.exchange.server_ephemeral));
+
+                            let hash = try!(kexdhdone.kex
+                                            .compute_exchange_hash(&pubkey, &kexdhdone.exchange, &mut self.buffer));
+
+                            let signature = {
+                                let mut sig_reader = signature.reader(0);
+                                let sig_type = try!(sig_reader.read_string());
+                                assert_eq!(sig_type, b"ssh-ed25519");
+                                try!(sig_reader.read_string())
+                            };
+
+                            match pubkey {
+                                key::PublicKey::Ed25519(ref pubkey) => {
+                                    assert!(signature::verify(&signature::ED25519,
+                                                              untrusted::Input::from(&pubkey),
+                                                              untrusted::Input::from(hash.as_ref()),
+                                                              untrusted::Input::from(signature))
+                                            .is_ok());
+                                }
+                            };
+                            debug!("signature = {:?}", signature);
+                            debug!("exchange = {:?}", kexdhdone.exchange);
+                            hash
+                        };
+                        let mut newkeys = try!(kexdhdone.compute_keys(hash, &mut self.buffer, &mut self.buffer2, false));
+                        self.session.0.cipher.write(&[msg::NEWKEYS], &mut self.session.0.write_buffer);
+                        newkeys.sent = true;
+                        self.session.0.kex = Some(Kex::NewKeys(newkeys));
+
+                        Ok(Async::Ready(()))
+                    }
+                }
+            },
+            None => Ok(Async::Ready(()))
+        }
+    }
+
     /// Process all packets available in the buffer, and returns
     /// whether at least one complete packet was read.  `buffer` and
     /// `buffer2` are work spaces mostly used to compute keys. They
     /// are cleared before using, hence nothing is expected from them.
     fn atomic_poll(&mut self) -> Poll<(), Error> {
 
-        /*
-        let encrypted_future_done = if let Some(ref mut read_encrypted) = self.encrypted_future {
-            debug!("Running encrypted future");
-            try_nb!(read_encrypted.poll(&mut self.session, &mut self.buffer));
-            true
-        } else {
-            false
-        };
-        if encrypted_future_done {
-            self.encrypted_future = None;
-        }
-         */
+        try_ready!(self.pending_poll());
 
         debug!("atomic_poll {:?}", self.state);
         // Special case for the beginning.
@@ -485,7 +493,9 @@ impl<H:Handler> Connection<TcpStream, H> {
             Some(ConnectionState::Write) => {
                 self.state = Some(ConnectionState::Write);
                 self.session.flush();
+                debug!("writing");
                 try_nb!(self.session.0.write_buffer.write_all(self.stream.get_mut()));
+                debug!("write_all ok");
                 self.state = Some(ConnectionState::Read);
                 Ok(Async::Ready(()))
             },
@@ -529,19 +539,25 @@ impl<H:Handler> Connection<TcpStream, H> {
                                 try_nb!(self.session.client_read_encrypted(&mut self.handler, buf, &mut self.buffer));
                             }
                     }
-                    Some(Kex::KexDhDone(kexdhdone)) => {
-                        let kex = kexdhdone.client_parse(&mut self.buffer,
-                                                         &mut self.buffer2,
-                                                         &mut self.handler,
-                                                         &mut self.session.0.cipher,
-                                                         buf,
-                                                         &mut self.session.0.write_buffer);
-                        match kex {
-                            Ok(kex) => {
-                                self.session.0.kex = Some(kex);
-                                return Ok(Async::Ready(()));
+                    Some(Kex::KexDhDone(mut kexdhdone)) => {
+                        if kexdhdone.names.ignore_guessed {
+                            kexdhdone.names.ignore_guessed = false;
+                            self.session.0.kex = Some(Kex::KexDhDone(kexdhdone));
+                        } else {
+                            debug!("kexdhdone");
+                            // We've sent ECDH_INIT, waiting for ECDH_REPLY
+                            if buf[0] == msg::KEX_ECDH_REPLY {
+                                let mut reader = buf.reader(1);
+                                let pubkey = try!(reader.read_string()); // server public key.
+                                let pubkey = try!(parse_public_key(pubkey));
+                                self.pending_future = Some(PendingFuture::ServerKeyCheck {
+                                    check: self.handler.check_server_key(&pubkey),
+                                    kexdhdone: kexdhdone,
+                                    buf_len: buf.len()
+                                });
+                            } else {
+                                return Err(Error::Inconsistent)
                             }
-                            Err(e) => return Err(e),
                         }
                     }
                     Some(Kex::NewKeys(newkeys)) => {
@@ -592,7 +608,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                                      port_to_connect: u32,
                                      originator_address: &str,
                                      originator_port: u32) -> ChannelOpen<TcpStream, H, DirectTcpIpChannel> {
-        let num = self.session.channel_open_x11(originator_address, originator_port).unwrap();
+        let num = self.session.channel_open_direct_tcpip(host_to_connect, port_to_connect, originator_address, originator_port).unwrap();
         ChannelOpen {
             connection: Some(self),
             channel: num,
@@ -602,16 +618,23 @@ impl<H:Handler> Connection<TcpStream, H> {
 
     pub fn channel_close(mut self, channel: ChannelId) -> ChannelClose<TcpStream, H> {
         self.0.byte(channel, msg::CHANNEL_CLOSE);
-        self.flush();
+        self.session.flush();
         ChannelClose {
             connection: Some(self),
             channel: channel,
         }
     }
+
+    pub fn flush(mut self) -> Flush<TcpStream, H> {
+        self.session.flush();
+        Flush {
+            connection: Some(self)
+        }
+    }
 }
 
 
-pub struct Authenticate<R, H>(Option<Connection<R, H>>);
+pub struct Authenticate<R, H:Handler>(Option<Connection<R, H>>);
 
 impl<H: Handler> Future for Authenticate<TcpStream, H> {
 
@@ -638,18 +661,18 @@ use std::marker::PhantomData;
 pub enum X11Channel{}
 pub enum SessionChannel{}
 pub enum DirectTcpIpChannel{}
-pub struct ChannelOpen<R, H, ChannelType> {
+pub struct ChannelOpen<R, H:Handler, ChannelType> {
     connection: Option<Connection<R, H>>,
     channel: ChannelId,
     channel_type: PhantomData<ChannelType>
 }
 
-pub struct ChannelClose<R, H> {
+pub struct ChannelClose<R, H:Handler> {
     connection: Option<Connection<R, H>>,
     channel: ChannelId,
 }
 
-pub struct ChannelFlush<R, H> {
+pub struct Flush<R, H:Handler> {
     connection: Option<Connection<R, H>>,
 }
 
@@ -701,7 +724,7 @@ impl<H: Handler> Future for ChannelClose<TcpStream, H> {
     }
 }
 
-impl<H: Handler> Future for ChannelFlush<TcpStream, H> {
+impl<H: Handler> Future for Flush<TcpStream, H> {
 
     type Item = Connection<TcpStream,H>;
     type Error = Error;
@@ -1184,397 +1207,6 @@ impl Session {
         self.flush();
     }
 }
-
-
-
-/*
-#[derive(Debug)]
-enum RunUntil {
-    ChannelOpened(u32),
-    ChannelClosed(u32),
-}
-
-pub struct Client {
-    poll: Poll,
-    events: Events,
-    host: String,
-    port: u16,
-    buffer0: CryptoVec,
-    buffer1: CryptoVec,
-    connection: Connection,
-}
-
-pub struct Connected {
-    client: Client,
-    stream: BufReader<TcpStream>,
-}
-use std::ops::{Deref, DerefMut};
-impl Deref for Connected {
-    type Target = Session;
-    fn deref(&self) -> &Self::Target {
-        &self.client.connection.session
-    }
-}
-
-impl Deref for Client {
-    type Target = Session;
-    fn deref(&self) -> &Self::Target {
-        &self.connection.session
-    }
-}
-impl DerefMut for Connected {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.client.connection.session
-    }
-}
-
-impl DerefMut for Client {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.connection.session
-    }
-}
-
-
-struct C<'s> {
-    host: &'s str,
-    port: u16,
-    key_is_known: Option<bool>,
-    key: Option<key::PublicKey>,
-}
-
-impl<'s> Handler for C<'s> {
-    fn check_server_key(&mut self, pubkey: &key::PublicKey) -> Result<bool, Error> {
-        let known = try!(check_known_hosts(&self.host, self.port, pubkey));
-        self.key_is_known = Some(known);
-        debug!("Is key known? {:?}", known);
-        if !known {
-            self.key = Some(pubkey.clone())
-        }
-        Ok(true)
-    }
-}
-
-fn ssh_path() -> Option<PathBuf> {
-    if cfg!(target_os = "windows") {
-        if let Some(mut dir) = std::env::home_dir() {
-            dir.push("ssh");
-            return Some(dir);
-        }
-    } else {
-        if let Some(mut dir) = std::env::home_dir() {
-            dir.push(".ssh");
-            return Some(dir);
-        }
-    }
-    None
-}
-
-use user;
-
-impl Client {
-    /// Create a client, allocating a `Poll` and an SSH client configuration.
-    pub fn new() -> Self {
-        let poll = Poll::new().unwrap();
-        Client {
-            poll: poll,
-            events: Events::with_capacity(1024),
-            host: "".to_string(),
-            port: 22,
-            buffer0: CryptoVec::new(),
-            buffer1: CryptoVec::new(),
-            connection: Connection::new(Arc::new(Default::default())),
-        }
-    }
-
-
-    /// Parse the ssh config file, from its default location
-    /// (`~/.ssh/config` on Unix, and `%USERPROFILE%/ssh/config` on
-    /// Windows.
-    ///
-    /// ```
-    /// use thrussh::client::*;
-    /// Client::new().default_ssh_config().unwrap();
-    /// ```
-    pub fn default_ssh_config(&mut self) -> Result<Option<std::net::SocketAddr>, Error> {
-        if let Some(mut path) = ssh_path() {
-            path.push("config");
-            let addr = try!(self.ssh_config(&path));
-
-            if !self.connection.has_auth_method() {
-
-                for i in self.connection.config().preferred.key {
-                    path.pop();
-                    path.push(i.identity_file());
-                    debug!("identity file: {:?}", path);
-                    if let Ok(sec) = super::load_secret_key(&path) {
-                        self.connection.set_auth_public_key(sec)
-                    }
-                }
-            }
-            if self.connection.auth_user().len() == 0 {
-                self.connection.set_auth_user(&try!(user::get_user_name()))
-            }
-            Ok(addr)
-        } else {
-            Err(Error::NoSSHConfig)
-        }
-    }
-
-    /// Read an SSH configuration file from a custom path.
-    pub fn ssh_config<P: AsRef<Path>>(&mut self,
-                                      path: P)
-                                      -> Result<Option<std::net::SocketAddr>, Error> {
-
-        let mut f = try!(File::open(path));
-
-        let mut bufr = BufReader::new(&mut f);
-        let mut buffer = String::new();
-        let re = Regex::new(r#"^\s*([A-Za-z]+)\s*(=|\s)\s*("([^"]*)"|([^\s]*))\s*$"#).unwrap();
-
-        // let mut has_canonical_match = false;
-        let mut is_on = false;
-        // First pass.
-        loop {
-            buffer.clear();
-            if try!(bufr.read_line(&mut buffer)) == 0 {
-                break;
-            }
-            if let Some(cap) = re.captures(&buffer) {
-                if is_on {
-                    match (cap.at(1), cap.at(4).or(cap.at(5))) {
-                        (Some("Host"), _) => is_on = false,
-                        (Some("Match"), _) => is_on = false,
-
-                        //
-                        (Some("HostName"), Some(hostname)) => {
-                            self.host.clear();
-                            self.host.push_str(hostname)
-                        }
-                        (Some("IdentityFile"), Some(path)) => {
-                            debug!("identity file: {:?}", path);
-                            self.connection.set_auth_public_key(try!(super::load_secret_key(path)))
-                        }
-                        (Some("Port"), Some(port_)) => self.port = port_.parse().unwrap_or(0),
-                        (Some("User"), Some(user_)) => self.connection.set_auth_user(user_),
-                        (Some(a), Some(b)) => println!("unsupported option: {:?} {:?}", a, b),
-                        _ => {}
-                    }
-                } else {
-                    match (cap.at(1), cap.at(4).or(cap.at(5))) {
-                        (Some("Host"), Some(h)) if h == self.host => is_on = true,
-                        // (Some("Match"), Some(h))  => break,
-                        _ => {}
-                    }
-                }
-            }
-        }
-        // if has_canonical_match {
-        // Second pass, looking only for canonical matches.
-        // try!(bufr.seek(std::io::SeekFrom::Start(0)));
-        // }
-        Ok(None)
-    }
-
-    /// Set the host name, replacing any previously set name. This can
-    /// be a name from the config file.
-    pub fn set_host(&mut self, host: &str) {
-        self.host.clear();
-        self.host.push_str(host)
-    }
-
-    /// Set the port.
-    pub fn set_port(&mut self, port: u16) {
-        self.port = port
-    }
-
-    /// Connect this client.
-    pub fn connect(self) -> Result<Connected, Error> {
-        let addr = try!((&self.host[..], self.port).to_socket_addrs()).next().unwrap();
-        let sock = try!(TcpStream::connect(&addr));
-        try!(self.poll
-            .register(&sock, Token(0), Ready::all(), PollOpt::edge()));
-        Ok(Connected {
-            client: self,
-            stream: BufReader::new(sock),
-        })
-    }
-}
-
-
-
-
-impl Connected {
-    /// Attempt (or re-attempt) authentication. Returns `Ok(Some(…))`
-    /// if the server's host key is unknown, `Ok(None)` if
-    /// authentication succeeded, and errors in all other cases.
-    pub fn authenticate(&mut self) -> Result<Option<key::PublicKey>, Error> {
-        try!(self.client
-            .poll
-            .reregister(self.stream.get_ref(),
-                        Token(0),
-                        Ready::all(),
-                        PollOpt::edge()));
-        let mut d = C {
-            host: &self.client.host,
-            port: self.client.port,
-            key_is_known: None,
-            key: None,
-        };
-
-
-        try!(self.client.connection.write(self.stream.get_mut()));
-        loop {
-            match self.client.poll.poll(&mut self.client.events, None) {
-                Ok(n) if n > 0 => {
-                    for events in self.client.events.into_iter() {
-                        let kind = events.kind();
-                        if kind.is_error() || kind.is_hup() {
-                            return Err(From::from(Error::HUP));
-                        } else {
-                            if kind.is_readable() {
-                                try!(self.client.connection.read(&mut d,
-                                                                 &mut self.stream,
-                                                                 &mut self.client.buffer0,
-                                                                 &mut self.client.buffer1));
-                                if d.key_is_known == Some(false) {
-                                    return Ok(Some(d.key.unwrap()));
-                                }
-
-                                if self.client
-                                    .connection
-                                    .session
-                                    .is_authenticated() {
-                                    return Ok(None);
-                                }
-                                if !self.client
-                                    .connection
-                                    .session
-                                    .has_auth_method() {
-                                    return Err(Error::AuthFailed);
-                                }
-                            }
-                            if kind.is_writable() {
-                                try!(self.client.connection.write(self.stream.get_mut()));
-                            }
-                        }
-                    }
-                }
-                _ => break,
-            }
-        }
-        if self.client.connection.session.is_authenticated() {
-            Ok(None)
-        } else {
-            Err(Error::AuthFailed)
-        }
-    }
-    /// Write the host into the known_hosts file.
-    pub fn learn_host(&self, key: &key::PublicKey) -> Result<(), Error> {
-        try!(learn_known_hosts(&self.client.host, self.client.port, key));
-        Ok(())
-    }
-
-    /// Waiting until the given channel is open.
-    pub fn wait_channel_open<C: Handler>(&mut self, c: &mut C, channel: u32) -> Result<(), Error> {
-        try!(self.client
-            .poll
-            .reregister(self.stream.get_ref(),
-                        Token(0),
-                        Ready::all(),
-                        PollOpt::edge()));
-        try!(self.run(c, Some(RunUntil::ChannelOpened(channel))));
-        Ok(())
-    }
-
-    /// Waiting until the given channel is closed by the remote side.
-    pub fn wait_channel_close<C: Handler>(&mut self, c: &mut C, channel: u32) -> Result<(), Error> {
-        try!(self.client
-            .poll
-            .reregister(self.stream.get_ref(),
-                        Token(0),
-                        Ready::all(),
-                        PollOpt::edge()));
-        try!(self.run(c, Some(RunUntil::ChannelClosed(channel))));
-        Ok(())
-    }
-
-    fn run<R: Handler>(&mut self, client: &mut R, until: Option<RunUntil>) -> Result<(), Error> {
-
-        try!(self.client.connection.write(self.stream.get_mut()));
-        loop {
-            match self.client.poll.poll(&mut self.client.events, None) {
-                Ok(n) if n > 0 => {
-                    for events in self.client.events.into_iter() {
-                        let kind = events.kind();
-                        if kind.is_error() || kind.is_hup() {
-                            return Err(From::from(Error::HUP));
-                        } else {
-                            if kind.is_readable() {
-                                try!(self.client.connection.read(client,
-                                                                 &mut self.stream,
-                                                                 &mut self.client.buffer0,
-                                                                 &mut self.client.buffer1));
-                                match until {
-                                    Some(RunUntil::ChannelOpened(x)) if self.client
-                                        .connection
-                                        .session
-                                        .channel_is_open(x) => {
-                                        return Ok(());
-                                    }
-                                    Some(RunUntil::ChannelClosed(x)) if !self.client
-                                        .connection
-                                        .session
-                                        .channel_is_open(x) => {
-                                        return Ok(());
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            if kind.is_writable() {
-                                try!(self.client.connection.write(self.stream.get_mut()));
-                            }
-                        }
-                    }
-                }
-                _ => break,
-            }
-        }
-        Ok(())
-    }
-
-    /// Run the protocol until some condition is satisfied on the client.
-    pub fn run_until<R: Handler, F: Fn(&Client, &mut R) -> bool>(&mut self,
-                                                                 client: &mut R,
-                                                                 until: F)
-                                                                 -> Result<(), Error> {
-        try!(self.client.connection.write(self.stream.get_mut()));
-        while !until(&self.client, client) {
-            match self.client.poll.poll(&mut self.client.events, None) {
-                Ok(n) if n > 0 => {
-                    for events in self.client.events.into_iter() {
-                        let kind = events.kind();
-                        if kind.is_error() || kind.is_hup() {
-                            return Err(From::from(Error::HUP));
-                        } else {
-                            if kind.is_readable() {
-                                try!(self.client.connection.read(client,
-                                                                 &mut self.stream,
-                                                                 &mut self.client.buffer0,
-                                                                 &mut self.client.buffer1));
-                            }
-                            if kind.is_writable() {
-                                try!(self.client.connection.write(self.stream.get_mut()));
-                            }
-                        }
-                    }
-                }
-                _ => break,
-            }
-        }
-        Ok(())
-    }
-}
-*/
 
 
 /// Record a host's public key into the user's known_hosts file.

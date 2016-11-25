@@ -1,6 +1,8 @@
 extern crate thrussh;
 extern crate env_logger;
 extern crate futures;
+#[macro_use]
+extern crate log;
 use std::sync::{Arc, Mutex};
 use thrussh::*;
 use thrussh::server::*;
@@ -24,9 +26,9 @@ impl thrussh::server::Handler for H {
         h.password.push_str(password);
         futures::finished(true)
     }
-    fn auth_keyboard_interactive(&mut self, user: &str, submethods: &str, response: Option<thrussh::server::Response>) -> Self::FutureAuth {
-        println!("\n\n======================\n\nuser {:?} {:?}\n\n", user, response);
-        if let Some(mut resp) = response {
+    fn auth_keyboard_interactive(&mut self, user: &str, _: &str, response: Option<thrussh::server::Response>) -> Self::FutureAuth {
+        println!("Keyboard interactive, user {:?}", user);
+        if let Some(resp) = response {
 
             for resp in resp {
                 println!("resp: {:?}", resp)
@@ -43,124 +45,15 @@ impl thrussh::server::Handler for H {
         }
     }
 
-    fn auth_none(&mut self, user: &str) -> Self::FutureBool {
-        futures::finished(true)
-    }
-
     fn auth_publickey(&mut self, user: &str, public_key: &key::PublicKey) -> Self::FutureBool {
+        debug!("publickey request by user {:?}, pub {:?}", user, public_key);
         futures::finished(true)
-    }
-
-    fn channel_close(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
-        futures::finished(())
-    }
-
-    fn channel_eof(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
-        futures::finished(())
-    }
-
-    fn channel_open_session(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
-        futures::finished(())
-    }
-    fn channel_open_x11(&mut self,
-                        channel: ChannelId,
-                        originator_address: &str,
-                        originator_port: u32,
-                        session: &mut Session)
-                        -> Self::FutureUnit {
-        futures::finished(())
-    }
-
-    fn channel_open_direct_tcpip(&mut self,
-                                 channel: ChannelId,
-                                 host_to_connect: &str,
-                                 port_to_connect: u32,
-                                 originator_address: &str,
-                                 originator_port: u32,
-                                 session: &mut Session)
-                                 -> Self::FutureUnit {
-        futures::finished(())
     }
 
     fn data(&mut self, channel: ChannelId, data: &[u8], session: &mut Session) -> Self::FutureUnit {
-        println!("======== data: {:?} =======", std::str::from_utf8(data));
+        println!("data on channel {:?}: {:?}", channel, std::str::from_utf8(data));
+        session.data(channel, None, data).unwrap();
         futures::finished(())
-    }
-
-    fn extended_data(&mut self, channel: ChannelId, code: u32, data: &[u8], session: &mut Session) -> Self::FutureUnit {
-        futures::finished(())
-    }
-
-    fn window_adjusted(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
-        futures::finished(())
-    }
-
-    fn pty_request(&mut self,
-                   channel: ChannelId,
-                   term: &str,
-                   col_width: u32,
-                   row_height: u32,
-                   pix_width: u32,
-                   pix_height: u32,
-                   modes: &[(Pty, u32)],
-                   session: &mut Session)
-                   -> Self::FutureUnit {
-        futures::finished(())
-    }
-
-    fn x11_request(&mut self,
-                   channel: ChannelId,
-                   single_connection: bool,
-                   x11_auth_protocol: &str,
-                   x11_auth_cookie: &str,
-                   x11_screen_number: u32,
-                   session: &mut Session)
-                   -> Self::FutureUnit {
-        futures::finished(())
-    }
-
-    fn env_request(&mut self,
-                   channel: ChannelId,
-                   variable_name: &str,
-                   variable_value: &str,
-                   session: &mut Session)
-                   -> Self::FutureUnit {
-        futures::finished(())
-    }
-
-    fn shell_request(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
-        futures::finished(())
-    }
-
-    fn exec_request(&mut self, channel: ChannelId, data: &[u8], session: &mut Session) -> Self::FutureUnit {
-        futures::finished(())
-    }
-
-    fn subsystem_request(&mut self, channel: ChannelId, name: &str, session: &mut Session) -> Self::FutureUnit {
-        futures::finished(())
-    }
-
-    fn window_change_request(&mut self,
-                             channel: ChannelId,
-                             col_width: u32,
-                             row_height: u32,
-                             pix_width: u32,
-                             pix_height: u32,
-                             session: &mut Session)
-                             -> Self::FutureUnit {
-        futures::finished(())
-    }
-
-    fn signal(&mut self, channel: ChannelId, signal_name: Sig, session: &mut Session) -> Self::FutureUnit {
-        futures::finished(())
-    }
-
-    fn tcpip_forward(&mut self, address: &str, port: u32, session: &mut Session) -> Self::FutureBool {
-        futures::finished(true)
-    }
-
-    fn cancel_tcpip_forward(&mut self, address: &str, port: u32, session: &mut Session) -> Self::FutureBool {
-        futures::finished(true)
     }
 }
 
@@ -169,6 +62,7 @@ fn main() {
     env_logger::init().unwrap();
     let mut config = thrussh::server::Config::default();
     config.connection_timeout = Some(std::time::Duration::from_secs(600));
+    config.auth_rejection_time = std::time::Duration::from_secs(3);
     config.keys.push(thrussh::load_secret_key("ssh_host_ed25519_key").unwrap());
     let config = Arc::new(config);
     let sh = H::default();

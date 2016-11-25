@@ -24,7 +24,7 @@ use key;
 use key::PubKey;
 use negociation;
 use negociation::Select;
-
+use super::PendingFuture;
 const SSH_CONNECTION: &'static [u8] = b"ssh-connection";
 
 impl super::Session {
@@ -33,7 +33,7 @@ impl super::Session {
                                                     client: &mut C,
                                                     buf: &[u8],
                                                     buffer: &mut CryptoVec)
-                                                    -> Result<(), Error> {
+                                                    -> Result<Option<PendingFuture<C>>, Error> {
 
         // Either this packet is a KEXINIT, in which case we start a key re-exchange.
         if buf[0] == msg::KEXINIT {
@@ -53,7 +53,7 @@ impl super::Session {
                                                                       buf,
                                                                       &mut self.0.write_buffer))));
                 }
-                return Ok(());
+                return Ok(None);
             }
         }
         // If we've successfully read a packet.
@@ -78,7 +78,7 @@ impl super::Session {
                                 if enc.write_auth_request(&self.0.auth_user, meth) {
                                     enc.state =
                                         Some(EncryptedState::WaitingAuthRequest(auth_request));
-                                    return Ok(());
+                                    return Ok(None);
                                 }
                             }
                             enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
@@ -152,7 +152,7 @@ impl super::Session {
                             return Err(Error::Inconsistent);
                         }
                     }
-                    try!(client.channel_open_confirmation(id_send, self));
+                    Ok(Some(PendingFuture::FutureUnit(client.channel_open_confirmation(id_send, self))))
                 }
                 msg::CHANNEL_CLOSE => {
                     let mut r = buf.reader(1);
@@ -160,12 +160,12 @@ impl super::Session {
                     if let Some(ref mut enc) = self.0.encrypted {
                         enc.channels.remove(&channel_num);
                     }
-                    try!(client.channel_close(channel_num, self));
+                    Ok(Some(PendingFuture::FutureUnit(client.channel_close(channel_num, self))))
                 }
                 msg::CHANNEL_EOF => {
                     let mut r = buf.reader(1);
                     let channel_num = ChannelId(try!(r.read_u32()));
-                    try!(client.channel_eof(channel_num, self));
+                    Ok(Some(PendingFuture::FutureUnit(client.channel_eof(channel_num, self))))
                 }
                 msg::CHANNEL_OPEN_FAILURE => {
                     let mut r = buf.reader(1);
@@ -176,30 +176,32 @@ impl super::Session {
                     if let Some(ref mut enc) = self.0.encrypted {
                         enc.channels.remove(&channel_num);
                     }
-                    try!(client.channel_open_failure(
+                    Ok(Some(PendingFuture::FutureUnit(client.channel_open_failure(
                         channel_num, reason_code, descr, language, self
-                    ));
+                    ))))
                 }
                 msg::CHANNEL_DATA => {
                     let mut r = buf.reader(1);
                     let channel_num = ChannelId(try!(r.read_u32()));
                     let data = try!(r.read_string());
-                    try!(client.data(channel_num, None, &data, self));
+                    let unit = client.data(channel_num, None, &data, self);
                     let target = self.0.config.window_size;
                     if let Some(ref mut enc) = self.0.encrypted {
                         enc.adjust_window_size(channel_num, data, target);
                     }
+                    Ok(Some(PendingFuture::FutureUnit(unit)))
                 }
                 msg::CHANNEL_EXTENDED_DATA => {
                     let mut r = buf.reader(1);
                     let channel_num = ChannelId(try!(r.read_u32()));
                     let extended_code = try!(r.read_u32());
                     let data = try!(r.read_string());
-                    try!(client.data(channel_num, Some(extended_code), &data, self));
+                    let unit = client.data(channel_num, Some(extended_code), &data, self);
                     let target = self.0.config.window_size;
                     if let Some(ref mut enc) = self.0.encrypted {
                         enc.adjust_window_size(channel_num, data, target);
                     }
+                    Ok(Some(PendingFuture::FutureUnit(unit)))
                 }
                 msg::CHANNEL_REQUEST => {
                     let mut r = buf.reader(1);
@@ -211,17 +213,17 @@ impl super::Session {
                             let b = try!(r.read_u32());
                             let c = try!(std::str::from_utf8(try!(r.read_string())));
                             let d = try!(r.read_u32());
-                            client.channel_open_forwarded_tcpip(channel_num, a, b, c, d, self);
+                            Ok(Some(PendingFuture::FutureUnit(client.channel_open_forwarded_tcpip(channel_num, a, b, c, d, self))))
                         }
                         b"xon-xoff" => {
                             try!(r.read_byte()); // should be 0.
                             let client_can_do = try!(r.read_byte());
-                            try!(client.xon_xoff(channel_num, client_can_do != 0, self));
+                            Ok(Some(PendingFuture::FutureUnit(client.xon_xoff(channel_num, client_can_do != 0, self))))
                         }
                         b"exit-status" => {
                             try!(r.read_byte()); // should be 0.
                             let exit_status = try!(r.read_u32());
-                            try!(client.exit_status(channel_num, exit_status, self));
+                            Ok(Some(PendingFuture::FutureUnit(client.exit_status(channel_num, exit_status, self))))
                         }
                         b"exit-signal" => {
                             try!(r.read_byte()); // should be 0.
@@ -229,14 +231,17 @@ impl super::Session {
                             let core_dumped = try!(r.read_byte());
                             let error_message = try!(std::str::from_utf8(try!(r.read_string())));
                             let lang_tag = try!(std::str::from_utf8(try!(r.read_string())));
-                            try!(client.exit_signal(channel_num,
+                            Ok(Some(PendingFuture::FutureUnit(client.exit_signal(channel_num,
                                                     signal_name,
                                                     core_dumped != 0,
                                                     error_message,
                                                     lang_tag,
-                                                    self));
+                                                    self))))
                         }
-                        _ => unimplemented!(),
+                        _ => {
+                            info!("Unknown channel request {:?}", std::str::from_utf8(req));
+                            Ok(None)
+                        }
                     }
                 }
                 msg::CHANNEL_WINDOW_ADJUST => {
@@ -250,21 +255,25 @@ impl super::Session {
                             return Err(Error::WrongChannel);
                         }
                     }
-                    try!(client.window_adjusted(channel_num, self));
+                    Ok(Some(PendingFuture::FutureUnit(client.window_adjusted(channel_num, self))))
                 }
                 msg::GLOBAL_REQUEST => {
                     let mut r = buf.reader(1);
                     let req = try!(r.read_string());
                     info!("Unhandled global request: {:?}", std::str::from_utf8(req));
+                    Ok(None)
                 }
                 _ => {
                     info!("Unhandled packet: {:?}", buf);
+                    Ok(None)
                 }
             }
+        } else {
+            Ok(None)
         }
-        Ok(())
     }
 }
+
 impl Encrypted {
     pub fn write_auth_request(&mut self,
                               user: &str,
