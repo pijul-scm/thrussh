@@ -131,7 +131,6 @@ impl super::Session {
         if is_authenticated {
             match buf[0] {
                 msg::CHANNEL_OPEN_CONFIRMATION => {
-                    debug!("channel_confirmation? {:?}", buf);
                     let mut reader = buf.reader(1);
                     let id_send = ChannelId(try!(reader.read_u32()));
                     let id_recv = try!(reader.read_u32());
@@ -308,7 +307,6 @@ impl Encrypted {
                                  user: &str,
                                  method: &auth::Method<key::Algorithm>,
                                  buffer: &mut CryptoVec) {
-        debug!("sending signature {:?}", method);
         match method {
             &auth::Method::PublicKey { ref key } => {
 
@@ -324,7 +322,6 @@ impl Encrypted {
                 key.push_to(buffer);
                 // Extend with self-signature.
                 key.add_self_signature(buffer);
-                debug!("packet : {:?}", &buffer[i0..]);
                 push_packet!(self.write, {
                     self.write.extend(&buffer[i0..]);
                 })

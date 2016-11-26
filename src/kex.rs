@@ -30,7 +30,6 @@ use encoding::Encoding;
 pub struct Algorithm {
     local_secret: Option<agreement::EphemeralPrivateKey>,
     local_pubkey: Option<Vec<u8>>,
-    // remote_pubkey: Option<Vec<u8>>,
     shared_secret: Option<Vec<u8>>,
 }
 
@@ -68,23 +67,20 @@ impl Algorithm {
             untrusted::Input::from(&payload[5..(5 + pubkey_len)])
         };
 
-        let server_secret = try!(agreement::EphemeralPrivateKey::generate(alg, &rng)
-                                    .map_err(|_| Error::Inconsistent/*XXX*/));
+        let server_secret = try!(agreement::EphemeralPrivateKey::generate(alg, &rng));
         let mut server_pubkey = vec![0; server_secret.public_key_len()];
-        try!(server_secret.compute_public_key(&mut server_pubkey[..])
-                          .map_err(|_| Error::Inconsistent/*XXX*/));
+        try!(server_secret.compute_public_key(&mut server_pubkey[..]));
 
         // fill exchange.
         exchange.server_ephemeral.clear();
         exchange.server_ephemeral.extend(&server_pubkey);
-
         // XXX: There is no assertion that the peer is using the same key exchange algorithm.
         agreement::agree_ephemeral(server_secret, &agreement::X25519, client_pubkey,
                                    Error::Inconsistent/*XXX*/, |shared_secret| {
+                                       println!("shared: {:?}", shared_secret);
             Ok(Algorithm {
                 local_secret: None,
                 local_pubkey: Some(server_pubkey),
-                // remote_pubkey: Some(Vec::from(client_pubkey.as_slice_less_safe())),
                 shared_secret: Some(Vec::from(shared_secret)),
             })
         })
@@ -101,12 +97,11 @@ impl Algorithm {
             _ => unreachable!(),
         };
 
-        let client_secret = try!(agreement::EphemeralPrivateKey::generate(alg, &rng)
-                                    .map_err(|_| Error::Inconsistent/*XXX*/));
+        let client_secret = try!(agreement::EphemeralPrivateKey::generate(alg, &rng));
+
 
         let mut client_pubkey = vec![0; client_secret.public_key_len()];
-        try!(client_secret.compute_public_key(&mut client_pubkey)
-                .map_err(|_| Error::Inconsistent/*XXX*/));
+        try!(client_secret.compute_public_key(&mut client_pubkey));
 
         // fill exchange.
         client_ephemeral.clear();
@@ -115,10 +110,10 @@ impl Algorithm {
         buf.push(msg::KEX_ECDH_INIT);
         buf.extend_ssh_string(&client_pubkey);
 
+
         Ok(Algorithm {
             local_secret: Some(client_secret),
             local_pubkey: Some(client_pubkey),
-            // remote_pubkey: None,
             shared_secret: None,
         })
     }
@@ -132,7 +127,6 @@ impl Algorithm {
         agreement::agree_ephemeral(local_secret, peer_alg,
                                    untrusted::Input::from(remote_pubkey), Error::Inconsistent/*XXX*/,
                                    |shared_secret| {
-            debug!("client shared : {:?}", shared_secret);
             self.shared_secret = Some(Vec::from(shared_secret));
             Ok(())
         })
@@ -144,13 +138,6 @@ impl Algorithm {
                                                  buffer: &mut CryptoVec)
                                                  -> Result<digest::Digest, Error> {
         // Computing the exchange hash, see page 7 of RFC 5656.
-
-        debug!("{:?} {:?}",
-                std::str::from_utf8(&exchange.client_id),
-               std::str::from_utf8(&exchange.server_id));
-        let a:&[u8] = exchange.client_kex_init.deref();
-        let b:&[u8] = exchange.server_kex_init.deref();
-        debug!("{:?} {:?}", a, b);
         buffer.clear();
         buffer.extend_ssh_string(&exchange.client_id);
         buffer.extend_ssh_string(&exchange.server_id);
@@ -159,8 +146,6 @@ impl Algorithm {
 
 
         key.push_to(buffer);
-        debug!("client_ephemeral: {:?}",
-                &exchange.client_ephemeral);
         debug_assert_eq!(exchange.client_ephemeral.len(), 32);
         buffer.extend_ssh_string(&exchange.client_ephemeral);
 
@@ -170,13 +155,8 @@ impl Algorithm {
         if let Some(ref shared) = self.shared_secret {
             buffer.extend_ssh_mpint(&shared);
         }
-        debug!("buffer len = {:?}", buffer.len());
-        use std::ops::Deref;
-        let b:&[u8] = buffer.deref();
-        debug!("buffer: {:?}", b);
         // super::hexdump(buffer);
         let hash = digest::digest(&digest::SHA256, &buffer);
-        debug!("hash: {:?}", hash);
         Ok(hash)
     }
 

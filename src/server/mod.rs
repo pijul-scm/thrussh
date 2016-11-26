@@ -19,7 +19,8 @@ use std::io::BufReader;
 use std::net::ToSocketAddrs;
 
 use futures::stream::Stream;
-use futures::{Future, Poll, Async};
+use futures::{Poll, Async};
+use futures::future::Future;
 use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::reactor::{Core, Timeout, Handle};
 
@@ -488,10 +489,10 @@ impl<H: Handler> Future for Connection<TcpStream, H> {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        // If timeout, shutdown the socket.
         loop {
-            /*if let Some(ref mut timeout) = self.timeout {
-                match try_ready!(timeout.poll()) {
+            // If timeout, shutdown the socket.
+            if let Some(ref mut timeout) = self.timeout {
+                match try!(timeout.poll()) {
                     Async::Ready(()) => {
                         try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
                         debug!("Disconnected, shutdown");
@@ -499,7 +500,7 @@ impl<H: Handler> Future for Connection<TcpStream, H> {
                     }
                     Async::NotReady => {}
                 }
-            }*/
+            }
             debug!("polling, state = {:?}", self.state);
             try_ready!(self.atomic_poll());
             if self.state.is_none() {

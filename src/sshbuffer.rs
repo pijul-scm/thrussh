@@ -13,7 +13,7 @@
 // limitations under the License.
 //
 
-use std::io::{Write, ErrorKind};
+use std::io::Write;
 use super::*;
 use std::num::Wrapping;
 
@@ -47,23 +47,11 @@ impl SSHBuffer {
 
     /// Returns true iff the write buffer has been completely written.
     pub fn write_all<W: Write>(&mut self, stream: &mut W) -> Result<bool, Error> {
-        // debug!("write_all, self = {:?}", &self.buffer);
         while self.len < self.buffer.len() {
-            match self.buffer.write_all_from(self.len, stream) {
-                Ok(s) => {
-                    debug!("written {:?} bytes", s);
-                    self.len += s;
-                    self.bytes += s;
-                    try!(stream.flush());
-                }
-                Err(e) => {
-                    if e.kind() == ErrorKind::WouldBlock {
-                        return Ok(false);
-                    } else {
-                        return Err(Error::IO(e));
-                    }
-                }
-            }
+            let s = try!(self.buffer.write_all_from(self.len, stream));
+            self.len += s;
+            self.bytes += s;
+            try!(stream.flush());
         }
         self.buffer.clear();
         self.len = 0;

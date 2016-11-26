@@ -131,7 +131,7 @@ impl Session {
         debug!("authenticated buf = {:?}", buf);
         match buf[0] {
             msg::CHANNEL_OPEN => {
-                Ok(Authenticated::ChannelOpen(try!(self.server_handle_channel_open(server, buf))))
+                Ok(Authenticated::FutureUnit(try!(self.server_handle_channel_open(server, buf))))
             }
             msg::CHANNEL_CLOSE => {
                 let mut r = buf.reader(1);
@@ -347,7 +347,7 @@ impl Session {
     fn server_handle_channel_open<'a, S: Handler>(&mut self,
                                                   server: &mut S,
                                                   buf: &[u8])
-                                                  -> Result<ChannelOpen<S>, Error> {
+                                                  -> Result<FutureUnit<S>, Error> {
 
         // https://tools.ietf.org/html/rfc4254#section-5.1
         let mut r = buf.reader(1);
@@ -376,30 +376,24 @@ impl Session {
         };
         Ok(match typ {
             b"session" => {
-                ChannelOpen {
-                    fut: FutureUnit::H(server.channel_open_session(sender_channel, self)),
-                    channel: Some(channel),
-                }
+                self.confirm_channel_open(channel);
+                FutureUnit::H(server.channel_open_session(sender_channel, self))
             }
             b"x11" => {
+                self.confirm_channel_open(channel);
                 let a = try!(std::str::from_utf8(try!(r.read_string())));
                 let b = try!(r.read_u32());
-                ChannelOpen {
-                    fut: FutureUnit::H(server.channel_open_x11(sender_channel, a, b, self)),
-                    channel: Some(channel),
-                }
+                FutureUnit::H(server.channel_open_x11(sender_channel, a, b, self))
             }
             b"direct-tcpip" => {
+                self.confirm_channel_open(channel);
                 let a = try!(std::str::from_utf8(try!(r.read_string())));
                 let b = try!(r.read_u32());
                 let c = try!(std::str::from_utf8(try!(r.read_string())));
                 let d = try!(r.read_u32());
-                ChannelOpen {
-                    fut: FutureUnit::H(
-                        server.channel_open_direct_tcpip(sender_channel, a, b, c, d, self)
-                    ),
-                    channel: Some(channel),
-                }
+                FutureUnit::H(
+                    server.channel_open_direct_tcpip(sender_channel, a, b, c, d, self)
+                )
             }
             t => {
                 debug!("unknown channel type: {:?}", t);
@@ -412,17 +406,20 @@ impl Session {
                         enc.write.extend_ssh_string(b"en");
                     });
                 }
-                ChannelOpen {
-                    fut: FutureUnit::Done(futures::done(Ok(()))),
-                    channel: Some(channel),
-                }
+                FutureUnit::Done(futures::done(Ok(())))
             }
         })
+    }
+    fn confirm_channel_open(&mut self, channel: Channel) {
+        if let Some(ref mut enc) = self.0.encrypted {
+            server_confirm_channel_open(&mut enc.write, &channel, self.0.config.as_ref());
+            enc.channels.insert(channel.sender_channel, channel);
+            enc.state = Some(EncryptedState::Authenticated);
+        }
     }
 }
 
 pub enum Authenticated<H: Handler> {
-    ChannelOpen(ChannelOpen<H>),
     FutureUnit(FutureUnit<H>),
     Forward(Forward<H>),
 }
@@ -430,7 +427,6 @@ pub enum Authenticated<H: Handler> {
 impl<H: Handler> Authenticated<H> {
     pub fn poll(&mut self, session: &mut Session) -> futures::Poll<(), Error> {
         match *self {
-            Authenticated::ChannelOpen(ref mut a) => a.poll(session),
             Authenticated::FutureUnit(ref mut a) => a.poll(),
             Authenticated::Forward(ref mut a) => a.poll(session),
         }
@@ -441,11 +437,6 @@ impl<H: Handler> Authenticated<H> {
     fn future_unit(h: H::FutureUnit) -> Self {
         Authenticated::FutureUnit(FutureUnit::H(h))
     }
-}
-
-pub struct ChannelOpen<H: Handler> {
-    fut: FutureUnit<H>,
-    channel: Option<Channel>,
 }
 
 pub enum FutureUnit<H: Handler> {
@@ -461,26 +452,6 @@ impl<H: Handler> Future for FutureUnit<H> {
             FutureUnit::H(ref mut a) => a.poll(),
             FutureUnit::Done(ref mut a) => a.poll(),
         }
-    }
-}
-
-impl<H: Handler> ChannelOpen<H> {
-    pub fn poll(&mut self, session: &mut Session) -> futures::Poll<(), Error> {
-        try_ready!(self.fut.poll());
-        debug!("waiting channel open: {:?}", self.channel);
-        // Write the response immediately, so that we're ready when
-        // the stream becomes writable.
-        if let Some(ref mut enc) = session.0.encrypted {
-
-            let channel = std::mem::replace(&mut self.channel, None).unwrap();
-
-            server_confirm_channel_open(&mut enc.write, &channel, session.0.config.as_ref());
-            //
-            let sender_channel = channel.sender_channel;
-            enc.channels.insert(sender_channel, channel);
-            enc.state = Some(EncryptedState::Authenticated);
-        }
-        Ok(Async::Ready(()))
     }
 }
 

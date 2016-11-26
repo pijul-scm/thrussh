@@ -88,7 +88,7 @@ extern crate user;
 extern crate log;
 extern crate byteorder;
 
-extern crate rustc_serialize; // config: read base 64.
+extern crate rustc_serialize; // Reading keys in base64.
 extern crate untrusted;
 extern crate regex;
 extern crate cryptovec;

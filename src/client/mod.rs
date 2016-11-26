@@ -16,7 +16,8 @@
 use std::sync::Arc;
 use std::io::{Read, Write, BufReader};
 use std;
-use futures::{Future, Poll, Async};
+use futures::{Poll, Async};
+use futures::future::Future;
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Timeout;
 
@@ -335,11 +336,9 @@ impl<H: Handler> Future for Connection<TcpStream, H> {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        debug!("client poll");
         // If timeout, shutdown the socket.
         try_ready!(self.poll_timeout());
         loop {
-            debug!("polling, state = {:?}", self.state);
             try_ready!(self.atomic_poll())
         }
     }
@@ -370,7 +369,6 @@ impl<H:Handler> Connection<TcpStream, H> {
     }
 
     fn pending_poll(&mut self) -> Poll<(), Error> {
-        debug!("pending_poll {:?}", self.pending_future.is_some());
         match std::mem::replace(&mut self.pending_future, None) {
 
             Some(PendingFuture::FutureUnit(mut f)) => {
@@ -391,7 +389,6 @@ impl<H:Handler> Connection<TcpStream, H> {
                     }
                     Async::Ready(true) => {
                         let buf = &self.read_buffer.buffer[5 .. 5 + buf_len];
-                        debug!("poll buf {:?}", buf);
                         let hash = {
                             let mut reader = buf.reader(1);
                             let pubkey = try!(reader.read_string()); // server public key.
@@ -421,8 +418,6 @@ impl<H:Handler> Connection<TcpStream, H> {
                                             .is_ok());
                                 }
                             };
-                            debug!("signature = {:?}", signature);
-                            debug!("exchange = {:?}", kexdhdone.exchange);
                             hash
                         };
                         let mut newkeys = try!(kexdhdone.compute_keys(hash, &mut self.buffer, &mut self.buffer2, false));
@@ -446,7 +441,6 @@ impl<H:Handler> Connection<TcpStream, H> {
 
         try_ready!(self.pending_poll());
 
-        debug!("atomic_poll {:?}", self.state);
         // Special case for the beginning.
         match std::mem::replace(&mut self.state, None) {
             None => {
@@ -469,7 +463,6 @@ impl<H:Handler> Connection<TcpStream, H> {
                     }
                     Err(e) => Err(e),
                     _ => {
-                        debug!("ssh id ready");
                         self.read_buffer.bytes += sshid.id_len + 2;
                         let mut exchange = Exchange::new();
                         exchange.server_id.extend(sshid.id());
@@ -493,9 +486,7 @@ impl<H:Handler> Connection<TcpStream, H> {
             Some(ConnectionState::Write) => {
                 self.state = Some(ConnectionState::Write);
                 self.session.flush();
-                debug!("writing");
                 try_nb!(self.session.0.write_buffer.write_all(self.stream.get_mut()));
-                debug!("write_all ok");
                 self.state = Some(ConnectionState::Read);
                 Ok(Async::Ready(()))
             },
@@ -504,7 +495,6 @@ impl<H:Handler> Connection<TcpStream, H> {
                 self.state = Some(ConnectionState::Read);
                 // In all other cases:
                 let buf = try_nb!(self.session.0.cipher.read(&mut self.stream, &mut self.read_buffer));
-                debug!("read buf = {:?}", buf);
                 // Handle the transport layer.
                 if buf[0] == msg::DISCONNECT {
                     // transport
@@ -544,7 +534,6 @@ impl<H:Handler> Connection<TcpStream, H> {
                             kexdhdone.names.ignore_guessed = false;
                             self.session.0.kex = Some(Kex::KexDhDone(kexdhdone));
                         } else {
-                            debug!("kexdhdone");
                             // We've sent ECDH_INIT, waiting for ECDH_REPLY
                             if buf[0] == msg::KEX_ECDH_REPLY {
                                 let mut reader = buf.reader(1);
@@ -571,7 +560,6 @@ impl<H:Handler> Connection<TcpStream, H> {
                     }
                     Some(kex) => self.session.0.kex = Some(kex),
                     None => {
-                        debug!("calling read_encrypted");
                         try_nb!(self.session.client_read_encrypted(&mut self.handler, buf, &mut self.buffer));
                     }
                 }
@@ -740,7 +728,10 @@ impl<H: Handler> Future for Flush<TcpStream, H> {
                 unreachable!()
             };
             if completely_written {
-                return Ok(Async::Ready(std::mem::replace(&mut self.connection, None).unwrap()))
+                if let Some(mut c) = std::mem::replace(&mut self.connection, None) {
+                    c.state = Some(ConnectionState::Write);
+                    return Ok(Async::Ready(c))
+                }
             }
         }
     }
@@ -889,7 +880,6 @@ impl Session {
         let result = if let Some(ref mut enc) = self.0.encrypted {
             match enc.state {
                 Some(EncryptedState::Authenticated) => {
-                    debug!("sending open request");
 
                     let sender_channel =
                         enc.new_channel(self.0.config.window_size,
@@ -935,7 +925,6 @@ impl Session {
         let result = if let Some(ref mut enc) = self.0.encrypted {
             match enc.state {
                 Some(EncryptedState::Authenticated) => {
-                    debug!("sending open request");
 
                     let sender_channel =
                         enc.new_channel(self.0.config.window_size,

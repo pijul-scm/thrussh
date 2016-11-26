@@ -49,9 +49,13 @@ impl thrussh::server::Handler for H {
         debug!("publickey request by user {:?}, pub {:?}", user, public_key);
         futures::finished(true)
     }
-
+    fn channel_open_session(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
+        debug!("channel open {:?}", channel);
+        session.data(channel, None, b"Test !").unwrap();
+        futures::finished(())
+    }
     fn data(&mut self, channel: ChannelId, data: &[u8], session: &mut Session) -> Self::FutureUnit {
-        println!("data on channel {:?}: {:?}", channel, std::str::from_utf8(data));
+        debug!("data on channel {:?}: {:?}", channel, std::str::from_utf8(data));
         session.data(channel, None, data).unwrap();
         futures::finished(())
     }

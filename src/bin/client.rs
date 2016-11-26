@@ -35,14 +35,10 @@ fn run<H: Handler + 'static>(config: Arc<Config>, addr: &str, handler: H) {
 
                 connection.channel_open_session().and_then(|(mut connection, chan)| {
 
-                    try!(connection.data(chan, None, b"AAAAAA"));
-                    try!(connection.data(chan, None, b"BBBBBBBBBB"));
-                    connection.flush().and_then(|mut connection| {
+                    connection.data(chan, None, b"AAAAAA").unwrap();
+                    connection.data(chan, None, b"BBBBBB").unwrap();
+                    connection
 
-                        try!(connection.data(chan, None, b"CCCCCCCCCCCCCCCC"));
-                        connection.flush().and_then(|mut connection| connection.wait()).wait()
-
-                    }).wait()
                 })
             })
         });
@@ -58,8 +54,12 @@ impl Handler for H {
         debug!("check_server_key: {:?}", server_public_key);
         futures::finished(true)
     }
-    fn data(&mut self, channel: ChannelId, ext: Option<u32>, data: &[u8], session: &mut Session) -> Self::FutureUnit {
-        println!("data on channel {:?}: {:?}", channel, std::str::from_utf8(data));
+    fn channel_open_confirmation(&mut self, channel: ChannelId, _: &mut Session) -> Self::FutureUnit {
+        debug!("channel_open_confirmation: {:?}", channel);
+        futures::finished(())
+    }
+    fn data(&mut self, channel: ChannelId, ext: Option<u32>, data: &[u8], _: &mut Session) -> Self::FutureUnit {
+        debug!("data on channel {:?} {:?}: {:?}", ext, channel, std::str::from_utf8(data));
         futures::finished(())
     }
 }

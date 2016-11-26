@@ -197,9 +197,11 @@ impl Encrypted {
                 extended: Option<u32>,
                 buf: &[u8])
                 -> Result<usize, Error> {
+        use std::ops::Deref;
         if let Some(channel) = self.channels.get_mut(&channel) {
             assert!(channel.confirmed);
             debug!("output {:?} {:?}", channel, buf);
+            debug!("output {:?}", self.write.deref());
             let mut buf = if buf.len() as u32 > channel.recipient_window_size {
                 &buf[0..channel.recipient_window_size as usize]
             } else {
@@ -208,11 +210,9 @@ impl Encrypted {
             let buf_len = buf.len();
 
             while buf.len() > 0 && channel.recipient_window_size > 0 {
-
                 // Compute the length we're allowed to send.
                 let off = std::cmp::min(buf.len(), channel.recipient_maximum_packet_size as usize);
                 let off = std::cmp::min(off, channel.recipient_window_size as usize);
-
                 push_packet!(self.write, {
                     if let Some(ext) = extended {
                         self.write.push(msg::CHANNEL_EXTENDED_DATA);
@@ -224,7 +224,6 @@ impl Encrypted {
                     }
                     self.write.extend_ssh_string(&buf[..off]);
                 });
-                use std::ops::Deref;
                 debug!("buffer: {:?}", self.write.deref());
                 channel.recipient_window_size -= off as u32;
                 buf = &buf[off..]
