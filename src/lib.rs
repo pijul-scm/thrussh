@@ -13,65 +13,124 @@
 // limitations under the License.
 //
 
-//! Server and client SSH library. More information [here](https://pijul.org/thrussh).
+//! Server and client SSH library, based on *ring* for its crypto, and
+//! tokio/futures for its network management. More information at
+//! [pijul.org/thrussh](https://pijul.org/thrussh).
 //!
-//! Here is an example, using `Vec`s as instances of `Read` and `Write`, instead of network sockets.
+//! Here is an example client and server:
 //!
 //! ```
-//! extern crate thrussh;
-//! use std::sync::{Arc, Mutex};
+//!extern crate thrussh;
+//!extern crate futures;
+//!extern crate tokio_core;
+//!extern crate env_logger;
+//!use std::sync::Arc;
+//!use thrussh::*;
 //!
-//! #[derive(Debug, Clone, Default)]
-//! struct H(Arc<Mutex<HH>>);
-//! #[derive(Debug, Default)]
-//! struct HH {
-//!     user: String,
-//!     password: String,
-//! }
+//!#[derive(Clone)]
+//!struct H{}
 //!
-//! impl thrussh::server::Handler for H {
-//!     fn auth_password(&mut self, user: &str, password: &str) -> bool {
-//!         let mut h = self.0.lock().unwrap();
-//!         h.user.push_str(user);
-//!         h.password.clear();
-//!         h.password.push_str(password);
-//!         true
-//!     }
-//! }
-//! impl thrussh::client::Handler for H {
-//!     fn check_server_key(&mut self, server_public_key: &thrussh::key::PublicKey) -> Result<bool, thrussh::Error> {
-//!         // This function returns false by default.
-//!         Ok(true)
-//!     }
-//! }
+//!impl server::Handler for H {
+//!    type FutureAuth = futures::Finished<server::Auth, Error>;
+//!    type FutureUnit = futures::Finished<(), Error>;
+//!    type FutureBool = futures::Finished<bool, Error>;
 //!
-//! fn main() {
-//!     let sh = H::default();
-//!     let server = {
-//!         let mut config = thrussh::server::Config::default();
-//!         config.keys.push(thrussh::key::Algorithm::generate_keypair(thrussh::key::ED25519).unwrap());
-//!         let config = Arc::new(config);
-//!         let sh = sh.clone();
-//!         std::thread::spawn(move || thrussh::server::run(config, "0.0.0.0:2222", sh));
-//!     };
-//!     {
-//!         let mut ch = H::default();
-//!         let mut client = thrussh::client::Client::new();
-//!         client.set_host("localhost");
-//!         client.set_port(2222);
-//!         let mut client = client.connect().unwrap();
-//!         client.set_auth_user("black");
-//!         client.set_auth_password("bird".to_string());
-//!         client.authenticate().unwrap();
-//!         client.run_until(&mut ch, |client, _| client.is_authenticated()).unwrap();
-//!         std::thread::sleep(std::time::Duration::from_secs(2));
-//!         client.disconnect(thrussh::Disconnect::ByApplication, "ciao", "IT");
-//!         client.run_until(&mut ch, |client, _| client.is_disconnected()).unwrap();
-//!     }
-//!     let sh = sh.0.lock().unwrap();
-//!     assert_eq!(sh.user, "black");
-//!     assert_eq!(sh.password, "bird");
-//! }
+//!    fn auth_publickey(&mut self, _: &str, _: &key::PublicKey) -> Self::FutureBool {
+//!        futures::finished(true)
+//!    }
+//!    fn data(&mut self, channel: ChannelId, data: &[u8], session: &mut server::Session) -> Self::FutureUnit {
+//!        println!("data on channel {:?}: {:?}", channel, std::str::from_utf8(data));
+//!        session.data(channel, None, data).unwrap();
+//!        futures::finished(())
+//!    }
+//!}
+//!
+//!
+//!use std::net::ToSocketAddrs;
+//!use futures::Future;
+//!use tokio_core::net::TcpStream;
+//!use tokio_core::reactor::Core;
+//!
+//!
+//!struct Client { }
+//!
+//!impl client::Handler for Client {
+//!    type FutureBool = futures::Finished<bool, Error>;
+//!    type FutureUnit = futures::Finished<(), Error>;
+//!    fn check_server_key(&mut self, server_public_key: &key::PublicKey) -> Self::FutureBool {
+//!        println!("check_server_key: {:?}", server_public_key);
+//!        futures::finished(true)
+//!    }
+//!    fn channel_open_confirmation(&mut self, channel: ChannelId, _: &mut client::Session) -> Self::FutureUnit {
+//!        println!("channel_open_confirmation: {:?}", channel);
+//!        futures::finished(())
+//!    }
+//!    fn data(&mut self, channel: ChannelId, ext: Option<u32>, data: &[u8], _: &mut client::Session) -> Self::FutureUnit {
+//!        println!("data on channel {:?} {:?}: {:?}", ext, channel, std::str::from_utf8(data));
+//!        futures::finished(())
+//!    }
+//!}
+//!
+//!impl Client {
+//!    fn run(self, config: Arc<client::Config>, addr: &str) {
+//!
+//!        let addr = addr.to_socket_addrs().unwrap().next().unwrap();
+//!        let mut l = Core::new().unwrap();
+//!        let handle = l.handle();
+//!        let done =
+//!            TcpStream::connect(&addr, &handle).map_err(|err| thrussh::Error::IO(err)).and_then(|socket| {
+//!
+//!                println!("connected");
+//!                let mut connection = client::Connection::new(
+//!                    config.clone(),
+//!                    socket,
+//!                    self,
+//!                    None
+//!                );
+//!
+//!                connection.set_auth_user("pe");
+//!                connection.set_auth_public_key(thrussh::load_secret_key("/home/pe/.ssh/id_ed25519").unwrap());
+//!                // debug!("connection");
+//!                connection.authenticate().and_then(|connection| {
+//!
+//!                    connection.channel_open_session().and_then(|(mut connection, chan)| {
+//!
+//!                        connection.data(chan, None, b"First test").unwrap();
+//!                        connection.data(chan, None, b"Second test").unwrap();
+//!                        connection.disconnect(Disconnect::ByApplication, "Ciao", "");
+//!                        connection
+//!
+//!                    })
+//!                })
+//!            });
+//!        l.run(done).unwrap();
+//!    }
+//!
+//!}
+//!
+//!fn main() {
+//!    env_logger::init().unwrap();
+//!    // Starting the server thread.
+//!    let t = std::thread::spawn(|| {
+//!        let mut config = thrussh::server::Config::default();
+//!        config.connection_timeout = Some(std::time::Duration::from_secs(600));
+//!        config.auth_rejection_time = std::time::Duration::from_secs(3);
+//!        config.keys.push(thrussh::key::Algorithm::generate_keypair(thrussh::key::ED25519).unwrap());
+//!        let config = Arc::new(config);
+//!        let sh = H{};
+//!        thrussh::server::run(config, "0.0.0.0:2222", sh);
+//!    });
+//!
+//!    std::thread::sleep(std::time::Duration::from_secs(1));
+//!    let mut config = thrussh::client::Config::default();
+//!    config.connection_timeout = Some(std::time::Duration::from_secs(600));
+//!    let config = Arc::new(config);
+//!    let sh = Client {};
+//!    sh.run(config, "127.0.0.1:2222");
+//!
+//!    // Kill the server thread after the client has ended.
+//!    std::mem::forget(t)
+//!}
 //! ```
 
 
