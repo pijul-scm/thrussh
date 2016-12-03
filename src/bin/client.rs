@@ -59,7 +59,7 @@ impl Handler for H {
         futures::finished(())
     }
     fn data(&mut self, channel: ChannelId, ext: Option<u32>, data: &[u8], _: &mut Session) -> Self::FutureUnit {
-        debug!("data on channel {:?} {:?}: {:?}", ext, channel, std::str::from_utf8(data));
+        println!("data on channel {:?} {:?}: {:?}", ext, channel, std::str::from_utf8(data));
         futures::finished(())
     }
 }

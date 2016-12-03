@@ -77,7 +77,6 @@ impl Algorithm {
         // XXX: There is no assertion that the peer is using the same key exchange algorithm.
         agreement::agree_ephemeral(server_secret, &agreement::X25519, client_pubkey,
                                    Error::Inconsistent/*XXX*/, |shared_secret| {
-                                       println!("shared: {:?}", shared_secret);
             Ok(Algorithm {
                 local_secret: None,
                 local_pubkey: Some(server_pubkey),
