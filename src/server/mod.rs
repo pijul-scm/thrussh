@@ -169,7 +169,9 @@ pub trait Handler {
                                  user: &str,
                                  submethods: &str,
                                  response: Option<Response>)
-                                 -> Self::FutureAuth;
+                                 -> Self::FutureAuth {
+        Self::FutureAuth::finished(Auth::Reject)
+    }
 
     /// Called when the client closes a channel.
     #[allow(unused_variables)]
@@ -502,8 +504,7 @@ impl<H: Handler> Future for Connection<TcpStream, H> {
                 }
             }
             debug!("polling, state = {:?}", self.state);
-            try_ready!(self.atomic_poll());
-            if self.state.is_none() {
+            if let Status::Disconnect = try_ready!(self.atomic_poll()) {
                 return Ok(Async::Ready(()))
             }
         }
@@ -601,7 +602,7 @@ impl<H:Handler> Connection<TcpStream, H> {
         debug!("connection state: {:?}", self.state);
 
         match std::mem::replace(&mut self.state, None) {
-            None if self.session.0.disconnected => Ok(Async::Ready(Status::Ok)),
+            None if self.session.0.disconnected => Ok(Async::Ready(Status::Disconnect)),
             None => {
                 try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
                 self.session.0.disconnected = true;
@@ -661,7 +662,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                 let buf = try_nb!(self.session.0.cipher.read(&mut self.stream, &mut self.read_buffer));
                 debug!("read buf = {:?}", buf);
                 // Handle the transport layer.
-                if buf[0] == msg::DISCONNECT {
+                if buf.len() == 0 || buf[0] == msg::DISCONNECT {
                     // transport
                     self.state = None;
                     debug!("Received disconnect, shutdown");

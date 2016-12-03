@@ -14,9 +14,7 @@
 //
 use byteorder::{ByteOrder, BigEndian};
 use Error;
-use std::io::BufRead;
 use std;
-use cryptovec::CryptoVec;
 use sshbuffer::SSHBuffer;
 use std::num::Wrapping;
 
@@ -106,53 +104,49 @@ pub trait SealingKey {
     fn seal(&self, seqn: u32, plaintext_in_ciphertext_out: &mut [u8], tag_out: &mut [u8]);
 }
 
-/// Fills the read buffer, and returns whether a complete message has been read.
-fn read(stream: &mut BufRead,
-        read_buffer: &mut CryptoVec,
-        read_len: usize,
-        bytes_read: &mut usize)
-        -> Result<(), Error> {
-    // This loop consumes something or returns, it cannot loop forever.
-    loop {
-        let consumed_len = {
-            let buf = try!(stream.fill_buf());
-            if read_buffer.len() + buf.len() < read_len + 4 {
-                read_buffer.extend(buf);
-                buf.len()
-            } else {
-                let consumed_len = read_len + 4 - read_buffer.len();
-                read_buffer.extend(&buf[0..consumed_len]);
-                consumed_len
-            }
-        };
-        stream.consume(consumed_len);
-        *bytes_read += consumed_len;
-        if read_buffer.len() >= 4 + read_len {
-            return Ok(());
-        }
-    }
-}
-
-
 impl CipherPair {
-    pub fn read<'a>(&self,
-                    stream: &mut BufRead,
-                    buffer: &'a mut SSHBuffer)
-                    -> Result<&'a [u8], Error> {
+    pub fn read<'a, R:std::io::Read>(&self,
+                                     mut stream: R,
+                                     buffer: &'a mut SSHBuffer)
+                                     -> Result<&'a [u8], Error> {
 
         let key = self.remote_to_local.as_opening_key();
 
         let seqn = buffer.seqn.0;
 
         if buffer.len == 0 {
+
             buffer.buffer.clear();
-            let mut len = [0; 4];
-            try!(stream.read_exact(&mut len));
-            buffer.buffer.extend(&len);
-            let len = key.decrypt_packet_length(seqn, len);
+
+            while buffer.read_len_bytes < 4 {
+                debug!("cipherpair: reading");
+                let r = buffer.read_len_bytes;
+                let extra = try!(stream.read(&mut buffer.len_bytes[r..]));
+                if extra == 0 {
+                    return Ok(&[])
+                } else {
+                    buffer.read_len_bytes += extra
+                }
+            }
+
+            buffer.buffer.extend(&buffer.len_bytes);
+            let len = key.decrypt_packet_length(seqn, buffer.len_bytes);
             buffer.len = BigEndian::read_u32(&len) as usize + key.tag_len();
+            buffer.read_len_bytes = 0;
+
         }
-        try!(read(stream, &mut buffer.buffer, buffer.len, &mut buffer.bytes));
+
+        while buffer.buffer.len() < 4 + buffer.len {
+            // try!(read(stream, &mut buffer.buffer, buffer.len, &mut buffer.bytes));
+            debug!("cipherpair: reading ciphertext");
+            let current_len = buffer.buffer.len();
+            let n = try!(buffer.buffer.read(4 + buffer.len - current_len, &mut stream));
+            if n == 0 {
+                return Ok(&[])
+            } else {
+                buffer.bytes += n;
+            }
+        }
 
         let ciphertext_len = buffer.buffer.len() - key.tag_len();
         let (ciphertext, tag) = buffer.buffer.split_at_mut(ciphertext_len);
@@ -190,8 +184,8 @@ impl CipherPair {
         assert!(padding_length <= std::u8::MAX as usize);
         buffer.buffer.push(padding_length as u8);
         buffer.buffer.extend(payload);
-        key.fill_padding(buffer.buffer.reserve(padding_length));
-        buffer.buffer.reserve(key.tag_len());
+        key.fill_padding(buffer.buffer.resize_mut(padding_length));
+        buffer.buffer.resize_mut(key.tag_len());
 
         let (plaintext, tag) = buffer.buffer[offset..]
             .split_at_mut(PACKET_LENGTH_LEN + packet_length);

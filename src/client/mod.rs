@@ -274,7 +274,7 @@ impl KexInit {
                                                  &mut self.exchange.client_kex_init));
 
         cipher.write(&self.exchange.client_kex_init[i0..], write_buffer);
-        self.exchange.client_kex_init.truncate(i0);
+        self.exchange.client_kex_init.resize(i0);
 
 
         Ok(KexDhDone {
@@ -339,7 +339,10 @@ impl<H: Handler> Future for Connection<TcpStream, H> {
         // If timeout, shutdown the socket.
         try_ready!(self.poll_timeout());
         loop {
-            try_ready!(self.atomic_poll())
+            debug!("client polling");
+            if ! try_ready!(self.atomic_poll()) {
+                return Ok(Async::Ready(()))
+            }
         }
     }
 }
@@ -362,6 +365,7 @@ impl<H:Handler> Connection<TcpStream, H> {
             if let Async::Ready(()) = try!(timeout.poll()) {
                 debug!("Timeout, shutdown");
                 try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
+                self.session.0.disconnected = true;
                 return Err(Error::ConnectionTimeout)
             }
         }
@@ -437,18 +441,21 @@ impl<H:Handler> Connection<TcpStream, H> {
     /// whether at least one complete packet was read.  `buffer` and
     /// `buffer2` are work spaces mostly used to compute keys. They
     /// are cleared before using, hence nothing is expected from them.
-    fn atomic_poll(&mut self) -> Poll<(), Error> {
+    fn atomic_poll(&mut self) -> Poll<bool, Error> {
 
         try_ready!(self.pending_poll());
 
         // Special case for the beginning.
         match std::mem::replace(&mut self.state, None) {
+            None if self.session.0.disconnected => Ok(Async::Ready(false)),
             None => {
-                Ok(Async::Ready(()))
+                try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
+                self.session.0.disconnected = true;
+                Ok(Async::Ready(false))
             }
             Some(ConnectionState::WriteSshId) => {
                 self.state = Some(ConnectionState::ReadSshId { sshid: read_ssh_id() });
-                Ok(Async::Ready(()))
+                Ok(Async::Ready(true))
             }
             Some(ConnectionState::ReadSshId { mut sshid }) => {
 
@@ -479,7 +486,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                                              &mut self.session.0.write_buffer);
                         self.session.0.kex = Some(Kex::KexInit(kexinit));
                         self.state = Some(ConnectionState::Write);
-                        Ok(Async::Ready(()))
+                        Ok(Async::Ready(true))
                     }
                 }
             },
@@ -488,7 +495,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                 self.session.flush();
                 try_nb!(self.session.0.write_buffer.write_all(self.stream.get_mut()));
                 self.state = Some(ConnectionState::Read);
-                Ok(Async::Ready(()))
+                Ok(Async::Ready(true))
             },
             Some(ConnectionState::Read) => {
 
@@ -496,16 +503,16 @@ impl<H:Handler> Connection<TcpStream, H> {
                 // In all other cases:
                 let buf = try_nb!(self.session.0.cipher.read(&mut self.stream, &mut self.read_buffer));
                 // Handle the transport layer.
-                if buf[0] == msg::DISCONNECT {
+                if buf.len() == 0 || buf[0] == msg::DISCONNECT {
                     // transport
-                    return Ok(Async::Ready(()));
+                    return Ok(Async::Ready(false));
                 }
                 // If we don't disconnect, keep the state.
                 self.state = Some(ConnectionState::Write);
 
                 // Handle transport layer packets.
                 if buf[0] <= 4 {
-                    return Ok(Async::Ready(()))
+                    return Ok(Async::Ready(true))
                 }
 
                 // Handle key exchange/re-exchange.
@@ -521,7 +528,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                                 match kexdhdone {
                                     Ok(kexdhdone) => {
                                         self.session.0.kex = Some(Kex::KexDhDone(kexdhdone));
-                                        return Ok(Async::Ready(()));
+                                        return Ok(Async::Ready(true));
                                     }
                                     Err(e) => return Err(e),
                                 }
@@ -563,7 +570,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                         try_nb!(self.session.client_read_encrypted(&mut self.handler, buf, &mut self.buffer));
                     }
                 }
-                Ok(Async::Ready(()))
+                Ok(Async::Ready(true))
             }
         }
     }
@@ -634,6 +641,7 @@ impl<H: Handler> Future for Authenticate<TcpStream, H> {
             try_ready!(c.poll_timeout());
         }
         loop {
+            debug!("authenticated loop");
             let is_authenticated = if let Some(ref c) = self.0 { c.is_authenticated() }  else { false };
             if is_authenticated {
                 return Ok(Async::Ready(std::mem::replace(&mut self.0, None).unwrap()))
@@ -675,6 +683,7 @@ impl<H: Handler, ChannelType> Future for ChannelOpen<TcpStream, H, ChannelType> 
         }
 
         loop {
+            debug!("channelopen loop");
             let is_open = if let Some(ref c) = self.connection {
                 c.channel_is_open(self.channel)
             }  else { false };
@@ -699,6 +708,7 @@ impl<H: Handler> Future for ChannelClose<TcpStream, H> {
         }
 
         loop {
+            debug!("channelclose loop");
             let is_open = if let Some(ref c) = self.connection {
                 c.channel_is_open(self.channel)
             }  else { false };
@@ -722,6 +732,7 @@ impl<H: Handler> Future for Flush<TcpStream, H> {
             try_ready!(c.poll_timeout());
         }
         loop {
+            debug!("flush loop");
             let completely_written = if let Some(ref mut c) = self.connection {
                 try_nb!(c.session.0.write_buffer.write_all(c.stream.get_mut()))
             } else {

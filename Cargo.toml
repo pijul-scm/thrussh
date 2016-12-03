@@ -10,25 +10,25 @@ documentation = "https://pijul.org/thrussh/doc/thrussh"
 license = "Apache-2.0"
 include = [
         "Cargo.toml",
-        "src/server/mod.rs",
-        "src/server/encrypted.rs",
-        "src/negociation.rs",
-        "src/kex.rs",
         "src/auth.rs",
-        "src/cryptobuf.rs",
-        "src/cipher",
-        "src/cipher/mod.rs",
-        "src/cipher/chacha20poly1305.rs",
-        "src/msg.rs",
-        "src/lib.rs",
         "src/encoding.rs",
-        "src/client",
-        "src/client/mod.rs",
-        "src/client/encrypted.rs",
+        "src/kex.rs",
         "src/key.rs",
+        "src/lib.rs",
+        "src/msg.rs",
+        "src/negociation.rs",
+        "src/pty.rs",
         "src/session.rs",
         "src/sshbuffer.rs",
-        "src/pty.rs"
+        "src/bin/client.rs",
+        "src/bin/server.rs",
+        "src/cipher/chacha20poly1305.rs",
+        "src/cipher/clear.rs",
+        "src/cipher/mod.rs",
+        "src/client/mod.rs",
+        "src/client/encrypted.rs",
+        "src/server/mod.rs",
+        "src/server/encrypted.rs"
         ]
 
 [dependencies]
@@ -37,19 +37,19 @@ byteorder = "0.5"
 bitflags = "0.7"
 libc = "0.2"
 log = "0.3"
-ring = { path = "../ring" }
+ring = "0.6.0-alpha"
 rustc-serialize = "0.3"
 time = "0.1"
 untrusted = "0.3.1"
 mio = "0.6"
 regex = "0.1"
 user = "0.1.1"
-cryptovec = "0.2"
+cryptovec = "0.3"
 
-tokio-core = "*"
-futures = "*"
+tokio-core = "0.1"
+futures = "0.1"
 
-env_logger = "*"
+env_logger = "0.3"
 
 [dev-dependencies]
 tempdir="0.3"

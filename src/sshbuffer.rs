@@ -23,6 +23,9 @@ pub struct SSHBuffer {
     pub len: usize, // next packet length.
     pub bytes: usize,
 
+    pub len_bytes: [u8;4],
+    pub read_len_bytes: usize,
+
     // Sequence numbers are on 32 bits and wrap.
     // https://tools.ietf.org/html/rfc4253#section-6.4
     pub seqn: Wrapping<u32>,
@@ -34,6 +37,8 @@ impl SSHBuffer {
             buffer: CryptoVec::new(),
             len: 0,
             bytes: 0,
+            len_bytes: [0;4],
+            read_len_bytes: 0,
             seqn: Wrapping(0),
         }
     }
@@ -46,9 +51,9 @@ impl SSHBuffer {
     }
 
     /// Returns true iff the write buffer has been completely written.
-    pub fn write_all<W: Write>(&mut self, stream: &mut W) -> Result<bool, Error> {
+    pub fn write_all<W:Write>(&mut self, mut stream: W) -> Result<bool, Error> {
         while self.len < self.buffer.len() {
-            let s = try!(self.buffer.write_all_from(self.len, stream));
+            let s = try!(self.buffer.write_all_from(self.len, &mut stream));
             self.len += s;
             self.bytes += s;
             try!(stream.flush());
