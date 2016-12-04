@@ -149,6 +149,7 @@ impl<C> CommonSession<C> {
         }
     }
 
+    /// Send a disconnect message.
     pub fn disconnect(&mut self, reason: Disconnect, description: &str, language_tag: &str) {
         let disconnect = |buf: &mut CryptoVec| {
             push_packet!(buf, {
@@ -165,6 +166,7 @@ impl<C> CommonSession<C> {
         }
     }
 
+    /// Send a single byte message onto the channel.
     pub fn byte(&mut self, channel: ChannelId, msg: u8) {
         if let Some(ref mut enc) = self.encrypted {
             if let Some(channel) = enc.channels.get(&channel) {

@@ -6,7 +6,7 @@ version = "0.7.0"
 authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
 repository = "https://pijul.org/thrussh"
 homepage = "https://pijul.org/thrussh"
-documentation = "https://pijul.org/thrussh/doc/thrussh"
+documentation = "https://docs.rs/thrussh"
 license = "Apache-2.0"
 include = [
         "Cargo.toml",

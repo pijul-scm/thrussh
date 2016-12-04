@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-
+#![deny(missing_docs,
+        trivial_casts,
+        unstable_features,
+        unused_import_braces, unused_qualifications)]
 //! Server and client SSH library, based on *ring* for its crypto, and
 //! tokio/futures for its network management. More information at
 //! [pijul.org/thrussh](https://pijul.org/thrussh).
@@ -166,7 +169,6 @@ use std::fs::File;
 use std::ops::Deref;
 use std::borrow::Cow;
 use std::fs::OpenOptions;
-use std::sync::Arc;
 
 pub use cryptovec::CryptoVec;
 
@@ -190,7 +192,9 @@ macro_rules! push_packet {
 
 mod session;
 
+/// Since handlers are large, their associated future types must implement this trait to provide reasonable default implementations (basically, rejecting all requests).
 pub trait FromFinished<T, E>:futures::Future<Item=T, Error=E> {
+    /// Turns type `T` into `Self`, a future yielding `T`.
     fn finished(t: T) -> Self;
 }
 impl<T, E> FromFinished<T, E> for futures::Finished<T, E> {
@@ -200,31 +204,60 @@ impl<T, E> FromFinished<T, E> for futures::Finished<T, E> {
 }
 
 #[derive(Debug)]
+/// Errors.
 pub enum Error {
+    /// The key file could not be parsed.
     CouldNotReadKey,
+    /// Base 64 decoding error.
     Base64(rustc_serialize::base64::FromBase64Error),
+
+    /// Could not find common algorithms.
     KexInit,
+
+    /// Invalid SSH version string.
     Version,
+
+    /// Error during key exchange.
     Kex,
+
+    /// Invalid packet authentication code.
     PacketAuth,
-    NewKeys,
+
+    /// The protocol is in an inconsistent state.
     Inconsistent,
+
+    /// Index out of bounds.
     IndexOutOfBounds,
+
+    /// UTF-8 decoding error (most probably ASCII error).
     Utf8(std::str::Utf8Error),
+
+    /// Unknown server key.
     UnknownKey,
+
+    /// Message received/sent on unopened channel.
     WrongChannel,
-    UnknownChannelType,
-    UnknownSignal,
+
+    /// I/O error.
     IO(std::io::Error),
+
+    /// Disconnected
     Disconnect,
+
+    /// No home directory found when trying to learn new host key.
     NoHomeDir,
+
+    /// Remote key changed, this could mean a man-in-the-middle attack
+    /// is being performed on the connection.
     KeyChanged,
+
+    /// Connection closed by the remote side.
     HUP,
+
+    /// Error from the cryptography layer (*ring*).
     Ring(ring::error::Unspecified),
-    NoSSHConfig,
-    NoHostName,
-    AuthFailed,
-    User(user::Error),
+
+    /// Connection timeout.
     ConnectionTimeout,
 }
 impl Error {
@@ -252,22 +285,15 @@ impl std::error::Error for Error {
             Error::Kex => "Received invalid key exchange packet",
             Error::Version => "Invalid version string from the remote side",
             Error::PacketAuth => "Incorrect packet authentication code",
-            Error::NewKeys => "No NEWKEYS packet received",
             Error::Inconsistent => "Unexpected packet",
             Error::IndexOutOfBounds => "Index out of bounds in a packet",
             Error::UnknownKey => "Unknown host key",
             Error::WrongChannel => "Inexistent channel",
-            Error::UnknownChannelType => "Unknown channel type",
-            Error::UnknownSignal => "Unknown signal",
             Error::Disconnect => "Disconnected",
             Error::NoHomeDir => "Home directory not found",
             Error::KeyChanged => "Server key changed",
             Error::HUP => "Connection closed by the remote side",
             Error::Ring(ref e) => e.description(),
-            Error::User(ref e) => e.description(),
-            Error::NoSSHConfig => "The SSH config file was not found.",
-            Error::NoHostName => "No host name was given",
-            Error::AuthFailed => "Authentication failed",
             Error::ConnectionTimeout => "Connection timout",
         }
     }
@@ -277,7 +303,6 @@ impl std::error::Error for Error {
             Error::Utf8(ref e) => Some(e),
             Error::IO(ref e) => Some(e),
             Error::Ring(ref e) => Some(e),
-            Error::User(ref e) => Some(e),
             _ => None,
         }
     }
@@ -302,11 +327,7 @@ impl From<rustc_serialize::base64::FromBase64Error> for Error {
         Error::Base64(e)
     }
 }
-impl From<user::Error> for Error {
-    fn from(e: user::Error) -> Error {
-        Error::User(e)
-    }
-}
+
 
 mod negociation;
 use negociation::Named;
@@ -316,9 +337,11 @@ pub use pty::Pty;
 mod msg;
 /// Key generation and use.
 pub mod key;
-pub mod kex;
+pub use key::parse_public_key;
 
-pub mod cipher;
+mod kex;
+
+mod cipher;
 
 // mod mac;
 // use mac::*;
@@ -338,6 +361,7 @@ pub struct Limits {
 }
 
 impl Limits {
+    /// Create a new `Limits`, checking that the given bounds cannot lead to nonce reuse.
     pub fn new(write_limit: usize, read_limit: usize, time_limit: std::time::Duration) -> Limits {
         assert!(write_limit <= 1<<30 && read_limit <= 1<<30);
         Limits {
@@ -360,30 +384,35 @@ impl Default for Limits {
     }
 }
 
+/// Server side of this library.
 pub mod server;
+
+/// Client side of this library.
 pub mod client;
 
-
 /// A reason for disconnection.
+#[allow(missing_docs)] // This should be relatively self-explanatory.
 pub enum Disconnect {
     HostNotAllowedToConnect = 1,
     ProtocolError = 2,
     KeyExchangeFailed = 3,
+    #[doc(hidden)]
     Reserved = 4,
-    MacError = 5,
+    MACError = 5,
     CompressionError = 6,
     ServiceNotAvailable = 7,
     ProtocolVersionNotSupported = 8,
     HostKeyNotVerifiable = 9,
     ConnectionLost = 10,
     ByApplication = 11,
-    TooManyConnectionss = 12,
+    TooManyConnections = 12,
     AuthCancelledByUser = 13,
     NoMoreAuthMethodsAvailable = 14,
     IllegalUserName = 15,
 }
 
 /// The type of signals that can be sent to a remote process. If you plan to use custom signals, read [the RFC](https://tools.ietf.org/html/rfc4254#section-6.10) to understand the encoding.
+#[allow(missing_docs)] // This should be relatively self-explanatory.
 #[derive(Debug, Clone, Copy)]
 pub enum Sig<'a> {
     ABRT,
@@ -441,6 +470,7 @@ impl<'a> Sig<'a> {
 
 /// Reason for not being able to open a channel.
 #[derive(Debug, Copy, Clone, PartialEq)]
+#[allow(missing_docs)]
 pub enum ChannelOpenFailure {
     AdministrativelyProhibited = 1,
     ConnectFailed = 2,
@@ -509,18 +539,9 @@ pub fn parse_public_key_base64(key: &str) -> Result<key::PublicKey, Error> {
     parse_public_key(&base)
 }
 
-pub fn parse_public_key(p: &[u8]) -> Result<key::PublicKey, Error> {
-    debug!("parse_public_key {:?}", p);
-    let mut pos = p.reader(0);
-    if try!(pos.read_string()) == b"ssh-ed25519" {
-        if let Ok(pubkey) = pos.read_string() {
-            return Ok(key::PublicKey::Ed25519(Vec::from(pubkey)));
-        }
-    }
-    Err(Error::CouldNotReadKey)
-}
 
-pub fn write_public_key_base64<W:std::io::Write>(mut w:W, publickey:&key::PublicKey) -> Result<(), Error> {
+/// Write a public key onto the provided `Write`, encoded in base-64.
+pub fn write_public_key_base64<W:Write>(mut w:W, publickey:&key::PublicKey) -> Result<(), Error> {
     try!(w.write_all(publickey.name().as_bytes()));
     try!(w.write_all(b" "));
     let mut s = Vec::new();
@@ -598,7 +619,7 @@ pub fn load_secret_key<P: AsRef<Path>>(p: P) -> Result<key::Algorithm, Error> {
                     let (a,b) = seckey.split_at(32);
                     assert_eq!(pubkey, b);
                     let keypair = try!(signature::Ed25519KeyPair::from_bytes(a, pubkey));
-                    let keypair = key::Algorithm::Ed25519(Arc::new(keypair));
+                    let keypair = key::Algorithm::Ed25519(keypair);
                     return Ok(keypair)
                 } else {
                     info!("unsupported key type {:?}", std::str::from_utf8(key_type));
@@ -647,7 +668,7 @@ pub fn learn_known_hosts_path<P:AsRef<Path>>(host:&str, port:u16, pubkey:&key::P
     Ok(())
 }
 
-
+/// Check that a server key matches the one recorded in file `path`.
 pub fn check_known_hosts_path<P: AsRef<Path>>(host: &str,
                                               port: u16,
                                               pubkey: &key::PublicKey,

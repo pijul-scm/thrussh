@@ -22,12 +22,15 @@ use rustc_serialize::base64::{ToBase64, STANDARD};
 use untrusted;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
+/// Name of a public key algorithm.
 pub struct Name(&'static str);
+
 impl AsRef<str> for Name {
     fn as_ref(&self) -> &str {
         self.0
     }
 }
+/// The name of the Ed25519 algorithm for SSH.
 pub const ED25519: Name = Name("ssh-ed25519");
 
 impl Name {
@@ -45,10 +48,13 @@ pub trait Verify {
     fn verify_detached(&self, buffer: &[u8], sig: &[u8]) -> bool;
 }
 
+const ED25519_PUBLICKEY_BYTES: usize = 32;
+
+/// Public key
 #[derive(Debug,Clone, PartialEq, Eq)]
 pub enum PublicKey {
     #[doc(hidden)]
-    Ed25519(Vec<u8>),
+    Ed25519([u8; ED25519_PUBLICKEY_BYTES])
 }
 
 impl std::ops::Deref for PublicKey {
@@ -71,7 +77,9 @@ impl PublicKey {
                 if key_bytes.len() != 32 /*XXX*/ {
                     return Err(Error::Inconsistent/*XXX*/);
                 }
-                Ok(PublicKey::Ed25519(Vec::from(key_bytes)))
+                let mut p = [0;ED25519_PUBLICKEY_BYTES];
+                p.clone_from_slice(key_bytes);
+                Ok(PublicKey::Ed25519(p))
             }
             _ => Err(Error::UnknownKey),
         }
@@ -79,10 +87,11 @@ impl PublicKey {
 }
 
 impl PublicKey {
+    /// Compute the SHA-256 fingerprint of the key.
     pub fn fingerprint(&self) -> String {
         match self {
             &PublicKey::Ed25519(ref public) => {
-                let digest = digest::digest(&digest::SHA256, &public);
+                let digest = digest::digest(&digest::SHA256, &public[..]);
                 "SHA256: ".to_string() + &digest.as_ref().to_base64(STANDARD)
             }
         }
@@ -101,12 +110,10 @@ impl Verify for PublicKey {
     }
 }
 
-#[derive(Clone)]
+/// Public key exchange algorithms.
 pub enum Algorithm {
-    // `Arc` is used so that `Algorithm` can be `Clone` given `Ed25519KeyPair`
-    // isn't.
     #[doc(hidden)]
-    Ed25519(std::sync::Arc<signature::Ed25519KeyPair>),
+    Ed25519(signature::Ed25519KeyPair),
 }
 
 impl std::fmt::Debug for Algorithm {
@@ -171,8 +178,11 @@ impl Algorithm {
     /// Copy the public key of this algorithm.
     pub fn clone_public_key(&self) -> PublicKey {
         match self {
-            &Algorithm::Ed25519(ref key_pair) =>
-                PublicKey::Ed25519(Vec::from(key_pair.public_key_bytes()))
+            &Algorithm::Ed25519(ref key_pair) => {
+                let mut p = [0;ED25519_PUBLICKEY_BYTES];
+                p.clone_from_slice(key_pair.public_key_bytes());
+                PublicKey::Ed25519(p)
+            }
         }
     }
 
@@ -183,7 +193,7 @@ impl Algorithm {
                 // TODO: take `rng` as a parameter.
                 let rng = rand::SystemRandom::new();
                 signature::Ed25519KeyPair::generate(&rng)
-                    .map(|key_pair| Algorithm::Ed25519(std::sync::Arc::new(key_pair))).ok()
+                    .map(|key_pair| Algorithm::Ed25519(key_pair)).ok()
             }
             _ => None,
         }
@@ -221,4 +231,18 @@ impl Algorithm {
             }
         }
     }
+}
+
+/// Parse a public key from a byte slice.
+pub fn parse_public_key(p: &[u8]) -> Result<PublicKey, Error> {
+    debug!("parse_public_key {:?}", p);
+    let mut pos = p.reader(0);
+    if try!(pos.read_string()) == b"ssh-ed25519" {
+        if let Ok(pubkey) = pos.read_string() {
+            let mut p = [0; ED25519_PUBLICKEY_BYTES];
+            p.clone_from_slice(pubkey);
+            return Ok(PublicKey::Ed25519(p))
+        }
+    }
+    Err(Error::CouldNotReadKey)
 }

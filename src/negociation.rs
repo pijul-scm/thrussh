@@ -35,10 +35,15 @@ pub struct Names {
 /// Lists of preferred algorithms. This is normally hard-coded into implementations.
 #[derive(Debug)]
 pub struct Preferred {
+    /// Preferred key exchange algorithms.
     pub kex: &'static [kex::Name],
+    /// Preferred public key algorithms.
     pub key: &'static [key::Name],
+    /// Preferred symmetric ciphers.
     pub cipher: &'static [cipher::Name],
+    /// Preferred MAC algorithms.
     pub mac: &'static [&'static str],
+    /// Preferred compression algorithms.
     pub compression: &'static [&'static str],
 }
 

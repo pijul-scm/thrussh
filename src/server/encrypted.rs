@@ -24,7 +24,6 @@ use auth::*;
 use key::Verify;
 use negociation;
 use negociation::Select;
-use auth;
 use futures::{Async, Future};
 use futures;
 
@@ -523,7 +522,7 @@ impl<H: Handler> ReadAuthRequest<H> {
                         } else {
                             auth_user.clear();
                             let mut auth_request = std::mem::replace(auth_request, None).unwrap();
-                            auth_request.methods = auth_request.methods - auth::PASSWORD;
+                            auth_request.methods = auth_request.methods - PASSWORD;
                             auth_request.partial_success = false;
                             enc.reject_auth_request(auth_request);
                             Ok(Async::Ready(Auth::Reject))
@@ -580,7 +579,7 @@ impl<H: Handler> ReadAuthRequest<H> {
                             Ok(Async::Ready(Auth::Accept))
                         } else {
                             let mut auth_request = std::mem::replace(auth_request, None).unwrap();
-                            auth_request.methods -= auth::PUBLICKEY;
+                            auth_request.methods -= PUBLICKEY;
                             auth_request.partial_success = false;
                             auth_user.clear();
                             enc.reject_auth_request(auth_request);
@@ -598,7 +597,7 @@ impl<H: Handler> ReadAuthRequest<H> {
                             Auth::Reject => {
                                 let mut auth_request = std::mem::replace(auth_request, None)
                                     .unwrap();
-                                auth_request.methods -= auth::KEYBOARD_INTERACTIVE;
+                                auth_request.methods -= KEYBOARD_INTERACTIVE;
                                 auth_request.partial_success = false;
                                 auth_user.clear();
                                 enc.reject_auth_request(auth_request);
@@ -811,7 +810,7 @@ impl Encrypted {
 
 
 fn server_accept_service(banner: Option<&str>,
-                         methods: auth::MethodSet,
+                         methods: MethodSet,
                          buffer: &mut CryptoVec)
                          -> AuthRequest {
 
@@ -844,7 +843,7 @@ fn server_auth_request_success(buffer: &mut CryptoVec) {
     })
 }
 
-fn server_confirm_channel_open(buffer: &mut CryptoVec, channel: &Channel, config: &super::Config) {
+fn server_confirm_channel_open(buffer: &mut CryptoVec, channel: &Channel, config: &Config) {
 
     push_packet!(buffer, {
         buffer.push(msg::CHANNEL_OPEN_CONFIRMATION);

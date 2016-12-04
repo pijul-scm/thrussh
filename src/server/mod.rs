@@ -25,7 +25,7 @@ use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::reactor::{Core, Timeout, Handle};
 
 use super::*;
-
+use cipher;
 use negociation::{Select, Named};
 use msg;
 use cipher::CipherPair;
@@ -41,6 +41,7 @@ use auth;
 mod encrypted;
 
 #[derive(Debug)]
+/// Configuratin of a server.
 pub struct Config {
     /// The server ID string sent at the beginning of the protocol.
     pub server_id: String,
@@ -101,9 +102,10 @@ pub struct Connection<R, H:Handler> {
     timeout: Option<Timeout>
 }
 
-
+/// A connected server session. This type is unique to a client.
 pub struct Session(CommonSession<Config>);
 
+/// A client's response in a challenge-response authentication.
 #[derive(Debug)]
 pub struct Response<'a> {
     pos: super::encoding::Position<'a>,
@@ -122,16 +124,38 @@ impl<'a> Iterator for Response<'a> {
     }
 }
 
+use std::borrow::Cow;
+/// An authentication result, in a challenge-response authentication.
 #[derive(Debug)]
 pub enum Auth {
+    /// Reject the authentication request.
     Reject,
+    /// Accept the authentication request.
     Accept,
-    Partial { name: String, instructions: String, prompts: Vec<(String, bool)> },
+    /// Partially accept the challenge-response authentication
+    /// request, providing more instructions for the client to follow.
+    Partial {
+        /// Name of this challenge.
+        name: Cow<'static, str>,
+        /// Instructions for this challenge.
+        instructions: Cow<'static, str>,
+        /// A number of prompts to the user. Each prompt has a `bool`
+        /// indicating whether the terminal must echo the characters
+        /// typed by the user.
+        prompts: Cow<'static, [(Cow<'static, str>, bool)]>
+    },
 }
 
+/// Server handler. Each client will have their own handler.
 pub trait Handler {
+
+    /// The type of authentications, which can be a future ultimately resolving to
     type FutureAuth: Future<Item = Auth, Error = Error> + FromFinished<Auth, Error>;
+
+    /// The type of units returned by some parts of this handler.
     type FutureUnit: Future<Item = (), Error = Error> + FromFinished<(), Error>;
+
+    /// The type of future bools returned by some parts of this handler.
     type FutureBool: Future<Item = bool, Error = Error> + FromFinished<bool, Error>;
 
     /// Check authentication using the "none" method. Thrussh makes
@@ -332,7 +356,7 @@ pub trait Handler {
 impl KexInit {
     pub fn server_parse(mut self,
                         config: &Config,
-                        cipher: &mut cipher::CipherPair,
+                        cipher: &mut CipherPair,
                         buf: &[u8],
                         write_buffer: &mut SSHBuffer)
                         -> Result<Kex, Error> {
@@ -373,7 +397,7 @@ impl KexInit {
 
     pub fn server_write(&mut self,
                         config: &Config,
-                        cipher: &mut cipher::CipherPair,
+                        cipher: &mut CipherPair,
                         write_buffer: &mut SSHBuffer) {
         self.exchange.server_kex_init.clear();
         negociation::write_kex(&config.preferred, &mut self.exchange.server_kex_init);
@@ -434,9 +458,8 @@ impl KexDh {
 }
 
 #[derive(Clone, Copy)]
-pub enum Status {
+enum Status {
     Ok,
-    AuthRejected,
     Disconnect
 }
 
@@ -551,11 +574,12 @@ impl<H:Handler> Connection<TcpStream, H> {
             }
             Some(PendingFuture::ReadAuthRequest(mut r)) => {
                 debug!("future: read_auth_request");
+                let pre_auth = std::time::Instant::now();
                 if let Some(ref mut enc) = self.session.0.encrypted {
                     match try!(r.poll(enc, &mut self.session.0.auth_user, &mut self.buffer)) {
                         Async::Ready(Auth::Reject) => {
                             debug!("reject");
-                            let t = try!(Timeout::new(self.session.0.config.auth_rejection_time, &self.handle));
+                            let t = try!(Timeout::new_at(pre_auth + self.session.0.config.auth_rejection_time, &self.handle));
                             self.pending_future = Some(PendingFuture::RejectTimeout(t));
                             Ok(Async::Ready(true))
                         },
@@ -718,7 +742,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                     }
                     Some(Kex::NewKeys(newkeys)) => {
                         if buf[0] != msg::NEWKEYS {
-                            return Err(Error::NewKeys);
+                            return Err(Error::Kex);
                         }
                         // Ok, NEWKEYS received, now encrypted.
                         self.session.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
@@ -998,6 +1022,7 @@ impl Session {
 }
 
 
+/// Run this server.
 pub fn run<H: Handler + Clone + 'static>(config: Arc<Config>, addr: &str, handler: H) {
 
     let addr = addr.to_socket_addrs().unwrap().next().unwrap();
@@ -1006,7 +1031,7 @@ pub fn run<H: Handler + Clone + 'static>(config: Arc<Config>, addr: &str, handle
     let socket = TcpListener::bind(&addr, &handle).unwrap();
 
     let done = socket.incoming().for_each(move |(socket, _)| {
-        let connection = server::Connection::new(
+        let connection = Connection::new(
             config.clone(),
             handle.clone(),
             socket,

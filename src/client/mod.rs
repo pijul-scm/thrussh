@@ -40,6 +40,7 @@ use untrusted;
 use encoding::Encoding;
 mod encrypted;
 
+/// The configuration of clients.
 #[derive(Debug)]
 pub struct Config {
     /// The client ID string sent at the beginning of the protocol.
@@ -56,7 +57,7 @@ pub struct Config {
     pub connection_timeout: Option<std::time::Duration>,
 }
 
-impl std::default::Default for Config {
+impl Default for Config {
     fn default() -> Config {
         Config {
             client_id: format!("SSH-2.0-{}_{}",
@@ -107,12 +108,16 @@ impl<R,H:Handler> std::ops::DerefMut for Connection<R,H> {
     }
 }
 
+/// The type of a client session.
 #[derive(Debug)]
 pub struct Session(CommonSession<Config>);
 
+/// A client handler. Note that messages can be received from the server at any time during a session.
 pub trait Handler {
 
-    type FutureBool: Future<Item=bool, Error=Error>;
+    /// A future ultimately resolving into a boolean, which can be returned by some parts of this handler.
+    type FutureBool: Future<Item=bool, Error=Error> + FromFinished<bool, Error>;
+    /// A future ultimately resolving into unit, which can be returned by some parts of this handler.
     type FutureUnit: Future<Item=(), Error=Error> + FromFinished<(), Error>;
 
     /// Called when the server sends us an authentication banner. This
@@ -126,7 +131,9 @@ pub trait Handler {
     /// step to help prevent man-in-the-middle attacks. The default
     /// implementation rejects all keys.
     #[allow(unused_variables)]
-    fn check_server_key(&mut self, server_public_key: &key::PublicKey) -> Self::FutureBool;
+    fn check_server_key(&mut self, server_public_key: &key::PublicKey) -> Self::FutureBool {
+        Self::FutureBool::finished(false)
+    }
 
     /// Called when the server confirmed our request to open a
     /// channel. A channel can only be written to after receiving this
@@ -300,6 +307,7 @@ impl KexInit {
 
 
 impl<R:Read+Write, H:Handler> Connection<R, H> {
+    /// Create a new client connection.
     pub fn new(config: Arc<Config>, stream: R, handler: H, timeout: Option<Timeout>) -> Self {
         let mut write_buffer = SSHBuffer::new();
         write_buffer.send_ssh_id(config.as_ref().client_id.as_bytes());
@@ -416,7 +424,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                             match pubkey {
                                 key::PublicKey::Ed25519(ref pubkey) => {
                                     assert!(signature::verify(&signature::ED25519,
-                                                              untrusted::Input::from(&pubkey),
+                                                              untrusted::Input::from(&pubkey[..]),
                                                               untrusted::Input::from(hash.as_ref()),
                                                               untrusted::Input::from(signature))
                                             .is_ok());
@@ -558,7 +566,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                     }
                     Some(Kex::NewKeys(newkeys)) => {
                         if buf[0] != msg::NEWKEYS {
-                            return Err(Error::NewKeys);
+                            return Err(Error::Kex);
                         }
                         self.session.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
                         // Ok, NEWKEYS received, now encrypted.
@@ -575,10 +583,12 @@ impl<H:Handler> Connection<TcpStream, H> {
         }
     }
 
+    /// Try to authenticate this client. Authentication methods must have been setup before this function is called.
     pub fn authenticate(self) -> Authenticate<TcpStream, H> {
         Authenticate(Some(self))
     }
 
+    /// Ask the server to open a session channel.
     pub fn channel_open_session(mut self) -> ChannelOpen<TcpStream, H, SessionChannel> {
         let num = self.session.channel_open_session().unwrap();
         ChannelOpen {
@@ -588,6 +598,7 @@ impl<H:Handler> Connection<TcpStream, H> {
         }
     }
 
+    /// Ask the server to open an X11 forwarding channel.
     pub fn channel_open_x11(mut self,
                             originator_address: &str,
                             originator_port: u32) -> ChannelOpen<TcpStream, H, X11Channel> {
@@ -598,6 +609,8 @@ impl<H:Handler> Connection<TcpStream, H> {
             channel_type: PhantomData
         }
     }
+
+    /// Ask the server to open a direct TCP/IP forwarding channel.
     pub fn channel_open_direct_tcpip(mut self,
                                      host_to_connect: &str,
                                      port_to_connect: u32,
@@ -611,6 +624,7 @@ impl<H:Handler> Connection<TcpStream, H> {
         }
     }
 
+    /// Ask the server to close a channel, finishing any pending write and read.
     pub fn channel_close(mut self, channel: ChannelId) -> ChannelClose<TcpStream, H> {
         self.0.byte(channel, msg::CHANNEL_CLOSE);
         self.session.flush();
@@ -620,6 +634,7 @@ impl<H:Handler> Connection<TcpStream, H> {
         }
     }
 
+    /// Flush the session, sending any pending message.
     pub fn flush(mut self) -> Flush<TcpStream, H> {
         self.session.flush();
         Flush {
@@ -628,7 +643,7 @@ impl<H:Handler> Connection<TcpStream, H> {
     }
 }
 
-
+/// An authenticating future, ultimately resolving into an authenticated connection.
 pub struct Authenticate<R, H:Handler>(Option<Connection<R, H>>);
 
 impl<H: Handler> Future for Authenticate<TcpStream, H> {
@@ -654,20 +669,30 @@ impl<H: Handler> Future for Authenticate<TcpStream, H> {
 }
 
 use std::marker::PhantomData;
+
+#[doc(hidden)]
 pub enum X11Channel{}
+#[doc(hidden)]
 pub enum SessionChannel{}
+#[doc(hidden)]
 pub enum DirectTcpIpChannel{}
+
+/// A future resolving into an open channel number of type
+/// `ChannelType`, which can be either `SessionChannel`, `X11Channel`
+/// or `DirectTcpIdChannel`.
 pub struct ChannelOpen<R, H:Handler, ChannelType> {
     connection: Option<Connection<R, H>>,
     channel: ChannelId,
     channel_type: PhantomData<ChannelType>
 }
 
+/// A future waiting for a channel to be closed.
 pub struct ChannelClose<R, H:Handler> {
     connection: Option<Connection<R, H>>,
     channel: ChannelId,
 }
 
+/// A future waiting for a flush request to complete.
 pub struct Flush<R, H:Handler> {
     connection: Option<Connection<R, H>>,
 }

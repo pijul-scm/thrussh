@@ -1,5 +1,6 @@
-#[allow(non_camel_case_types)]
+#[allow(non_camel_case_types, missing_docs)]
 #[derive(Debug, Copy, Clone, PartialEq)]
+/// Standard pseudo-terminal codes.
 pub enum Pty {
     TTY_OP_END = 0,
     VINTR = 1,
@@ -63,6 +64,7 @@ pub enum Pty {
 }
 
 impl Pty {
+    #[doc(hidden)]
     pub fn from_u8(x: u8) -> Option<Pty> {
         match x {
             0 => None,
