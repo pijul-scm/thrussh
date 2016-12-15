@@ -141,6 +141,7 @@ impl CipherPair {
             debug!("cipherpair: reading ciphertext");
             let current_len = buffer.buffer.len();
             let n = try!(buffer.buffer.read(4 + buffer.len - current_len, &mut stream));
+            debug!("read {} bytes", n);
             if n == 0 {
                 return Ok(&[])
             } else {
@@ -161,6 +162,9 @@ impl CipherPair {
         // https://tools.ietf.org/html/rfc4253#section-6.4
         buffer.seqn += Wrapping(1);
         buffer.len = 0;
+
+        // debug!("{:?}", &plaintext[1..plaintext_end]);
+
         Ok(&plaintext[1..plaintext_end])
     }
 

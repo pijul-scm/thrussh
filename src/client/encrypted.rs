@@ -131,6 +131,7 @@ impl super::Session {
         if is_authenticated {
             match buf[0] {
                 msg::CHANNEL_OPEN_CONFIRMATION => {
+                    debug!("channel_open_confirmation");
                     let mut reader = buf.reader(1);
                     let id_send = ChannelId(try!(reader.read_u32()));
                     let id_recv = try!(reader.read_u32());
@@ -154,6 +155,7 @@ impl super::Session {
                     Ok(Some(PendingFuture::FutureUnit(client.channel_open_confirmation(id_send, self))))
                 }
                 msg::CHANNEL_CLOSE => {
+                    debug!("channel_close");
                     let mut r = buf.reader(1);
                     let channel_num = ChannelId(try!(r.read_u32()));
                     if let Some(ref mut enc) = self.0.encrypted {
@@ -162,11 +164,13 @@ impl super::Session {
                     Ok(Some(PendingFuture::FutureUnit(client.channel_close(channel_num, self))))
                 }
                 msg::CHANNEL_EOF => {
+                    debug!("channel_close");
                     let mut r = buf.reader(1);
                     let channel_num = ChannelId(try!(r.read_u32()));
                     Ok(Some(PendingFuture::FutureUnit(client.channel_eof(channel_num, self))))
                 }
                 msg::CHANNEL_OPEN_FAILURE => {
+                    debug!("channel_open_failure");
                     let mut r = buf.reader(1);
                     let channel_num = ChannelId(try!(r.read_u32()));
                     let reason_code = ChannelOpenFailure::from_u32(try!(r.read_u32())).unwrap();
@@ -180,6 +184,7 @@ impl super::Session {
                     ))))
                 }
                 msg::CHANNEL_DATA => {
+                    debug!("channel_data");
                     let mut r = buf.reader(1);
                     let channel_num = ChannelId(try!(r.read_u32()));
                     let data = try!(r.read_string());
@@ -191,6 +196,7 @@ impl super::Session {
                     Ok(Some(PendingFuture::FutureUnit(unit)))
                 }
                 msg::CHANNEL_EXTENDED_DATA => {
+                    debug!("channel_extended_data");
                     let mut r = buf.reader(1);
                     let channel_num = ChannelId(try!(r.read_u32()));
                     let extended_code = try!(r.read_u32());
@@ -203,6 +209,7 @@ impl super::Session {
                     Ok(Some(PendingFuture::FutureUnit(unit)))
                 }
                 msg::CHANNEL_REQUEST => {
+                    debug!("channel_request");
                     let mut r = buf.reader(1);
                     let channel_num = ChannelId(try!(r.read_u32()));
                     let req = try!(r.read_string());

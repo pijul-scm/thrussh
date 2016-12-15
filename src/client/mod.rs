@@ -500,6 +500,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                 }
             },
             Some(ConnectionState::Write) => {
+                debug!("writing");
                 self.state = Some(ConnectionState::Write);
                 self.session.flush();
                 try_nb!(self.session.0.write_buffer.write_all(self.stream.get_mut()));
@@ -514,10 +515,11 @@ impl<H:Handler> Connection<TcpStream, H> {
                 Ok(Async::Ready(true))
             },
             Some(ConnectionState::Read) => {
-
+                debug!("reading");
                 self.state = Some(ConnectionState::Read);
                 // In all other cases:
                 let buf = try_nb!(self.session.0.cipher.read(&mut self.stream, &mut self.read_buffer));
+
                 // Handle the transport layer.
                 if buf.len() == 0 || buf[0] == msg::DISCONNECT {
                     // transport
