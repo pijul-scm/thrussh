@@ -74,9 +74,9 @@ impl Default for Config {
 
 
 /// Client connection.
-#[doc(hidden)]
 pub struct Connection<R, H:Handler> {
     read_buffer: SSHBuffer,
+    /// Session of this connection.
     pub session: Session,
     stream: BufReader<R>,
     state: Option<ConnectionState>,
@@ -92,7 +92,8 @@ enum ConnectionState {
     ReadSshId { sshid: ReadSshId },
     WriteSshId,
     Read,
-    Write
+    Write,
+    Flush
 }
 
 impl<R,H:Handler> std::ops::Deref for Connection<R,H> {
@@ -502,6 +503,13 @@ impl<H:Handler> Connection<TcpStream, H> {
                 self.state = Some(ConnectionState::Write);
                 self.session.flush();
                 try_nb!(self.session.0.write_buffer.write_all(self.stream.get_mut()));
+                self.state = Some(ConnectionState::Flush);
+                Ok(Async::Ready(true))
+            },
+            Some(ConnectionState::Flush) => {
+                debug!("flushing");
+                self.state = Some(ConnectionState::Flush);
+                try_nb!(self.stream.get_mut().flush());
                 self.state = Some(ConnectionState::Read);
                 Ok(Async::Ready(true))
             },
@@ -591,6 +599,7 @@ impl<H:Handler> Connection<TcpStream, H> {
     /// Ask the server to open a session channel.
     pub fn channel_open_session(mut self) -> ChannelOpen<TcpStream, H, SessionChannel> {
         let num = self.session.channel_open_session().unwrap();
+        self.state = Some(ConnectionState::Write);
         ChannelOpen {
             connection: Some(self),
             channel: num,
@@ -603,6 +612,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                             originator_address: &str,
                             originator_port: u32) -> ChannelOpen<TcpStream, H, X11Channel> {
         let num = self.session.channel_open_x11(originator_address, originator_port).unwrap();
+        self.state = Some(ConnectionState::Write);
         ChannelOpen {
             connection: Some(self),
             channel: num,
@@ -617,6 +627,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                                      originator_address: &str,
                                      originator_port: u32) -> ChannelOpen<TcpStream, H, DirectTcpIpChannel> {
         let num = self.session.channel_open_direct_tcpip(host_to_connect, port_to_connect, originator_address, originator_port).unwrap();
+        self.state = Some(ConnectionState::Write);
         ChannelOpen {
             connection: Some(self),
             channel: num,
@@ -628,6 +639,12 @@ impl<H:Handler> Connection<TcpStream, H> {
     pub fn channel_close(mut self, channel: ChannelId) -> ChannelClose<TcpStream, H> {
         self.0.byte(channel, msg::CHANNEL_CLOSE);
         self.session.flush();
+        self.state = Some(ConnectionState::Write);
+        self.wait_channel_close(channel)
+    }
+
+    /// Wait until the server closes a channel, either on its own or because we asked it to.
+    pub fn wait_channel_close(self, channel: ChannelId) -> ChannelClose<TcpStream, H> {
         ChannelClose {
             connection: Some(self),
             channel: channel,
@@ -637,6 +654,7 @@ impl<H:Handler> Connection<TcpStream, H> {
     /// Flush the session, sending any pending message.
     pub fn flush(mut self) -> Flush<TcpStream, H> {
         self.session.flush();
+        self.state = Some(ConnectionState::Write);
         Flush {
             connection: Some(self)
         }
@@ -764,7 +782,7 @@ impl<H: Handler> Future for Flush<TcpStream, H> {
                 unreachable!()
             };
             if completely_written {
-                if let Some(mut c) = std::mem::replace(&mut self.connection, None) {
+                if let Some(mut c) = self.connection.take() {
                     c.state = Some(ConnectionState::Write);
                     return Ok(Async::Ready(c))
                 }
