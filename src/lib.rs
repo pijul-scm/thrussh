@@ -197,11 +197,13 @@ pub trait FromFinished<T, E>:futures::Future<Item=T, Error=E> {
     /// Turns type `T` into `Self`, a future yielding `T`.
     fn finished(t: T) -> Self;
 }
+
 impl<T, E> FromFinished<T, E> for futures::Finished<T, E> {
     fn finished(t: T) -> Self {
         futures::finished(t)
     }
 }
+
 
 #[derive(Debug)]
 /// Errors.

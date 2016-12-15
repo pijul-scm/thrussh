@@ -14,7 +14,7 @@
 //
 
 use std::sync::Arc;
-use std::io::{Read, Write, BufReader};
+use std::io::{Write, BufReader};
 use std;
 use futures::{Poll, Async};
 use futures::future::Future;
@@ -74,16 +74,17 @@ impl Default for Config {
 
 
 /// Client connection.
-pub struct Connection<R, H:Handler> {
+pub struct Connection<H:Handler> {
     read_buffer: SSHBuffer,
     /// Session of this connection.
     pub session: Session,
-    stream: BufReader<R>,
+    stream: BufReader<TcpStream>,
     state: Option<ConnectionState>,
     pending_future: Option<PendingFuture<H>>,
     buffer: CryptoVec,
     buffer2: CryptoVec,
-    handler: H,
+    /// Handler for this connection.
+    pub handler: H,
     timeout: Option<Timeout>
 }
 
@@ -96,14 +97,14 @@ enum ConnectionState {
     Flush
 }
 
-impl<R,H:Handler> std::ops::Deref for Connection<R,H> {
+impl<H:Handler> std::ops::Deref for Connection<H> {
     type Target = Session;
     fn deref(&self) -> &Session {
         &self.session
     }
 }
 
-impl<R,H:Handler> std::ops::DerefMut for Connection<R,H> {
+impl<H:Handler> std::ops::DerefMut for Connection<H> {
     fn deref_mut(&mut self) -> &mut Session {
         &mut self.session
     }
@@ -307,9 +308,9 @@ impl KexInit {
 
 
 
-impl<R:Read+Write, H:Handler> Connection<R, H> {
+impl<H:Handler> Connection<H> {
     /// Create a new client connection.
-    pub fn new(config: Arc<Config>, stream: R, handler: H, timeout: Option<Timeout>) -> Self {
+    pub fn new(config: Arc<Config>, stream: TcpStream, handler: H, timeout: Option<Timeout>) -> Self {
         let mut write_buffer = SSHBuffer::new();
         write_buffer.send_ssh_id(config.as_ref().client_id.as_bytes());
         let mut connection = Connection {
@@ -339,7 +340,7 @@ impl<R:Read+Write, H:Handler> Connection<R, H> {
 }
 
 
-impl<H: Handler> Future for Connection<TcpStream, H> {
+impl<H: Handler> Future for Connection<H> {
 
     type Item = ();
     type Error = Error;
@@ -367,7 +368,7 @@ pub enum PendingFuture<H:Handler> {
 }
 
 
-impl<H:Handler> Connection<TcpStream, H> {
+impl<H:Handler> Connection<H> {
 
     fn poll_timeout(&mut self) -> Poll<(), Error> {
         if let Some(ref mut timeout) = self.timeout {
@@ -594,12 +595,12 @@ impl<H:Handler> Connection<TcpStream, H> {
     }
 
     /// Try to authenticate this client. Authentication methods must have been setup before this function is called.
-    pub fn authenticate(self) -> Authenticate<TcpStream, H> {
+    pub fn authenticate(self) -> Authenticate<H> {
         Authenticate(Some(self))
     }
 
     /// Ask the server to open a session channel.
-    pub fn channel_open_session(mut self) -> ChannelOpen<TcpStream, H, SessionChannel> {
+    pub fn channel_open_session(mut self) -> ChannelOpen<H, SessionChannel> {
         let num = self.session.channel_open_session().unwrap();
         self.state = Some(ConnectionState::Write);
         ChannelOpen {
@@ -612,7 +613,7 @@ impl<H:Handler> Connection<TcpStream, H> {
     /// Ask the server to open an X11 forwarding channel.
     pub fn channel_open_x11(mut self,
                             originator_address: &str,
-                            originator_port: u32) -> ChannelOpen<TcpStream, H, X11Channel> {
+                            originator_port: u32) -> ChannelOpen<H, X11Channel> {
         let num = self.session.channel_open_x11(originator_address, originator_port).unwrap();
         self.state = Some(ConnectionState::Write);
         ChannelOpen {
@@ -627,7 +628,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                                      host_to_connect: &str,
                                      port_to_connect: u32,
                                      originator_address: &str,
-                                     originator_port: u32) -> ChannelOpen<TcpStream, H, DirectTcpIpChannel> {
+                                     originator_port: u32) -> ChannelOpen<H, DirectTcpIpChannel> {
         let num = self.session.channel_open_direct_tcpip(host_to_connect, port_to_connect, originator_address, originator_port).unwrap();
         self.state = Some(ConnectionState::Write);
         ChannelOpen {
@@ -638,23 +639,22 @@ impl<H:Handler> Connection<TcpStream, H> {
     }
 
     /// Ask the server to close a channel, finishing any pending write and read.
-    pub fn channel_close(mut self, channel: ChannelId) -> ChannelClose<TcpStream, H> {
+    pub fn channel_close(mut self, channel: ChannelId) {
         self.0.byte(channel, msg::CHANNEL_CLOSE);
         self.session.flush();
         self.state = Some(ConnectionState::Write);
-        self.wait_channel_close(channel)
     }
 
-    /// Wait until the server closes a channel, either on its own or because we asked it to.
-    pub fn wait_channel_close(self, channel: ChannelId) -> ChannelClose<TcpStream, H> {
-        ChannelClose {
+    /// Wait until a condition is met on the connection.
+    pub fn wait<F:Fn(&Connection<H>) -> bool>(self, f: F) -> Wait<H, F> {
+        Wait {
             connection: Some(self),
-            channel: channel,
+            condition: f,
         }
     }
 
     /// Flush the session, sending any pending message.
-    pub fn flush(mut self) -> Flush<TcpStream, H> {
+    pub fn flush(mut self) -> Flush<H> {
         self.session.flush();
         self.state = Some(ConnectionState::Write);
         Flush {
@@ -664,11 +664,11 @@ impl<H:Handler> Connection<TcpStream, H> {
 }
 
 /// An authenticating future, ultimately resolving into an authenticated connection.
-pub struct Authenticate<R, H:Handler>(Option<Connection<R, H>>);
+pub struct Authenticate<H:Handler>(Option<Connection<H>>);
 
-impl<H: Handler> Future for Authenticate<TcpStream, H> {
+impl<H: Handler> Future for Authenticate<H> {
 
-    type Item = Connection<TcpStream, H>;
+    type Item = Connection<H>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -700,26 +700,26 @@ pub enum DirectTcpIpChannel{}
 /// A future resolving into an open channel number of type
 /// `ChannelType`, which can be either `SessionChannel`, `X11Channel`
 /// or `DirectTcpIdChannel`.
-pub struct ChannelOpen<R, H:Handler, ChannelType> {
-    connection: Option<Connection<R, H>>,
+pub struct ChannelOpen<H:Handler, ChannelType> {
+    connection: Option<Connection<H>>,
     channel: ChannelId,
     channel_type: PhantomData<ChannelType>
 }
 
 /// A future waiting for a channel to be closed.
-pub struct ChannelClose<R, H:Handler> {
-    connection: Option<Connection<R, H>>,
-    channel: ChannelId,
+pub struct Wait<H:Handler, F> {
+    connection: Option<Connection<H>>,
+    condition: F,
 }
 
 /// A future waiting for a flush request to complete.
-pub struct Flush<R, H:Handler> {
-    connection: Option<Connection<R, H>>,
+pub struct Flush<H:Handler> {
+    connection: Option<Connection<H>>,
 }
 
-impl<H: Handler, ChannelType> Future for ChannelOpen<TcpStream, H, ChannelType> {
+impl<H: Handler, ChannelType> Future for ChannelOpen<H, ChannelType> {
 
-    type Item = (Connection<TcpStream,H>, ChannelId);
+    type Item = (Connection<H>, ChannelId);
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -742,34 +742,44 @@ impl<H: Handler, ChannelType> Future for ChannelOpen<TcpStream, H, ChannelType> 
     }
 }
 
-impl<H: Handler> Future for ChannelClose<TcpStream, H> {
 
-    type Item = Connection<TcpStream,H>;
+impl<H: Handler, F:Fn(&Connection<H>) -> bool> Future for Wait<H, F> {
+
+    type Item = Connection<H>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+
         if let Some(ref mut c) = self.connection {
             try_ready!(c.poll_timeout());
         }
 
         loop {
-            debug!("channelclose loop");
-            let is_open = if let Some(ref c) = self.connection {
-                c.channel_is_open(self.channel)
-            }  else { false };
-            if !is_open {
-                return Ok(Async::Ready(std::mem::replace(&mut self.connection, None).unwrap()))
-            }
-            if let Some(ref mut c) = self.connection {
-                try_ready!(c.atomic_poll());
+            debug!("wait loop");
+            if let Some(mut connection) = self.connection.take() {
+                if (self.condition)(&connection) {
+                    return Ok(Async::Ready(connection))
+                } else {
+                    match try!(connection.atomic_poll()) {
+                        Async::Ready(_) => {
+                            self.connection = Some(connection);
+                        },
+                        Async::NotReady => {
+                            self.connection = Some(connection);
+                            return Ok(Async::NotReady)
+                        }
+                    }
+                }
             }
         }
     }
 }
 
-impl<H: Handler> Future for Flush<TcpStream, H> {
 
-    type Item = Connection<TcpStream,H>;
+
+impl<H: Handler> Future for Flush<H> {
+
+    type Item = Connection<H>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
