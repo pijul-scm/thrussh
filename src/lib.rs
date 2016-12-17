@@ -15,7 +15,7 @@
 #![deny(missing_docs,
         trivial_casts,
         unstable_features,
-        unused_import_braces, unused_qualifications)]
+        unused_import_braces)]
 //! Server and client SSH library, based on *ring* for its crypto, and
 //! tokio/futures for its network management. More information at
 //! [pijul.org/thrussh](https://pijul.org/thrussh).
@@ -145,7 +145,7 @@ extern crate ring;
 extern crate time;
 #[macro_use]
 extern crate bitflags;
-extern crate user;
+
 #[macro_use]
 extern crate log;
 extern crate byteorder;
@@ -201,6 +201,12 @@ pub trait FromFinished<T, E>:futures::Future<Item=T, Error=E> {
 impl<T, E> FromFinished<T, E> for futures::Finished<T, E> {
     fn finished(t: T) -> Self {
         futures::finished(t)
+    }
+}
+
+impl<T, E> FromFinished<T, E> for futures::Done<T, E> {
+    fn finished(t: T) -> Self {
+        futures::done(Ok(t))
     }
 }
 
@@ -262,10 +268,30 @@ pub enum Error {
     /// Connection timeout.
     ConnectionTimeout,
 }
+
+/// Errors including those coming from handler. These are not included
+/// in this crate's "main" error type to allow for a simpler API (the
+/// "handler error" type cannot be inferred by the compiler in some
+/// functions).
+#[derive(Debug)]
+pub enum HandlerError<E> {
+    /// Standard errors
+    Error(Error),
+    /// From handler
+    Handler(E)
+}
 impl Error {
     fn kind(&self) -> std::io::ErrorKind {
         match *self {
             Error::IO(ref e) => e.kind(),
+            _ => std::io::ErrorKind::Other
+        }
+    }
+}
+impl<E> HandlerError<E> {
+    fn kind(&self) -> std::io::ErrorKind {
+        match *self {
+            HandlerError::Error(ref e) => e.kind(),
             _ => std::io::ErrorKind::Other
         }
     }
@@ -325,8 +351,34 @@ impl From<std::str::Utf8Error> for Error {
     }
 }
 impl From<rustc_serialize::base64::FromBase64Error> for Error {
-    fn from(e: rustc_serialize::base64::FromBase64Error) -> Error {
+    fn from(e: rustc_serialize::base64::FromBase64Error) -> Error{
         Error::Base64(e)
+    }
+}
+
+impl<E> From<Error> for HandlerError<E> {
+    fn from(e: Error) -> HandlerError<E> {
+        HandlerError::Error(e)
+    }
+}
+impl<E> From<std::io::Error> for HandlerError<E> {
+    fn from(e: std::io::Error) -> HandlerError<E> {
+        HandlerError::Error(Error::IO(e))
+    }
+}
+impl<E> From<ring::error::Unspecified> for HandlerError<E> {
+    fn from(e: ring::error::Unspecified) -> HandlerError<E> {
+        HandlerError::Error(Error::Ring(e))
+    }
+}
+impl<E> From<std::str::Utf8Error> for HandlerError<E> {
+    fn from(e: std::str::Utf8Error) -> HandlerError<E> {
+        HandlerError::Error(Error::Utf8(e))
+    }
+}
+impl<E> From<rustc_serialize::base64::FromBase64Error> for HandlerError<E> {
+    fn from(e: rustc_serialize::base64::FromBase64Error) -> HandlerError<E> {
+        HandlerError::Error(Error::Base64(e))
     }
 }
 
@@ -515,7 +567,7 @@ pub struct Channel {
 const KEYTYPE_ED25519: &'static [u8] = b"ssh-ed25519";
 
 /// Load a public key from a file. Only ed25519 keys are currently supported.
-pub fn load_public_key<P: AsRef<Path>>(p: P) -> Result<key::PublicKey, Error> {
+pub fn load_public_key<E, P: AsRef<Path>>(p: P) -> Result<key::PublicKey, Error> {
 
     let mut pubkey = String::new();
     let mut file = try!(File::open(p.as_ref()));

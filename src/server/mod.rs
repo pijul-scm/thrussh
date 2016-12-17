@@ -29,7 +29,7 @@ use cipher;
 use negociation::{Select, Named};
 use msg;
 use cipher::CipherPair;
-
+use encoding;
 use sshbuffer::*;
 use negociation;
 use key::PubKey;
@@ -108,7 +108,7 @@ pub struct Session(CommonSession<Config>);
 /// A client's response in a challenge-response authentication.
 #[derive(Debug)]
 pub struct Response<'a> {
-    pos: super::encoding::Position<'a>,
+    pos: encoding::Position<'a>,
     n: u32,
 }
 
@@ -132,6 +132,10 @@ pub enum Auth {
     Reject,
     /// Accept the authentication request.
     Accept,
+
+    /// Method was not accepted, but no other check was performed.
+    UnsupportedMethod,
+
     /// Partially accept the challenge-response authentication
     /// request, providing more instructions for the client to follow.
     Partial {
@@ -149,14 +153,17 @@ pub enum Auth {
 /// Server handler. Each client will have their own handler.
 pub trait Handler {
 
+    /// The type of errors returned by the futures.
+    type Error: std::fmt::Debug;
+
     /// The type of authentications, which can be a future ultimately resolving to
-    type FutureAuth: Future<Item = Auth, Error = Error> + FromFinished<Auth, Error>;
+    type FutureAuth: Future<Item = Auth, Error = Self::Error> + FromFinished<Auth, Self::Error>;
 
     /// The type of units returned by some parts of this handler.
-    type FutureUnit: Future<Item = (), Error = Error> + FromFinished<(), Error>;
+    type FutureUnit: Future<Item = (), Error = Self::Error> + FromFinished<(), Self::Error>;
 
     /// The type of future bools returned by some parts of this handler.
-    type FutureBool: Future<Item = bool, Error = Error> + FromFinished<bool, Error>;
+    type FutureBool: Future<Item = bool, Error = Self::Error> + FromFinished<bool, Self::Error>;
 
     /// Check authentication using the "none" method. Thrussh makes
     /// sure rejection happens in time `config.auth_rejection_time`,
@@ -511,7 +518,7 @@ impl<R: Read + Write, H:Handler> Connection<R, H> {
 impl<H: Handler> Future for Connection<TcpStream, H> {
 
     type Item = ();
-    type Error = Error;
+    type Error = HandlerError<H::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
@@ -551,7 +558,7 @@ pub enum PendingFuture<H: Handler> {
 
 impl<H:Handler> Connection<TcpStream, H> {
 
-    fn poll_pending(&mut self) -> Poll<bool, Error> {
+    fn poll_pending(&mut self) -> Poll<bool, HandlerError<H::Error>> {
         debug!("Running encrypted future");
         match std::mem::replace(&mut self.pending_future, None) {
             Some(PendingFuture::Ok) => {
@@ -616,7 +623,7 @@ impl<H:Handler> Connection<TcpStream, H> {
 
     }
 
-    fn atomic_poll(&mut self) -> Poll<Status, Error> {
+    fn atomic_poll(&mut self) -> Poll<Status, HandlerError<H::Error>> {
 
         if try_ready!(self.poll_pending()) {
             self.state = Some(ConnectionState::Write);
@@ -651,7 +658,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                         self.state = Some(ConnectionState::ReadSshId { sshid: sshid });
                         Ok(Async::NotReady)
                     }
-                    Err(e) => Err(e),
+                    Err(e) => Err(HandlerError::Error(e)),
                     _ => {
                         self.read_buffer.bytes += sshid.id_len + 2;
                         let mut exchange = Exchange::new();
@@ -718,7 +725,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                                         self.session.0.kex = Some(next_kex);
                                         return Ok(Async::Ready(Status::Ok))
                                     }
-                                    Err(e) => return Err(e),
+                                    Err(e) => return Err(HandlerError::Error(e)),
                                 }
                             }
                         // Else, i.e. if the other side has not started
@@ -737,12 +744,12 @@ impl<H:Handler> Connection<TcpStream, H> {
                                 self.session.0.kex = Some(next_kex);
                                 return Ok(Async::Ready(Status::Ok));
                             }
-                            Err(e) => return Err(e),
+                            Err(e) => return Err(HandlerError::Error(e)),
                         }
                     }
                     Some(Kex::NewKeys(newkeys)) => {
                         if buf[0] != msg::NEWKEYS {
-                            return Err(Error::Kex);
+                            return Err(HandlerError::Error(Error::Kex));
                         }
                         // Ok, NEWKEYS received, now encrypted.
                         self.session.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);

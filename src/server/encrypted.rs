@@ -14,9 +14,8 @@
 //
 use std;
 use byteorder::{ByteOrder, BigEndian};
-
-use super::*;
 use super::super::*;
+use super::*;
 use session::*;
 use msg;
 use encoding::{Encoding, Reader};
@@ -26,6 +25,7 @@ use negociation;
 use negociation::Select;
 use futures::{Async, Future};
 use futures;
+use futures::Poll;
 
 impl Session {
     #[doc(hidden)]
@@ -33,7 +33,7 @@ impl Session {
     pub fn server_read_encrypted<'a, S: Handler>(&mut self,
                                                  server: &mut S,
                                                  buf: &[u8])
-                                                 -> Result<PendingFuture<S>, Error> {
+                                                 -> Result<PendingFuture<S>, HandlerError<S::Error>> {
         debug!("read_encrypted");
         // Either this packet is a KEXINIT, in which case we start a key re-exchange.
         if buf[0] == msg::KEXINIT {
@@ -126,7 +126,7 @@ impl Session {
     fn server_read_authenticated<'a, S: Handler>(&'a mut self,
                                                  server: &mut S,
                                                  buf: &[u8])
-                                                 -> Result<Authenticated<S>, Error> {
+                                                 -> Result<Authenticated<S>, HandlerError<S::Error>> {
         debug!("authenticated buf = {:?}", buf);
         match buf[0] {
             msg::CHANNEL_OPEN => {
@@ -165,7 +165,7 @@ impl Session {
                             channel.sender_window_size -= data.len() as u32;
                         }
                     } else {
-                        return Err(Error::WrongChannel);
+                        return Err(HandlerError::Error(Error::WrongChannel));
                     }
                     let window_size = self.0.config.window_size;
                     enc.adjust_window_size(channel_num, data, window_size);
@@ -191,7 +191,7 @@ impl Session {
                     if let Some(channel) = enc.channels.get_mut(&channel_num) {
                         channel.recipient_window_size += amount;
                     } else {
-                        return Err(Error::WrongChannel);
+                        return Err(HandlerError::Error(Error::WrongChannel));
                     }
                 }
                 Ok(Authenticated::future_unit(server.window_adjusted(channel_num, self)))
@@ -346,7 +346,7 @@ impl Session {
     fn server_handle_channel_open<'a, S: Handler>(&mut self,
                                                   server: &mut S,
                                                   buf: &[u8])
-                                                  -> Result<FutureUnit<S>, Error> {
+                                                  -> Result<FutureUnit<S>, HandlerError<S::Error>> {
 
         // https://tools.ietf.org/html/rfc4254#section-5.1
         let mut r = buf.reader(1);
@@ -424,7 +424,7 @@ pub enum Authenticated<H: Handler> {
 }
 
 impl<H: Handler> Authenticated<H> {
-    pub fn poll(&mut self, session: &mut Session) -> futures::Poll<(), Error> {
+    pub fn poll(&mut self, session: &mut Session) -> Poll<(), HandlerError<H::Error>> {
         match *self {
             Authenticated::FutureUnit(ref mut a) => a.poll(),
             Authenticated::Forward(ref mut a) => a.poll(session),
@@ -440,15 +440,15 @@ impl<H: Handler> Authenticated<H> {
 
 pub enum FutureUnit<H: Handler> {
     H(H::FutureUnit),
-    Done(futures::Done<(), Error>),
+    Done(futures::Done<(), HandlerError<H::Error>>),
 }
 impl<H: Handler> Future for FutureUnit<H> {
     type Item = ();
-    type Error = Error;
+    type Error = HandlerError<H::Error>;
 
-    fn poll(&mut self) -> futures::Poll<Self::Item, Self::Error> {
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match *self {
-            FutureUnit::H(ref mut a) => a.poll(),
+            FutureUnit::H(ref mut a) => a.poll().map_err(HandlerError::Handler),
             FutureUnit::Done(ref mut a) => a.poll(),
         }
     }
@@ -459,8 +459,8 @@ pub struct Forward<H: Handler> {
 }
 
 impl<H: Handler> Forward<H> {
-    pub fn poll(&mut self, session: &mut Session) -> futures::Poll<(), Error> {
-        let result = try_ready!(self.forward.poll());
+    pub fn poll(&mut self, session: &mut Session) -> Poll<(), HandlerError<H::Error>> {
+        let result = try_ready!(self.forward.poll().map_err(HandlerError::Handler));
         if let Some(ref mut enc) = session.0.encrypted {
             if result {
                 push_packet!(enc.write, enc.write.push(msg::REQUEST_SUCCESS))
@@ -479,6 +479,7 @@ pub enum ReadAuthRequest<H: Handler> {
     },
     Reject,
     Accept,
+    UnsupportedMethod
 }
 
 pub enum FutureAuth<H: Handler> {
@@ -509,13 +510,13 @@ impl<H: Handler> ReadAuthRequest<H> {
             enc: &mut Encrypted,
             auth_user: &mut String,
             buffer: &mut CryptoVec)
-            -> futures::Poll<Auth, Error> {
+            -> Poll<Auth, HandlerError<H::Error>> {
         match *self {
             ReadAuthRequest::Req { ref mut future, ref mut auth_request } => {
                 match *future {
                     FutureAuth::Password(ref mut fut) => {
                         debug!("ReadAuthRequest.poll(): Password");
-                        if try_ready!(fut.poll()) {
+                        if try_ready!(fut.poll().map_err(HandlerError::Handler)) {
                             server_auth_request_success(&mut enc.write);
                             enc.state = Some(EncryptedState::Authenticated);
                             Ok(Async::Ready(Auth::Accept))
@@ -532,7 +533,7 @@ impl<H: Handler> ReadAuthRequest<H> {
                         debug!("ReadAuthRequest.poll(): Pubkey");
                         let is_valid = match *validate {
                             ValidatePubkey::Valid => true,
-                            ValidatePubkey::Future(ref mut h) => try_ready!(h.poll()),
+                            ValidatePubkey::Future(ref mut h) => try_ready!(h.poll().map_err(HandlerError::Handler)),
                             _ => false,
                         };
                         if is_valid {
@@ -554,7 +555,7 @@ impl<H: Handler> ReadAuthRequest<H> {
                                               ref pubkey_key,
                                               .. } => {
                         debug!("ReadAuthRequest.poll(): PubkeyProbe");
-                        if try_ready!(probe.poll()) {
+                        if try_ready!(probe.poll().map_err(HandlerError::Handler)) {
 
                             let mut public_key = CryptoVec::new();
                             public_key.extend(pubkey_key);
@@ -588,12 +589,13 @@ impl<H: Handler> ReadAuthRequest<H> {
                     }
                     FutureAuth::KeyboardInteractive { ref mut ki } => {
 
-                        match try_ready!(ki.poll()) {
+                        match try_ready!(ki.poll().map_err(HandlerError::Handler)) {
                             Auth::Accept => {
                                 server_auth_request_success(&mut enc.write);
                                 enc.state = Some(EncryptedState::Authenticated);
                                 Ok(Async::Ready(Auth::Accept))
                             }
+                            Auth::UnsupportedMethod => unreachable!(),
                             Auth::Reject => {
                                 let mut auth_request = std::mem::replace(auth_request, None)
                                     .unwrap();
@@ -631,6 +633,7 @@ impl<H: Handler> ReadAuthRequest<H> {
 
             }
             ReadAuthRequest::Reject => Ok(Async::Ready(Auth::Reject)),
+            ReadAuthRequest::UnsupportedMethod => Ok(Async::Ready(Auth::UnsupportedMethod)),
             ReadAuthRequest::Accept => Ok(Async::Ready(Auth::Accept)),
         }
     }
@@ -643,7 +646,7 @@ impl Encrypted {
                                             buf: &[u8],
                                             auth_user: &mut String,
                                             mut auth_request: AuthRequest)
-                                            -> Result<ReadAuthRequest<S>, Error> {
+                                            -> Result<ReadAuthRequest<S>, HandlerError<S::Error>> {
 
         // https://tools.ietf.org/html/rfc4252#section-5
         let mut r = buf.reader(1);
@@ -738,7 +741,7 @@ impl Encrypted {
                         self.reject_auth_request(auth_request);
                         Ok(ReadAuthRequest::Reject)
                     }
-                    Err(e) => return Err(e),
+                    Err(e) => return Err(HandlerError::Error(e)),
                 }
                 // Other methods of the base specification are insecure or optional.
             } else if method == b"keyboard-interactive" {
@@ -760,11 +763,11 @@ impl Encrypted {
 
             } else {
                 self.reject_auth_request(auth_request);
-                Ok(ReadAuthRequest::Reject)
+                Ok(ReadAuthRequest::UnsupportedMethod)
             }
         } else {
             // Unknown service
-            Err(Error::Inconsistent)
+            Err(HandlerError::Error(Error::Inconsistent))
         }
     }
 
@@ -773,7 +776,7 @@ impl Encrypted {
                                                user: &mut String,
                                                auth_request: AuthRequest,
                                                b: &[u8])
-                                               -> Result<ReadAuthRequest<S>, Error> {
+                                               -> Result<ReadAuthRequest<S>, HandlerError<S::Error>> {
 
         let ki = if let Some(CurrentRequest::KeyboardInteractive { ref submethods }) =
                         auth_request.current {

@@ -18,7 +18,7 @@ fn run<H: Handler + 'static>(config: Arc<Config>, addr: &str, handler: H) {
     let mut l = Core::new().unwrap();
     let handle = l.handle();
     let done =
-        TcpStream::connect(&addr, &handle).map_err(|err| thrussh::Error::IO(err)).and_then(|socket| {
+        TcpStream::connect(&addr, &handle).map_err(|err| thrussh::HandlerError::Error(thrussh::Error::IO(err))).and_then(|socket| {
 
             println!("connected");
             let mut connection = Connection::new(
@@ -48,8 +48,9 @@ fn run<H: Handler + 'static>(config: Arc<Config>, addr: &str, handler: H) {
 struct H { }
 
 impl Handler for H {
-    type FutureBool = futures::Finished<bool, Error>;
-    type FutureUnit = futures::Finished<(), Error>;
+    type Error = ();
+    type FutureBool = futures::Finished<bool, ()>;
+    type FutureUnit = futures::Finished<(), ()>;
     fn check_server_key(&mut self, server_public_key: &key::PublicKey) -> Self::FutureBool {
         debug!("check_server_key: {:?}", server_public_key);
         futures::finished(true)

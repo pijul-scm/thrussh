@@ -13,7 +13,7 @@
 // limitations under the License.
 //
 use cryptovec::CryptoVec;
-use {Sig, Error, ChannelOpenFailure, ChannelId};
+use {Sig, Error, HandlerError, ChannelOpenFailure, ChannelId};
 use std;
 use auth;
 use session::*;
@@ -33,7 +33,7 @@ impl super::Session {
                                                     client: &mut C,
                                                     buf: &[u8],
                                                     buffer: &mut CryptoVec)
-                                                    -> Result<Option<PendingFuture<C>>, Error> {
+                                                    -> Result<Option<PendingFuture<C>>, HandlerError<C::Error>> {
 
         // Either this packet is a KEXINIT, in which case we start a key re-exchange.
         if buf[0] == msg::KEXINIT {
@@ -87,7 +87,7 @@ impl super::Session {
                         }
                     } else {
                         debug!("unknown message: {:?}", buf);
-                        return Err(Error::Inconsistent);
+                        return Err(HandlerError::Error(Error::Inconsistent));
                     }
                 }
                 Some(EncryptedState::WaitingAuthRequest(mut auth_request)) => {
@@ -118,7 +118,7 @@ impl super::Session {
                         enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
                     } else {
                         debug!("unknown message: {:?}", buf);
-                        return Err(Error::Inconsistent);
+                        return Err(HandlerError::Error(Error::Inconsistent));
                     }
                 }
                 Some(EncryptedState::Authenticated) => {
@@ -149,7 +149,7 @@ impl super::Session {
 
                         } else {
                             // We've not requested this channel, close connection.
-                            return Err(Error::Inconsistent);
+                            return Err(HandlerError::Error(Error::Inconsistent));
                         }
                     }
                     Ok(Some(PendingFuture::FutureUnit(client.channel_open_confirmation(id_send, self))))
@@ -258,7 +258,7 @@ impl super::Session {
                         if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
                             channel.recipient_window_size += amount
                         } else {
-                            return Err(Error::WrongChannel);
+                            return Err(HandlerError::Error(Error::WrongChannel));
                         }
                     }
                     Ok(Some(PendingFuture::FutureUnit(client.window_adjusted(channel_num, self))))

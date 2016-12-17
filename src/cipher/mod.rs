@@ -88,10 +88,10 @@ pub trait OpeningKey {
     fn tag_len(&self) -> usize;
 
     fn open<'a>(&self,
-                seqn: u32,
-                ciphertext_in_plaintext_out: &'a mut [u8],
-                tag: &[u8])
-                -> Result<&'a [u8], Error>;
+                   seqn: u32,
+                   ciphertext_in_plaintext_out: &'a mut [u8],
+                   tag: &[u8])
+                   -> Result<&'a [u8], Error>;
 }
 
 pub trait SealingKey {

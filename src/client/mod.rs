@@ -21,7 +21,7 @@ use futures::future::Future;
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Timeout;
 
-use {Disconnect, Error, Limits, Sig, ChannelOpenFailure, parse_public_key, ChannelId, FromFinished};
+use {Disconnect, Error, Limits, Sig, ChannelOpenFailure, parse_public_key, ChannelId, FromFinished, HandlerError};
 use encoding::Reader;
 use key;
 use msg;
@@ -116,11 +116,12 @@ pub struct Session(CommonSession<Config>);
 
 /// A client handler. Note that messages can be received from the server at any time during a session.
 pub trait Handler {
-
+    /// Error type returned by the futures.
+    type Error: std::fmt::Debug;
     /// A future ultimately resolving into a boolean, which can be returned by some parts of this handler.
-    type FutureBool: Future<Item=bool, Error=Error> + FromFinished<bool, Error>;
+    type FutureBool: Future<Item=bool, Error = Self::Error> + FromFinished<bool, Self::Error>;
     /// A future ultimately resolving into unit, which can be returned by some parts of this handler.
-    type FutureUnit: Future<Item=(), Error=Error> + FromFinished<(), Error>;
+    type FutureUnit: Future<Item=(), Error = Self::Error> + FromFinished<(), Self::Error>;
 
     /// Called when the server sends us an authentication banner. This
     /// is usually meant to be shown to the user, see
@@ -343,7 +344,7 @@ impl<H:Handler> Connection<H> {
 impl<H: Handler> Future for Connection<H> {
 
     type Item = ();
-    type Error = Error;
+    type Error = HandlerError<H::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         // If timeout, shutdown the socket.
@@ -370,23 +371,23 @@ pub enum PendingFuture<H:Handler> {
 
 impl<H:Handler> Connection<H> {
 
-    fn poll_timeout(&mut self) -> Poll<(), Error> {
+    fn poll_timeout(&mut self) -> Poll<(), HandlerError<H::Error>> {
         if let Some(ref mut timeout) = self.timeout {
             if let Async::Ready(()) = try!(timeout.poll()) {
                 debug!("Timeout, shutdown");
                 try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
                 self.session.0.disconnected = true;
-                return Err(Error::ConnectionTimeout)
+                return Err(HandlerError::Error(Error::ConnectionTimeout))
             }
         }
         Ok(Async::Ready(()))
     }
 
-    fn pending_poll(&mut self) -> Poll<(), Error> {
+    fn pending_poll(&mut self) -> Poll<(), HandlerError<H::Error>> {
         match std::mem::replace(&mut self.pending_future, None) {
 
             Some(PendingFuture::FutureUnit(mut f)) => {
-                if let Async::Ready(()) = try!(f.poll()) {
+                if let Async::Ready(()) = try!(f.poll().map_err(HandlerError::Handler)) {
                     Ok(Async::Ready(()))
                 } else {
                     self.pending_future = Some(PendingFuture::FutureUnit(f));
@@ -395,8 +396,8 @@ impl<H:Handler> Connection<H> {
             },
             Some(PendingFuture::ServerKeyCheck { mut check, mut kexdhdone, buf_len }) => {
 
-                match try!(check.poll()) {
-                    Async::Ready(false) => Err(Error::UnknownKey),
+                match try!(check.poll().map_err(HandlerError::Handler)) {
+                    Async::Ready(false) => Err(HandlerError::Error(Error::UnknownKey)),
                     Async::NotReady => {
                         self.pending_future = Some(PendingFuture::ServerKeyCheck { check: check, kexdhdone: kexdhdone, buf_len: buf_len });
                         Ok(Async::NotReady)
@@ -451,7 +452,7 @@ impl<H:Handler> Connection<H> {
     /// whether at least one complete packet was read.  `buffer` and
     /// `buffer2` are work spaces mostly used to compute keys. They
     /// are cleared before using, hence nothing is expected from them.
-    fn atomic_poll(&mut self) -> Poll<bool, Error> {
+    fn atomic_poll(&mut self) -> Poll<bool, HandlerError<H::Error>> {
 
         try_ready!(self.pending_poll());
 
@@ -478,7 +479,7 @@ impl<H:Handler> Connection<H> {
                         self.state = Some(ConnectionState::ReadSshId { sshid: sshid });
                         Ok(Async::NotReady)
                     }
-                    Err(e) => Err(e),
+                    Err(e) => Err(HandlerError::Error(e)),
                     _ => {
                         self.read_buffer.bytes += sshid.id_len + 2;
                         let mut exchange = Exchange::new();
@@ -549,7 +550,7 @@ impl<H:Handler> Connection<H> {
                                         self.session.0.kex = Some(Kex::KexDhDone(kexdhdone));
                                         return Ok(Async::Ready(true));
                                     }
-                                    Err(e) => return Err(e),
+                                    Err(e) => return Err(HandlerError::Error(e)),
                                 }
                             } else {
                                 try_nb!(self.session.client_read_encrypted(&mut self.handler, buf, &mut self.buffer));
@@ -571,13 +572,13 @@ impl<H:Handler> Connection<H> {
                                     buf_len: buf.len()
                                 });
                             } else {
-                                return Err(Error::Inconsistent)
+                                return Err(HandlerError::Error(Error::Inconsistent))
                             }
                         }
                     }
                     Some(Kex::NewKeys(newkeys)) => {
                         if buf[0] != msg::NEWKEYS {
-                            return Err(Error::Kex);
+                            return Err(HandlerError::Error(Error::Kex));
                         }
                         self.session.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
                         // Ok, NEWKEYS received, now encrypted.
@@ -669,7 +670,7 @@ pub struct Authenticate<H:Handler>(Option<Connection<H>>);
 impl<H: Handler> Future for Authenticate<H> {
 
     type Item = Connection<H>;
-    type Error = Error;
+    type Error = HandlerError<H::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         if let Some(ref mut c) = self.0 {
@@ -720,7 +721,7 @@ pub struct Flush<H:Handler> {
 impl<H: Handler, ChannelType> Future for ChannelOpen<H, ChannelType> {
 
     type Item = (Connection<H>, ChannelId);
-    type Error = Error;
+    type Error = HandlerError<H::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         if let Some(ref mut c) = self.connection {
@@ -746,7 +747,7 @@ impl<H: Handler, ChannelType> Future for ChannelOpen<H, ChannelType> {
 impl<H: Handler, F:Fn(&Connection<H>) -> bool> Future for Wait<H, F> {
 
     type Item = Connection<H>;
-    type Error = Error;
+    type Error = HandlerError<H::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
 
@@ -780,7 +781,7 @@ impl<H: Handler, F:Fn(&Connection<H>) -> bool> Future for Wait<H, F> {
 impl<H: Handler> Future for Flush<H> {
 
     type Item = Connection<H>;
-    type Error = Error;
+    type Error = HandlerError<H::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         if let Some(ref mut c) = self.connection {
@@ -1290,7 +1291,7 @@ pub fn learn_known_hosts(host: &str, port: u16, pubkey: &key::PublicKey) -> Resu
 
 /// Check whether the host is known, from its standard location.
 #[cfg(target_os = "windows")]
-pub fn check_known_hosts(host: &str, port: u16, pubkey: &key::PublicKey) -> Result<bool, Error> {
+pub fn check_known_hosts(host: &str, port: u16, pubkey: &key::PublicKey) -> Result<bool, Error<E>> {
     if let Some(mut known_host_file) = std::env::home_dir() {
         known_host_file.push("ssh");
         known_host_file.push("known_hosts");
