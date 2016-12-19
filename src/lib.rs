@@ -465,7 +465,10 @@ pub enum Disconnect {
     IllegalUserName = 15,
 }
 
-/// The type of signals that can be sent to a remote process. If you plan to use custom signals, read [the RFC](https://tools.ietf.org/html/rfc4254#section-6.10) to understand the encoding.
+/// The type of signals that can be sent to a remote process. If you
+/// plan to use custom signals, read [the
+/// RFC](https://tools.ietf.org/html/rfc4254#section-6.10) to
+/// understand the encoding.
 #[allow(missing_docs)] // This should be relatively self-explanatory.
 #[derive(Debug, Clone, Copy)]
 pub enum Sig<'a> {

@@ -48,7 +48,8 @@ impl super::Session {
                         &enc.session_id
                     );
                     self.0.kex =
-                        Some(Kex::KexDhDone(try!(kexinit.client_parse(self.0.config.as_ref(),
+                        Some(Kex::KexDhDone(try!(kexinit.client_parse(&self.0.rng,
+                                                                      self.0.config.as_ref(),
                                                                       &mut self.0.cipher,
                                                                       buf,
                                                                       &mut self.0.write_buffer))));

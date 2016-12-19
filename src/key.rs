@@ -72,10 +72,10 @@ impl PublicKey {
         match algo {
             b"ssh-ed25519" => {
                 let mut p = pubkey.reader(0);
-                try!(p.read_string()); // XXX: don't we need to compare this to something or something?
+                let key_algo = try!(p.read_string());
                 let key_bytes = try!(p.read_string());
-                if key_bytes.len() != 32 /*XXX*/ {
-                    return Err(Error::Inconsistent/*XXX*/);
+                if key_algo != b"ssh-ed25519" || key_bytes.len() != ED25519_PUBLICKEY_BYTES {
+                    return Err(Error::Inconsistent);
                 }
                 let mut p = [0;ED25519_PUBLICKEY_BYTES];
                 p.clone_from_slice(key_bytes);
@@ -200,12 +200,12 @@ impl Algorithm {
     }
 
     #[doc(hidden)]
+    /// This is used by the server to sign the initial DH kex
+    /// message. Note: we are not signing the same kind of thing as in
+    /// the function below, `add_self_signature`.
     pub fn add_signature(&self, buffer: &mut CryptoVec, hash: &digest::Digest) {
         match self {
             &Algorithm::Ed25519(ref key_pair) => {
-                // XXX: Is this right? We use Ed25519 to sign a digest, so that
-                // there is an extra level of digesting, to simulate a prehash
-                // variant?
                 let signature = key_pair.sign(hash.as_ref());
                 let signature = signature.as_slice();
 
@@ -217,11 +217,12 @@ impl Algorithm {
     }
 
     #[doc(hidden)]
+    /// This is used by the client for authentication. Note: we are
+    /// not signing the same kind of thing as in the above function,
+    /// `add_signature`.
     pub fn add_self_signature(&self, buffer: &mut CryptoVec) {
         match self {
             &Algorithm::Ed25519(ref key_pair) => {
-                // XXX: Is this right? Above, we do a double hashing, but here
-                // we're doing single hashing!
                 let signature = key_pair.sign(&buffer);
                 let signature = signature.as_slice();
 
@@ -231,6 +232,7 @@ impl Algorithm {
             }
         }
     }
+
 }
 
 /// Parse a public key from a byte slice.

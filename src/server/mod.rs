@@ -23,6 +23,7 @@ use futures::{Poll, Async};
 use futures::future::Future;
 use tokio_core::net::{TcpListener, TcpStream};
 use tokio_core::reactor::{Core, Timeout, Handle};
+use ring;
 
 use super::*;
 use cipher;
@@ -89,7 +90,7 @@ impl Default for Config {
 }
 
 #[doc(hidden)]
-pub struct Connection<R, H:Handler> {
+pub struct Connection<R, H: Handler> {
     read_buffer: SSHBuffer,
     session: Session,
     stream: BufReader<R>,
@@ -99,7 +100,7 @@ pub struct Connection<R, H:Handler> {
     buffer2: CryptoVec,
     handle: Arc<Handle>,
     handler: H,
-    timeout: Option<Timeout>
+    timeout: Option<Timeout>,
 }
 
 /// A connected server session. This type is unique to a client.
@@ -146,13 +147,12 @@ pub enum Auth {
         /// A number of prompts to the user. Each prompt has a `bool`
         /// indicating whether the terminal must echo the characters
         /// typed by the user.
-        prompts: Cow<'static, [(Cow<'static, str>, bool)]>
+        prompts: Cow<'static, [(Cow<'static, str>, bool)]>,
     },
 }
 
 /// Server handler. Each client will have their own handler.
 pub trait Handler {
-
     /// The type of errors returned by the futures.
     type Error: std::fmt::Debug;
 
@@ -182,10 +182,13 @@ pub trait Handler {
         Self::FutureBool::finished(false)
     }
 
-    /// Check authentication using the "publickey" method. Thrussh
-    /// makes sure rejection happens in time
+    /// Check authentication using the "publickey" method. This method
+    /// should just check whether the public key matches the
+    /// authorized ones. Thrussh then checks the signature. If the key
+    /// is unknown, or the signature is invalid, Thrussh guarantees
+    /// that rejection happens in constant time
     /// `config.auth_rejection_time`, except if this method takes more
-    /// than that.
+    /// time than that.
     #[allow(unused_variables)]
     fn auth_publickey(&mut self, user: &str, public_key: &key::PublicKey) -> Self::FutureBool {
         Self::FutureBool::finished(false)
@@ -218,7 +221,10 @@ pub trait Handler {
 
     /// Called when a new session channel is created.
     #[allow(unused_variables)]
-    fn channel_open_session(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
+    fn channel_open_session(&mut self,
+                            channel: ChannelId,
+                            session: &mut Session)
+                            -> Self::FutureUnit {
         Self::FutureUnit::finished(())
     }
 
@@ -257,7 +263,12 @@ pub trait Handler {
     /// that this packet comes from stderr, other codes are not
     /// defined (see [RFC4254](https://tools.ietf.org/html/rfc4254#section-5.2)).
     #[allow(unused_variables)]
-    fn extended_data(&mut self, channel: ChannelId, code: u32, data: &[u8], session: &mut Session) -> Self::FutureUnit {
+    fn extended_data(&mut self,
+                     channel: ChannelId,
+                     code: u32,
+                     data: &[u8],
+                     session: &mut Session)
+                     -> Self::FutureUnit {
         Self::FutureUnit::finished(())
     }
 
@@ -317,13 +328,21 @@ pub trait Handler {
     /// The client sends a command to execute, to be passed to a
     /// shell. Make sure to check the command before doing so.
     #[allow(unused_variables)]
-    fn exec_request(&mut self, channel: ChannelId, data: &[u8], session: &mut Session) -> Self::FutureUnit {
+    fn exec_request(&mut self,
+                    channel: ChannelId,
+                    data: &[u8],
+                    session: &mut Session)
+                    -> Self::FutureUnit {
         Self::FutureUnit::finished(())
     }
 
     /// The client asks to start the subsystem with the given name (such as sftp).
     #[allow(unused_variables)]
-    fn subsystem_request(&mut self, channel: ChannelId, name: &str, session: &mut Session) -> Self::FutureUnit {
+    fn subsystem_request(&mut self,
+                         channel: ChannelId,
+                         name: &str,
+                         session: &mut Session)
+                         -> Self::FutureUnit {
         Self::FutureUnit::finished(())
     }
 
@@ -342,20 +361,32 @@ pub trait Handler {
 
     /// The client is sending a signal (usually to pass to the currently running process).
     #[allow(unused_variables)]
-    fn signal(&mut self, channel: ChannelId, signal_name: Sig, session: &mut Session) -> Self::FutureUnit {
+    fn signal(&mut self,
+              channel: ChannelId,
+              signal_name: Sig,
+              session: &mut Session)
+              -> Self::FutureUnit {
         Self::FutureUnit::finished(())
     }
 
     /// Used for reverse-forwarding ports, see
     /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
     #[allow(unused_variables)]
-    fn tcpip_forward(&mut self, address: &str, port: u32, session: &mut Session) -> Self::FutureBool {
+    fn tcpip_forward(&mut self,
+                     address: &str,
+                     port: u32,
+                     session: &mut Session)
+                     -> Self::FutureBool {
         Self::FutureBool::finished(false)
     }
     /// Used to stop the reverse-forwarding of a port, see
     /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-7).
     #[allow(unused_variables)]
-    fn cancel_tcpip_forward(&mut self, address: &str, port: u32, session: &mut Session) -> Self::FutureBool {
+    fn cancel_tcpip_forward(&mut self,
+                            address: &str,
+                            port: u32,
+                            session: &mut Session)
+                            -> Self::FutureBool {
         Self::FutureBool::finished(false)
     }
 }
@@ -363,6 +394,7 @@ pub trait Handler {
 impl KexInit {
     pub fn server_parse(mut self,
                         config: &Config,
+                        rng: &ring::rand::SecureRandom,
                         cipher: &mut CipherPair,
                         buf: &[u8],
                         write_buffer: &mut SSHBuffer)
@@ -378,7 +410,7 @@ impl KexInit {
                 return Err(Error::Kex);
             };
             if !self.sent {
-                self.server_write(config, cipher, write_buffer)
+                try!(self.server_write(rng, config, cipher, write_buffer))
             }
             let mut key = 0;
             debug!("config {:?} algo {:?}", config.keys, algo.key);
@@ -403,13 +435,16 @@ impl KexInit {
     }
 
     pub fn server_write(&mut self,
+                        rng: &ring::rand::SecureRandom,
                         config: &Config,
                         cipher: &mut CipherPair,
-                        write_buffer: &mut SSHBuffer) {
+                        write_buffer: &mut SSHBuffer)
+                        -> Result<(), Error> {
         self.exchange.server_kex_init.clear();
-        negociation::write_kex(&config.preferred, &mut self.exchange.server_kex_init);
+        try!(negociation::write_kex(rng, &config.preferred, &mut self.exchange.server_kex_init));
         self.sent = true;
-        cipher.write(&self.exchange.server_kex_init, write_buffer)
+        cipher.write(&self.exchange.server_kex_init, write_buffer);
+        Ok(())
     }
 }
 
@@ -467,7 +502,7 @@ impl KexDh {
 #[derive(Clone, Copy)]
 enum Status {
     Ok,
-    Disconnect
+    Disconnect,
 }
 
 #[derive(Debug)]
@@ -475,12 +510,16 @@ enum ConnectionState {
     ReadSshId { sshid: ReadSshId },
     WriteSshId,
     Read,
-    Write
+    Write,
 }
 
-impl<R: Read + Write, H:Handler> Connection<R, H> {
+impl<R: Read + Write, H: Handler> Connection<R, H> {
     #[doc(hidden)]
-    pub fn new(config: Arc<Config>, handle: Arc<Handle>, stream: R, handler: H) -> Self {
+    pub fn new(config: Arc<Config>,
+               handle: Arc<Handle>,
+               stream: R,
+               handler: H)
+               -> Result<Self, Error> {
         let mut write_buffer = SSHBuffer::new();
         write_buffer.send_ssh_id(config.as_ref().server_id.as_bytes());
         let timeout = if let Some(t) = config.connection_timeout {
@@ -501,6 +540,7 @@ impl<R: Read + Write, H:Handler> Connection<R, H> {
                 config: config,
                 wants_reply: false,
                 disconnected: false,
+                rng: ring::rand::SystemRandom::new(),
             }),
             stream: BufReader::new(stream),
             state: Some(ConnectionState::WriteSshId),
@@ -508,15 +548,14 @@ impl<R: Read + Write, H:Handler> Connection<R, H> {
             handle: handle,
             handler: handler,
             buffer: CryptoVec::new(),
-            buffer2: CryptoVec::new()
+            buffer2: CryptoVec::new(),
         };
-        connection.session.flush();
-        connection
+        try!(connection.session.flush());
+        Ok(connection)
     }
 }
 
 impl<H: Handler> Future for Connection<TcpStream, H> {
-
     type Item = ();
     type Error = HandlerError<H::Error>;
 
@@ -535,7 +574,7 @@ impl<H: Handler> Future for Connection<TcpStream, H> {
             }
             debug!("polling, state = {:?}", self.state);
             if let Status::Disconnect = try_ready!(self.atomic_poll()) {
-                return Ok(Async::Ready(()))
+                return Ok(Async::Ready(()));
             }
         }
     }
@@ -556,8 +595,7 @@ pub enum PendingFuture<H: Handler> {
 
 
 
-impl<H:Handler> Connection<TcpStream, H> {
-
+impl<H: Handler> Connection<TcpStream, H> {
     fn poll_pending(&mut self) -> Poll<bool, HandlerError<H::Error>> {
         debug!("Running encrypted future");
         match std::mem::replace(&mut self.pending_future, None) {
@@ -571,7 +609,7 @@ impl<H:Handler> Connection<TcpStream, H> {
                     Async::NotReady => {
                         self.pending_future = Some(PendingFuture::RejectTimeout(time));
                         Ok(Async::NotReady)
-                    },
+                    }
                     Async::Ready(()) => {
                         debug!("future: rejectTimeout done");
                         self.state = Some(ConnectionState::Write);
@@ -586,16 +624,19 @@ impl<H:Handler> Connection<TcpStream, H> {
                     match try!(r.poll(enc, &mut self.session.0.auth_user, &mut self.buffer)) {
                         Async::Ready(Auth::Reject) => {
                             debug!("reject");
-                            let t = try!(Timeout::new_at(pre_auth + self.session.0.config.auth_rejection_time, &self.handle));
+                            let t =
+                                try!(Timeout::new_at(pre_auth +
+                                                     self.session.0.config.auth_rejection_time,
+                                                     &self.handle));
                             self.pending_future = Some(PendingFuture::RejectTimeout(t));
                             Ok(Async::Ready(true))
-                        },
+                        }
                         Async::Ready(auth) => {
                             debug!("auth: other");
                             self.state = Some(ConnectionState::Write);
                             debug!("auth status: {:?}", auth);
                             Ok(Async::Ready(true))
-                        },
+                        }
                         Async::NotReady => {
                             self.pending_future = Some(PendingFuture::ReadAuthRequest(r));
                             Ok(Async::NotReady)
@@ -627,7 +668,7 @@ impl<H:Handler> Connection<TcpStream, H> {
 
         if try_ready!(self.poll_pending()) {
             self.state = Some(ConnectionState::Write);
-            return Ok(Async::Ready(Status::Ok))
+            return Ok(Async::Ready(Status::Ok));
         }
 
         debug!("connection state: {:?}", self.state);
@@ -641,7 +682,7 @@ impl<H:Handler> Connection<TcpStream, H> {
             }
             Some(ConnectionState::WriteSshId) => {
                 self.state = Some(ConnectionState::WriteSshId);
-                self.session.flush();
+                try!(self.session.flush());
                 try_nb!(self.session.0.write_buffer.write_all(self.stream.get_mut()));
 
                 self.state = Some(ConnectionState::ReadSshId { sshid: read_ssh_id() });
@@ -664,33 +705,36 @@ impl<H:Handler> Connection<TcpStream, H> {
                         let mut exchange = Exchange::new();
                         exchange.client_id.extend(sshid.id());
                         // Preparing the response
-                        exchange.server_id.extend(self.session.0.config.as_ref().server_id.as_bytes());
+                        exchange.server_id
+                            .extend(self.session.0.config.as_ref().server_id.as_bytes());
                         let mut kexinit = KexInit {
                             exchange: exchange,
                             algo: None,
                             sent: false,
                             session_id: None,
                         };
-                        kexinit.server_write(self.session.0.config.as_ref(),
-                                             &mut self.session.0.cipher,
-                                             &mut self.session.0.write_buffer);
+                        try!(kexinit.server_write(&self.session.0.rng,
+                                                  self.session.0.config.as_ref(),
+                                                  &mut self.session.0.cipher,
+                                                  &mut self.session.0.write_buffer));
                         self.session.0.kex = Some(Kex::KexInit(kexinit));
                         self.state = Some(ConnectionState::Write);
                         Ok(Async::Ready(Status::Ok))
                     }
                 }
-            },
+            }
             Some(ConnectionState::Write) => {
                 self.state = Some(ConnectionState::Write);
-                self.session.flush();
+                try!(self.session.flush());
                 try_nb!(self.session.0.write_buffer.write_all(self.stream.get_mut()));
                 self.state = Some(ConnectionState::Read);
                 Ok(Async::Ready(Status::Ok))
-            },
+            }
             Some(ConnectionState::Read) => {
 
                 self.state = Some(ConnectionState::Read);
-                let buf = try_nb!(self.session.0.cipher.read(&mut self.stream, &mut self.read_buffer));
+                let buf =
+                    try_nb!(self.session.0.cipher.read(&mut self.stream, &mut self.read_buffer));
                 debug!("read buf = {:?}", buf);
                 // Handle the transport layer.
                 if buf.len() == 0 || buf[0] == msg::DISCONNECT {
@@ -713,21 +757,20 @@ impl<H:Handler> Connection<TcpStream, H> {
                 match std::mem::replace(&mut self.session.0.kex, None) {
                     Some(Kex::KexInit(kexinit)) => {
                         if kexinit.algo.is_some() || buf[0] == msg::KEXINIT ||
-                            self.session.0.encrypted.is_none() {
-                                let next_kex = kexinit.server_parse(
-                                    self.session.0.config.as_ref(),
-                                    &mut self.session.0.cipher,
-                                    buf,
-                                    &mut self.session.0.write_buffer
-                                );
-                                match next_kex {
-                                    Ok(next_kex) => {
-                                        self.session.0.kex = Some(next_kex);
-                                        return Ok(Async::Ready(Status::Ok))
-                                    }
-                                    Err(e) => return Err(HandlerError::Error(e)),
+                           self.session.0.encrypted.is_none() {
+                            let next_kex = kexinit.server_parse(self.session.0.config.as_ref(),
+                                                                &self.session.0.rng,
+                                                                &mut self.session.0.cipher,
+                                                                buf,
+                                                                &mut self.session.0.write_buffer);
+                            match next_kex {
+                                Ok(next_kex) => {
+                                    self.session.0.kex = Some(next_kex);
+                                    return Ok(Async::Ready(Status::Ok));
                                 }
+                                Err(e) => return Err(HandlerError::Error(e)),
                             }
+                        }
                         // Else, i.e. if the other side has not started
                         // the key exchange, process its packets by simple
                         // not returning.
@@ -769,22 +812,26 @@ impl<H:Handler> Connection<TcpStream, H> {
 
                         // If we're not currently rekeying, but buf is a rekey request
                         if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
-                            let kexinit = KexInit::received_rekey(
-                                exchange,
-                                try!(negociation::Server::read_kex(buf, &self.session.0.config.as_ref().preferred)),
-                                &enc.session_id
-                            );
-                            self.session.0.kex = Some(try!(kexinit.server_parse(self.session.0.config.as_ref(),
-                                                                                &mut self.session.0.cipher,
-                                                                                buf,
-                                                                                &mut self.session.0.write_buffer)));
+                            let pref = &self.session.0.config.as_ref().preferred;
+                            let kexinit =
+                                KexInit::received_rekey(exchange,
+                                                        try!(negociation::Server::read_kex(buf,
+                                                                                           pref)),
+                                                        &enc.session_id);
+                            self.session.0.kex = Some(try!(kexinit.server_parse(
+                                self.session.0.config.as_ref(),
+                                &self.session.0.rng,
+                                &mut self.session.0.cipher,
+                                buf,
+                                &mut self.session.0.write_buffer)));
                         }
-                        return Ok(Async::Ready(Status::Ok))
+                        return Ok(Async::Ready(Status::Ok));
                     }
                 }
 
                 // No kex going on, and the version id is done.
-                self.pending_future = Some(try!(self.session.server_read_encrypted(&mut self.handler, buf)));
+                self.pending_future = Some(try!(self.session
+                    .server_read_encrypted(&mut self.handler, buf)));
                 Ok(Async::Ready(Status::Ok))
             }
         }
@@ -792,20 +839,22 @@ impl<H:Handler> Connection<TcpStream, H> {
 }
 
 impl Session {
-    fn flush(&mut self) {
+    fn flush(&mut self) -> Result<(), Error> {
         if let Some(ref mut enc) = self.0.encrypted {
-              if enc.flush(&self.0.config.as_ref().limits,
+            if enc.flush(&self.0.config.as_ref().limits,
                          &mut self.0.cipher,
                          &mut self.0.write_buffer) {
                 if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
                     let mut kexinit = KexInit::initiate_rekey(exchange, &enc.session_id);
-                    kexinit.server_write(&self.0.config.as_ref(),
-                                         &mut self.0.cipher,
-                                         &mut self.0.write_buffer);
+                    try!(kexinit.server_write(&self.0.rng,
+                                              &self.0.config.as_ref(),
+                                              &mut self.0.cipher,
+                                              &mut self.0.write_buffer));
                     enc.rekey = Some(Kex::KexInit(kexinit))
                 }
             }
         }
+        Ok(())
     }
 
     /// Retrieves the configuration of this session.
@@ -894,13 +943,11 @@ impl Session {
     /// Close a channel.
     pub fn close(&mut self, channel: ChannelId) {
         self.0.byte(channel, msg::CHANNEL_CLOSE);
-        self.flush();
     }
 
     /// Send EOF to a channel
     pub fn eof(&mut self, channel: ChannelId) {
         self.0.byte(channel, msg::CHANNEL_EOF);
-        self.flush();
     }
 
     /// Send data to a channel. On session channels, `extended` can be
@@ -989,7 +1036,7 @@ impl Session {
                                         connected_port: u32,
                                         originator_address: &str,
                                         originator_port: u32)
-                                        -> Option<ChannelId> {
+                                        -> Result<ChannelId, Error> {
         let result = if let Some(ref mut enc) = self.0.encrypted {
             match enc.state {
                 Some(EncryptedState::Authenticated) => {
@@ -1016,15 +1063,14 @@ impl Session {
                         enc.write.extend_ssh_string(originator_address.as_bytes());
                         enc.write.push_u32_be(originator_port); // sender channel id.
                     });
-                    Some(sender_channel)
+                    sender_channel
                 }
-                _ => None,
+                _ => return Err(Error::Inconsistent),
             }
         } else {
-            None
+            return Err(Error::Inconsistent);
         };
-        self.flush();
-        result
+        Ok(result)
     }
 }
 
@@ -1038,12 +1084,8 @@ pub fn run<H: Handler + Clone + 'static>(config: Arc<Config>, addr: &str, handle
     let socket = TcpListener::bind(&addr, &handle).unwrap();
 
     let done = socket.incoming().for_each(move |(socket, _)| {
-        let connection = Connection::new(
-            config.clone(),
-            handle.clone(),
-            socket,
-            handler.clone()
-        );
+        let connection = Connection::new(config.clone(), handle.clone(), socket, handler.clone())
+            .unwrap();
         handle.spawn(connection.map_err(|err| println!("err {:?}", err)));
         Ok(())
     });

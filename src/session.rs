@@ -32,7 +32,7 @@ use ring::digest;
 use encoding::Encoding;
 use std::num::Wrapping;
 use futures::{Async, Poll};
-
+use ring;
 use std::io::BufRead;
 
 pub struct ReadSshId {
@@ -50,7 +50,7 @@ impl ReadSshId {
     pub fn id(&self) -> &[u8] {
         &self.id[..self.id_len]
     }
-    pub fn poll<R:BufRead>(&mut self, stream:&mut R) -> Poll<(), Error> {
+    pub fn poll<R: BufRead>(&mut self, stream: &mut R) -> Poll<(), Error> {
         let i = {
             let buf = try!(stream.fill_buf());
             let mut i = 0;
@@ -82,7 +82,7 @@ impl ReadSshId {
 
 pub fn read_ssh_id() -> ReadSshId {
     ReadSshId {
-        id: [0;256],
+        id: [0; 256],
         id_len: 0,
     }
 }
@@ -108,7 +108,6 @@ pub struct Encrypted {
     pub last_rekey: std::time::Instant,
 }
 
-#[derive(Debug)]
 pub struct CommonSession<Config> {
     pub auth_user: String,
     pub config: Arc<Config>,
@@ -119,6 +118,7 @@ pub struct CommonSession<Config> {
     pub cipher: cipher::CipherPair,
     pub wants_reply: bool,
     pub disconnected: bool,
+    pub rng: ring::rand::SystemRandom,
 }
 
 impl<C> CommonSession<C> {

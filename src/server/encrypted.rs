@@ -30,10 +30,11 @@ use futures::Poll;
 impl Session {
     #[doc(hidden)]
     /// Returns false iff a request was rejected.
-    pub fn server_read_encrypted<'a, S: Handler>(&mut self,
-                                                 server: &mut S,
-                                                 buf: &[u8])
-                                                 -> Result<PendingFuture<S>, HandlerError<S::Error>> {
+    pub fn server_read_encrypted<'a, S: Handler>
+        (&mut self,
+         server: &mut S,
+         buf: &[u8])
+         -> Result<PendingFuture<S>, HandlerError<S::Error>> {
         debug!("read_encrypted");
         // Either this packet is a KEXINIT, in which case we start a key re-exchange.
         if buf[0] == msg::KEXINIT {
@@ -48,6 +49,7 @@ impl Session {
                         &enc.session_id
                     );
                     self.0.kex = Some(try!(kexinit.server_parse(self.0.config.as_ref(),
+                                                                &self.0.rng,
                                                                 &mut self.0.cipher,
                                                                 buf,
                                                                 &mut self.0.write_buffer)));
@@ -123,10 +125,11 @@ impl Session {
         }
     }
 
-    fn server_read_authenticated<'a, S: Handler>(&'a mut self,
-                                                 server: &mut S,
-                                                 buf: &[u8])
-                                                 -> Result<Authenticated<S>, HandlerError<S::Error>> {
+    fn server_read_authenticated<'a, S: Handler>
+        (&'a mut self,
+         server: &mut S,
+         buf: &[u8])
+         -> Result<Authenticated<S>, HandlerError<S::Error>> {
         debug!("authenticated buf = {:?}", buf);
         match buf[0] {
             msg::CHANNEL_OPEN => {
@@ -343,10 +346,11 @@ impl Session {
         }
     }
 
-    fn server_handle_channel_open<'a, S: Handler>(&mut self,
-                                                  server: &mut S,
-                                                  buf: &[u8])
-                                                  -> Result<FutureUnit<S>, HandlerError<S::Error>> {
+    fn server_handle_channel_open<'a, S: Handler>
+        (&mut self,
+         server: &mut S,
+         buf: &[u8])
+         -> Result<FutureUnit<S>, HandlerError<S::Error>> {
 
         // https://tools.ietf.org/html/rfc4254#section-5.1
         let mut r = buf.reader(1);
@@ -390,9 +394,7 @@ impl Session {
                 let b = try!(r.read_u32());
                 let c = try!(std::str::from_utf8(try!(r.read_string())));
                 let d = try!(r.read_u32());
-                FutureUnit::H(
-                    server.channel_open_direct_tcpip(sender_channel, a, b, c, d, self)
-                )
+                FutureUnit::H(server.channel_open_direct_tcpip(sender_channel, a, b, c, d, self))
             }
             t => {
                 debug!("unknown channel type: {:?}", t);
@@ -479,7 +481,7 @@ pub enum ReadAuthRequest<H: Handler> {
     },
     Reject,
     Accept,
-    UnsupportedMethod
+    UnsupportedMethod,
 }
 
 pub enum FutureAuth<H: Handler> {
@@ -507,10 +509,10 @@ pub enum ValidatePubkey<H: Handler> {
 
 impl<H: Handler> ReadAuthRequest<H> {
     pub fn poll(&mut self,
-            enc: &mut Encrypted,
-            auth_user: &mut String,
-            buffer: &mut CryptoVec)
-            -> Poll<Auth, HandlerError<H::Error>> {
+                enc: &mut Encrypted,
+                auth_user: &mut String,
+                buffer: &mut CryptoVec)
+                -> Poll<Auth, HandlerError<H::Error>> {
         match *self {
             ReadAuthRequest::Req { ref mut future, ref mut auth_request } => {
                 match *future {
@@ -533,7 +535,9 @@ impl<H: Handler> ReadAuthRequest<H> {
                         debug!("ReadAuthRequest.poll(): Pubkey");
                         let is_valid = match *validate {
                             ValidatePubkey::Valid => true,
-                            ValidatePubkey::Future(ref mut h) => try_ready!(h.poll().map_err(HandlerError::Handler)),
+                            ValidatePubkey::Future(ref mut h) => {
+                                try_ready!(h.poll().map_err(HandlerError::Handler))
+                            }
                             _ => false,
                         };
                         if is_valid {
@@ -641,12 +645,13 @@ impl<H: Handler> ReadAuthRequest<H> {
 
 impl Encrypted {
     /// Returns false iff the request was rejected.
-    fn server_read_auth_request<S: Handler>(&mut self,
-                                            server: &mut S,
-                                            buf: &[u8],
-                                            auth_user: &mut String,
-                                            mut auth_request: AuthRequest)
-                                            -> Result<ReadAuthRequest<S>, HandlerError<S::Error>> {
+    fn server_read_auth_request<S: Handler>
+        (&mut self,
+         server: &mut S,
+         buf: &[u8],
+         auth_user: &mut String,
+         mut auth_request: AuthRequest)
+         -> Result<ReadAuthRequest<S>, HandlerError<S::Error>> {
 
         // https://tools.ietf.org/html/rfc4252#section-5
         let mut r = buf.reader(1);
@@ -771,12 +776,13 @@ impl Encrypted {
         }
     }
 
-    fn read_userauth_info_response<S: Handler>(&mut self,
-                                               server: &mut S,
-                                               user: &mut String,
-                                               auth_request: AuthRequest,
-                                               b: &[u8])
-                                               -> Result<ReadAuthRequest<S>, HandlerError<S::Error>> {
+    fn read_userauth_info_response<S: Handler>
+        (&mut self,
+         server: &mut S,
+         user: &mut String,
+         auth_request: AuthRequest,
+         b: &[u8])
+         -> Result<ReadAuthRequest<S>, HandlerError<S::Error>> {
 
         let ki = if let Some(CurrentRequest::KeyboardInteractive { ref submethods }) =
                         auth_request.current {

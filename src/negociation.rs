@@ -94,7 +94,7 @@ pub trait Select {
 
         try!(r.read_string()); // SERVER_TO_CLIENT
         let mac = Self::select(pref.mac, try!(r.read_string()));
-        let mac = mac.and_then(|(_,x)| Some(x));
+        let mac = mac.and_then(|(_, x)| Some(x));
         try!(r.read_string()); // SERVER_TO_CLIENT
         try!(r.read_string()); //
         try!(r.read_string()); //
@@ -151,14 +151,16 @@ impl Select for Client {
 }
 
 
-pub fn write_kex(prefs: &Preferred, buf: &mut CryptoVec) {
-    let rng = rand::SystemRandom::new(); // TODO: make a parameter.
+pub fn write_kex(rng: &rand::SecureRandom,
+                 prefs: &Preferred,
+                 buf: &mut CryptoVec)
+                 -> Result<(), Error> {
 
     // buf.clear();
     buf.push(msg::KEXINIT);
 
     let mut cookie = [0; 16];
-    rng.fill(&mut cookie).unwrap(); // XXX: unwrap
+    try!(rng.fill(&mut cookie));
 
     buf.extend(&cookie); // cookie
     buf.extend_list(prefs.kex.iter()); // kex algo
@@ -178,4 +180,5 @@ pub fn write_kex(prefs: &Preferred, buf: &mut CryptoVec) {
 
     buf.push(0); // doesn't follow
     buf.extend(&[0, 0, 0, 0]); // reserved
+    Ok(())
 }

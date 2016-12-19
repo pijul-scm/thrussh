@@ -6,7 +6,7 @@ use std::sync::Arc;
 use thrussh::*;
 
 #[derive(Clone)]
-struct H{}
+struct H {}
 
 impl server::Handler for H {
     type Error = ();
@@ -17,8 +17,14 @@ impl server::Handler for H {
     fn auth_publickey(&mut self, _: &str, _: &key::PublicKey) -> Self::FutureBool {
         futures::finished(true)
     }
-    fn data(&mut self, channel: ChannelId, data: &[u8], session: &mut server::Session) -> Self::FutureUnit {
-        println!("data on channel {:?}: {:?}", channel, std::str::from_utf8(data));
+    fn data(&mut self,
+            channel: ChannelId,
+            data: &[u8],
+            session: &mut server::Session)
+            -> Self::FutureUnit {
+        println!("data on channel {:?}: {:?}",
+                 channel,
+                 std::str::from_utf8(data));
         session.data(channel, None, data).unwrap();
         futures::finished(())
     }
@@ -41,12 +47,23 @@ impl client::Handler for Client {
         println!("check_server_key: {:?}", server_public_key);
         futures::finished(true)
     }
-    fn channel_open_confirmation(&mut self, channel: ChannelId, _: &mut client::Session) -> Self::FutureUnit {
+    fn channel_open_confirmation(&mut self,
+                                 channel: ChannelId,
+                                 _: &mut client::Session)
+                                 -> Self::FutureUnit {
         println!("channel_open_confirmation: {:?}", channel);
         futures::finished(())
     }
-    fn data(&mut self, channel: ChannelId, ext: Option<u32>, data: &[u8], _: &mut client::Session) -> Self::FutureUnit {
-        println!("data on channel {:?} {:?}: {:?}", ext, channel, std::str::from_utf8(data));
+    fn data(&mut self,
+            channel: ChannelId,
+            ext: Option<u32>,
+            data: &[u8],
+            _: &mut client::Session)
+            -> Self::FutureUnit {
+        println!("data on channel {:?} {:?}: {:?}",
+                 ext,
+                 channel,
+                 std::str::from_utf8(data));
         futures::finished(())
     }
 }
@@ -57,19 +74,18 @@ impl Client {
         let addr = addr.to_socket_addrs().unwrap().next().unwrap();
         let mut l = Core::new().unwrap();
         let handle = l.handle();
-        let done =
-            TcpStream::connect(&addr, &handle).map_err(|err| thrussh::HandlerError::Error(thrussh::Error::IO(err))).and_then(|socket| {
+        let done = TcpStream::connect(&addr, &handle)
+            .map_err(|err| thrussh::HandlerError::Error(thrussh::Error::IO(err)))
+            .and_then(|socket| {
 
                 println!("connected");
-                let mut connection = client::Connection::new(
-                    config.clone(),
-                    socket,
-                    self,
-                    None
-                );
+                let mut connection = client::Connection::new(config.clone(), socket, self, None)
+                    .unwrap();
 
                 connection.set_auth_user("pe");
-                connection.set_auth_public_key(thrussh::load_secret_key("/home/pe/.ssh/id_ed25519").unwrap());
+                connection.set_auth_public_key(thrussh::load_secret_key("/home/pe/.\
+                                                                         ssh/id_ed25519")
+                    .unwrap());
                 // debug!("connection");
                 connection.authenticate().and_then(|connection| {
 
@@ -85,7 +101,6 @@ impl Client {
             });
         l.run(done).unwrap();
     }
-
 }
 
 fn main() {
@@ -97,7 +112,7 @@ fn main() {
         config.auth_rejection_time = std::time::Duration::from_secs(3);
         config.keys.push(thrussh::key::Algorithm::generate_keypair(thrussh::key::ED25519).unwrap());
         let config = Arc::new(config);
-        let sh = H{};
+        let sh = H {};
         thrussh::server::run(config, "0.0.0.0:2222", sh);
     });
 

@@ -18,30 +18,30 @@ fn run<H: Handler + 'static>(config: Arc<Config>, addr: &str, handler: H) {
     let mut l = Core::new().unwrap();
     let handle = l.handle();
     let done =
-        TcpStream::connect(&addr, &handle).map_err(|err| thrussh::HandlerError::Error(thrussh::Error::IO(err))).and_then(|socket| {
+        TcpStream::connect(&addr, &handle)
+            .map_err(|err| thrussh::HandlerError::Error(thrussh::Error::IO(err)))
+            .and_then(|socket| {
 
-            println!("connected");
-            let mut connection = Connection::new(
-                config.clone(),
-                socket,
-                handler,
-                None
-            );
+                println!("connected");
+                let mut connection = Connection::new(config.clone(), socket, handler, None)
+                    .unwrap();
 
-            connection.set_auth_user("pe");
-            connection.set_auth_public_key(thrussh::load_secret_key("/home/pe/.ssh/id_ed25519").unwrap());
-            debug!("connection");
-            connection.authenticate().and_then(|connection| {
+                connection.set_auth_user("pe");
+                connection.set_auth_public_key(thrussh::load_secret_key("/home/pe/.\
+                                                                         ssh/id_ed25519")
+                    .unwrap());
+                debug!("connection");
+                connection.authenticate().and_then(|connection| {
 
-                connection.channel_open_session().and_then(|(mut connection, chan)| {
+                    connection.channel_open_session().and_then(|(mut connection, chan)| {
 
-                    connection.data(chan, None, b"AAAAAA").unwrap();
-                    connection.data(chan, None, b"BBBBBB").unwrap();
-                    connection
+                        connection.data(chan, None, b"AAAAAA").unwrap();
+                        connection.data(chan, None, b"BBBBBB").unwrap();
+                        connection
 
+                    })
                 })
-            })
-        });
+            });
     l.run(done).unwrap();
 }
 
@@ -55,12 +55,23 @@ impl Handler for H {
         debug!("check_server_key: {:?}", server_public_key);
         futures::finished(true)
     }
-    fn channel_open_confirmation(&mut self, channel: ChannelId, _: &mut Session) -> Self::FutureUnit {
+    fn channel_open_confirmation(&mut self,
+                                 channel: ChannelId,
+                                 _: &mut Session)
+                                 -> Self::FutureUnit {
         debug!("channel_open_confirmation: {:?}", channel);
         futures::finished(())
     }
-    fn data(&mut self, channel: ChannelId, ext: Option<u32>, data: &[u8], _: &mut Session) -> Self::FutureUnit {
-        println!("data on channel {:?} {:?}: {:?}", ext, channel, std::str::from_utf8(data));
+    fn data(&mut self,
+            channel: ChannelId,
+            ext: Option<u32>,
+            data: &[u8],
+            _: &mut Session)
+            -> Self::FutureUnit {
+        println!("data on channel {:?} {:?}: {:?}",
+                 ext,
+                 channel,
+                 std::str::from_utf8(data));
         futures::finished(())
     }
 }

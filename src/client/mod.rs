@@ -20,8 +20,9 @@ use futures::{Poll, Async};
 use futures::future::Future;
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Timeout;
-
-use {Disconnect, Error, Limits, Sig, ChannelOpenFailure, parse_public_key, ChannelId, FromFinished, HandlerError};
+use ring;
+use {Disconnect, Error, Limits, Sig, ChannelOpenFailure, parse_public_key, ChannelId,
+     FromFinished, HandlerError};
 use encoding::Reader;
 use key;
 use msg;
@@ -67,14 +68,14 @@ impl Default for Config {
             window_size: 200000,
             maximum_packet_size: 200000,
             preferred: Default::default(),
-            connection_timeout: None
+            connection_timeout: None,
         }
     }
 }
 
 
 /// Client connection.
-pub struct Connection<H:Handler> {
+pub struct Connection<H: Handler> {
     read_buffer: SSHBuffer,
     /// Session of this connection.
     pub session: Session,
@@ -85,7 +86,7 @@ pub struct Connection<H:Handler> {
     buffer2: CryptoVec,
     /// Handler for this connection.
     pub handler: H,
-    timeout: Option<Timeout>
+    timeout: Option<Timeout>,
 }
 
 #[derive(Debug)]
@@ -94,34 +95,36 @@ enum ConnectionState {
     WriteSshId,
     Read,
     Write,
-    Flush
+    Flush,
 }
 
-impl<H:Handler> std::ops::Deref for Connection<H> {
+impl<H: Handler> std::ops::Deref for Connection<H> {
     type Target = Session;
     fn deref(&self) -> &Session {
         &self.session
     }
 }
 
-impl<H:Handler> std::ops::DerefMut for Connection<H> {
+impl<H: Handler> std::ops::DerefMut for Connection<H> {
     fn deref_mut(&mut self) -> &mut Session {
         &mut self.session
     }
 }
 
 /// The type of a client session.
-#[derive(Debug)]
 pub struct Session(CommonSession<Config>);
 
-/// A client handler. Note that messages can be received from the server at any time during a session.
+/// A client handler. Note that messages can be received from the
+/// server at any time during a session.
 pub trait Handler {
     /// Error type returned by the futures.
     type Error: std::fmt::Debug;
-    /// A future ultimately resolving into a boolean, which can be returned by some parts of this handler.
-    type FutureBool: Future<Item=bool, Error = Self::Error> + FromFinished<bool, Self::Error>;
-    /// A future ultimately resolving into unit, which can be returned by some parts of this handler.
-    type FutureUnit: Future<Item=(), Error = Self::Error> + FromFinished<(), Self::Error>;
+    /// A future ultimately resolving into a boolean, which can be
+    /// returned by some parts of this handler.
+    type FutureBool: Future<Item = bool, Error = Self::Error> + FromFinished<bool, Self::Error>;
+    /// A future ultimately resolving into unit, which can be returned
+    /// by some parts of this handler.
+    type FutureUnit: Future<Item = (), Error = Self::Error> + FromFinished<(), Self::Error>;
 
     /// Called when the server sends us an authentication banner. This
     /// is usually meant to be shown to the user, see
@@ -181,7 +184,8 @@ pub trait Handler {
                                     connected_port: u32,
                                     originator_address: &str,
                                     originator_port: u32,
-                                    session: &mut Session) -> Self::FutureUnit {
+                                    session: &mut Session)
+                                    -> Self::FutureUnit {
         Self::FutureUnit::finished(())
     }
 
@@ -255,6 +259,7 @@ pub trait Handler {
 
 impl KexInit {
     pub fn client_parse(mut self,
+                        rng: &ring::rand::SecureRandom,
                         config: &Config,
                         cipher: &mut CipherPair,
                         buf: &[u8],
@@ -269,7 +274,7 @@ impl KexInit {
             return Err(Error::Kex);
         };
         if !self.sent {
-            self.client_write(config, cipher, write_buffer)
+            try!(self.client_write(rng, config, cipher, write_buffer))
         }
 
         // This function is called from the public API.
@@ -297,21 +302,28 @@ impl KexInit {
     }
 
     pub fn client_write(&mut self,
+                        rng: &ring::rand::SecureRandom,
                         config: &Config,
                         cipher: &mut CipherPair,
-                        write_buffer: &mut SSHBuffer) {
+                        write_buffer: &mut SSHBuffer)
+                        -> Result<(), Error> {
         self.exchange.client_kex_init.clear();
-        negociation::write_kex(&config.preferred, &mut self.exchange.client_kex_init);
+        try!(negociation::write_kex(rng, &config.preferred, &mut self.exchange.client_kex_init));
         self.sent = true;
-        cipher.write(&self.exchange.client_kex_init, write_buffer)
+        cipher.write(&self.exchange.client_kex_init, write_buffer);
+        Ok(())
     }
 }
 
 
 
-impl<H:Handler> Connection<H> {
+impl<H: Handler> Connection<H> {
     /// Create a new client connection.
-    pub fn new(config: Arc<Config>, stream: TcpStream, handler: H, timeout: Option<Timeout>) -> Self {
+    pub fn new(config: Arc<Config>,
+               stream: TcpStream,
+               handler: H,
+               timeout: Option<Timeout>)
+               -> Result<Self, Error> {
         let mut write_buffer = SSHBuffer::new();
         write_buffer.send_ssh_id(config.as_ref().client_id.as_bytes());
         let mut connection = Connection {
@@ -327,22 +339,22 @@ impl<H:Handler> Connection<H> {
                 config: config,
                 wants_reply: false,
                 disconnected: false,
+                rng: ring::rand::SystemRandom::new(),
             }),
             stream: BufReader::new(stream),
             state: Some(ConnectionState::WriteSshId),
             pending_future: None,
             handler: handler,
             buffer: CryptoVec::new(),
-            buffer2: CryptoVec::new()
+            buffer2: CryptoVec::new(),
         };
-        connection.session.flush();
-        connection
+        try!(connection.session.flush());
+        Ok(connection)
     }
 }
 
 
 impl<H: Handler> Future for Connection<H> {
-
     type Item = ();
     type Error = HandlerError<H::Error>;
 
@@ -351,26 +363,25 @@ impl<H: Handler> Future for Connection<H> {
         try_ready!(self.poll_timeout());
         loop {
             debug!("client polling");
-            if ! try_ready!(self.atomic_poll()) {
-                return Ok(Async::Ready(()))
+            if !try_ready!(self.atomic_poll()) {
+                return Ok(Async::Ready(()));
             }
         }
     }
 }
 
 #[doc(hidden)]
-pub enum PendingFuture<H:Handler> {
+pub enum PendingFuture<H: Handler> {
     ServerKeyCheck {
         check: H::FutureBool,
         kexdhdone: KexDhDone,
-        buf_len: usize
+        buf_len: usize,
     },
-    FutureUnit(H::FutureUnit)
+    FutureUnit(H::FutureUnit),
 }
 
 
-impl<H:Handler> Connection<H> {
-
+impl<H: Handler> Connection<H> {
     fn poll_timeout(&mut self) -> Poll<(), HandlerError<H::Error>> {
         if let Some(ref mut timeout) = self.timeout {
             if let Async::Ready(()) = try!(timeout.poll()) {
@@ -393,17 +404,21 @@ impl<H:Handler> Connection<H> {
                     self.pending_future = Some(PendingFuture::FutureUnit(f));
                     Ok(Async::NotReady)
                 }
-            },
+            }
             Some(PendingFuture::ServerKeyCheck { mut check, mut kexdhdone, buf_len }) => {
 
                 match try!(check.poll().map_err(HandlerError::Handler)) {
                     Async::Ready(false) => Err(HandlerError::Error(Error::UnknownKey)),
                     Async::NotReady => {
-                        self.pending_future = Some(PendingFuture::ServerKeyCheck { check: check, kexdhdone: kexdhdone, buf_len: buf_len });
+                        self.pending_future = Some(PendingFuture::ServerKeyCheck {
+                            check: check,
+                            kexdhdone: kexdhdone,
+                            buf_len: buf_len,
+                        });
                         Ok(Async::NotReady)
                     }
                     Async::Ready(true) => {
-                        let buf = &self.read_buffer.buffer[5 .. 5 + buf_len];
+                        let buf = &self.read_buffer.buffer[5..5 + buf_len];
                         let hash = {
                             let mut reader = buf.reader(1);
                             let pubkey = try!(reader.read_string()); // server public key.
@@ -412,10 +427,13 @@ impl<H:Handler> Connection<H> {
                             kexdhdone.exchange.server_ephemeral.extend(server_ephemeral);
                             let signature = try!(reader.read_string());
 
-                            try!(kexdhdone.kex.compute_shared_secret(&kexdhdone.exchange.server_ephemeral));
+                            try!(kexdhdone.kex
+                                .compute_shared_secret(&kexdhdone.exchange.server_ephemeral));
 
                             let hash = try!(kexdhdone.kex
-                                            .compute_exchange_hash(&pubkey, &kexdhdone.exchange, &mut self.buffer));
+                                .compute_exchange_hash(&pubkey,
+                                                       &kexdhdone.exchange,
+                                                       &mut self.buffer));
 
                             let signature = {
                                 let mut sig_reader = signature.reader(0);
@@ -435,16 +453,20 @@ impl<H:Handler> Connection<H> {
                             };
                             hash
                         };
-                        let mut newkeys = try!(kexdhdone.compute_keys(hash, &mut self.buffer, &mut self.buffer2, false));
-                        self.session.0.cipher.write(&[msg::NEWKEYS], &mut self.session.0.write_buffer);
+                        let mut newkeys = try!(kexdhdone.compute_keys(
+                            hash, &mut self.buffer, &mut self.buffer2, false));
+                        self.session
+                            .0
+                            .cipher
+                            .write(&[msg::NEWKEYS], &mut self.session.0.write_buffer);
                         newkeys.sent = true;
                         self.session.0.kex = Some(Kex::NewKeys(newkeys));
 
                         Ok(Async::Ready(()))
                     }
                 }
-            },
-            None => Ok(Async::Ready(()))
+            }
+            None => Ok(Async::Ready(())),
         }
     }
 
@@ -485,42 +507,45 @@ impl<H:Handler> Connection<H> {
                         let mut exchange = Exchange::new();
                         exchange.server_id.extend(sshid.id());
                         // Preparing the response
-                        exchange.client_id.extend(self.session.0.config.as_ref().client_id.as_bytes());
+                        exchange.client_id
+                            .extend(self.session.0.config.as_ref().client_id.as_bytes());
                         let mut kexinit = KexInit {
                             exchange: exchange,
                             algo: None,
                             sent: false,
                             session_id: None,
                         };
-                        kexinit.client_write(self.session.0.config.as_ref(),
-                                             &mut self.session.0.cipher,
-                                             &mut self.session.0.write_buffer);
+                        try!(kexinit.client_write(&self.session.0.rng,
+                                                  self.session.0.config.as_ref(),
+                                                  &mut self.session.0.cipher,
+                                                  &mut self.session.0.write_buffer));
                         self.session.0.kex = Some(Kex::KexInit(kexinit));
                         self.state = Some(ConnectionState::Write);
                         Ok(Async::Ready(true))
                     }
                 }
-            },
+            }
             Some(ConnectionState::Write) => {
                 debug!("writing");
                 self.state = Some(ConnectionState::Write);
-                self.session.flush();
+                try!(self.session.flush());
                 try_nb!(self.session.0.write_buffer.write_all(self.stream.get_mut()));
                 self.state = Some(ConnectionState::Flush);
                 Ok(Async::Ready(true))
-            },
+            }
             Some(ConnectionState::Flush) => {
                 debug!("flushing");
                 self.state = Some(ConnectionState::Flush);
                 try_nb!(self.stream.get_mut().flush());
                 self.state = Some(ConnectionState::Read);
                 Ok(Async::Ready(true))
-            },
+            }
             Some(ConnectionState::Read) => {
                 debug!("reading");
                 self.state = Some(ConnectionState::Read);
                 // In all other cases:
-                let buf = try_nb!(self.session.0.cipher.read(&mut self.stream, &mut self.read_buffer));
+                let buf =
+                    try_nb!(self.session.0.cipher.read(&mut self.stream, &mut self.read_buffer));
 
                 // Handle the transport layer.
                 if buf.len() == 0 || buf[0] == msg::DISCONNECT {
@@ -532,29 +557,31 @@ impl<H:Handler> Connection<H> {
 
                 // Handle transport layer packets.
                 if buf[0] <= 4 {
-                    return Ok(Async::Ready(true))
+                    return Ok(Async::Ready(true));
                 }
 
                 // Handle key exchange/re-exchange.
                 match std::mem::replace(&mut self.session.0.kex, None) {
                     Some(Kex::KexInit(kexinit)) => {
                         if kexinit.algo.is_some() || buf[0] == msg::KEXINIT ||
-                            self.session.0.encrypted.is_none() {
-                                let kexdhdone = kexinit.client_parse(self.session.0.config.as_ref(),
-                                                                     &mut self.session.0.cipher,
-                                                                     buf,
-                                                                     &mut self.session.0.write_buffer);
+                           self.session.0.encrypted.is_none() {
+                            let kexdhdone = kexinit.client_parse(&self.session.0.rng,
+                                                                 self.session.0.config.as_ref(),
+                                                                 &mut self.session.0.cipher,
+                                                                 buf,
+                                                                 &mut self.session.0.write_buffer);
 
-                                match kexdhdone {
-                                    Ok(kexdhdone) => {
-                                        self.session.0.kex = Some(Kex::KexDhDone(kexdhdone));
-                                        return Ok(Async::Ready(true));
-                                    }
-                                    Err(e) => return Err(HandlerError::Error(e)),
+                            match kexdhdone {
+                                Ok(kexdhdone) => {
+                                    self.session.0.kex = Some(Kex::KexDhDone(kexdhdone));
+                                    return Ok(Async::Ready(true));
                                 }
-                            } else {
-                                try_nb!(self.session.client_read_encrypted(&mut self.handler, buf, &mut self.buffer));
+                                Err(e) => return Err(HandlerError::Error(e)),
                             }
+                        } else {
+                            try_nb!(self.session
+                                .client_read_encrypted(&mut self.handler, buf, &mut self.buffer));
+                        }
                     }
                     Some(Kex::KexDhDone(mut kexdhdone)) => {
                         if kexdhdone.names.ignore_guessed {
@@ -569,10 +596,10 @@ impl<H:Handler> Connection<H> {
                                 self.pending_future = Some(PendingFuture::ServerKeyCheck {
                                     check: self.handler.check_server_key(&pubkey),
                                     kexdhdone: kexdhdone,
-                                    buf_len: buf.len()
+                                    buf_len: buf.len(),
                                 });
                             } else {
-                                return Err(HandlerError::Error(Error::Inconsistent))
+                                return Err(HandlerError::Error(Error::Inconsistent));
                             }
                         }
                     }
@@ -587,7 +614,8 @@ impl<H:Handler> Connection<H> {
                     }
                     Some(kex) => self.session.0.kex = Some(kex),
                     None => {
-                        try_nb!(self.session.client_read_encrypted(&mut self.handler, buf, &mut self.buffer));
+                        try_nb!(self.session
+                            .client_read_encrypted(&mut self.handler, buf, &mut self.buffer));
                     }
                 }
                 Ok(Async::Ready(true))
@@ -595,7 +623,8 @@ impl<H:Handler> Connection<H> {
         }
     }
 
-    /// Try to authenticate this client. Authentication methods must have been setup before this function is called.
+    /// Try to authenticate this client. Authentication methods must
+    /// have been setup before this function is called.
     pub fn authenticate(self) -> Authenticate<H> {
         Authenticate(Some(self))
     }
@@ -607,20 +636,21 @@ impl<H:Handler> Connection<H> {
         ChannelOpen {
             connection: Some(self),
             channel: num,
-            channel_type: PhantomData
+            channel_type: PhantomData,
         }
     }
 
     /// Ask the server to open an X11 forwarding channel.
     pub fn channel_open_x11(mut self,
                             originator_address: &str,
-                            originator_port: u32) -> ChannelOpen<H, X11Channel> {
+                            originator_port: u32)
+                            -> ChannelOpen<H, X11Channel> {
         let num = self.session.channel_open_x11(originator_address, originator_port).unwrap();
         self.state = Some(ConnectionState::Write);
         ChannelOpen {
             connection: Some(self),
             channel: num,
-            channel_type: PhantomData
+            channel_type: PhantomData,
         }
     }
 
@@ -629,25 +659,30 @@ impl<H:Handler> Connection<H> {
                                      host_to_connect: &str,
                                      port_to_connect: u32,
                                      originator_address: &str,
-                                     originator_port: u32) -> ChannelOpen<H, DirectTcpIpChannel> {
-        let num = self.session.channel_open_direct_tcpip(host_to_connect, port_to_connect, originator_address, originator_port).unwrap();
+                                     originator_port: u32)
+                                     -> ChannelOpen<H, DirectTcpIpChannel> {
+        let num = self.session
+            .channel_open_direct_tcpip(host_to_connect,
+                                       port_to_connect,
+                                       originator_address,
+                                       originator_port)
+            .unwrap();
         self.state = Some(ConnectionState::Write);
         ChannelOpen {
             connection: Some(self),
             channel: num,
-            channel_type: PhantomData
+            channel_type: PhantomData,
         }
     }
 
     /// Ask the server to close a channel, finishing any pending write and read.
     pub fn channel_close(mut self, channel: ChannelId) {
         self.0.byte(channel, msg::CHANNEL_CLOSE);
-        self.session.flush();
         self.state = Some(ConnectionState::Write);
     }
 
     /// Wait until a condition is met on the connection.
-    pub fn wait<F:Fn(&Connection<H>) -> bool>(self, f: F) -> Wait<H, F> {
+    pub fn wait<F: Fn(&Connection<H>) -> bool>(self, f: F) -> Wait<H, F> {
         Wait {
             connection: Some(self),
             condition: f,
@@ -656,19 +691,15 @@ impl<H:Handler> Connection<H> {
 
     /// Flush the session, sending any pending message.
     pub fn flush(mut self) -> Flush<H> {
-        self.session.flush();
         self.state = Some(ConnectionState::Write);
-        Flush {
-            connection: Some(self)
-        }
+        Flush { connection: Some(self) }
     }
 }
 
 /// An authenticating future, ultimately resolving into an authenticated connection.
-pub struct Authenticate<H:Handler>(Option<Connection<H>>);
+pub struct Authenticate<H: Handler>(Option<Connection<H>>);
 
 impl<H: Handler> Future for Authenticate<H> {
-
     type Item = Connection<H>;
     type Error = HandlerError<H::Error>;
 
@@ -678,9 +709,13 @@ impl<H: Handler> Future for Authenticate<H> {
         }
         loop {
             debug!("authenticated loop");
-            let is_authenticated = if let Some(ref c) = self.0 { c.is_authenticated() }  else { false };
+            let is_authenticated = if let Some(ref c) = self.0 {
+                c.is_authenticated()
+            } else {
+                false
+            };
             if is_authenticated {
-                return Ok(Async::Ready(std::mem::replace(&mut self.0, None).unwrap()))
+                return Ok(Async::Ready(std::mem::replace(&mut self.0, None).unwrap()));
             }
             if let Some(ref mut c) = self.0 {
                 try_ready!(c.atomic_poll());
@@ -692,34 +727,33 @@ impl<H: Handler> Future for Authenticate<H> {
 use std::marker::PhantomData;
 
 #[doc(hidden)]
-pub enum X11Channel{}
+pub enum X11Channel {}
 #[doc(hidden)]
-pub enum SessionChannel{}
+pub enum SessionChannel {}
 #[doc(hidden)]
-pub enum DirectTcpIpChannel{}
+pub enum DirectTcpIpChannel {}
 
 /// A future resolving into an open channel number of type
 /// `ChannelType`, which can be either `SessionChannel`, `X11Channel`
 /// or `DirectTcpIdChannel`.
-pub struct ChannelOpen<H:Handler, ChannelType> {
+pub struct ChannelOpen<H: Handler, ChannelType> {
     connection: Option<Connection<H>>,
     channel: ChannelId,
-    channel_type: PhantomData<ChannelType>
+    channel_type: PhantomData<ChannelType>,
 }
 
 /// A future waiting for a channel to be closed.
-pub struct Wait<H:Handler, F> {
+pub struct Wait<H: Handler, F> {
     connection: Option<Connection<H>>,
     condition: F,
 }
 
 /// A future waiting for a flush request to complete.
-pub struct Flush<H:Handler> {
+pub struct Flush<H: Handler> {
     connection: Option<Connection<H>>,
 }
 
 impl<H: Handler, ChannelType> Future for ChannelOpen<H, ChannelType> {
-
     type Item = (Connection<H>, ChannelId);
     type Error = HandlerError<H::Error>;
 
@@ -732,9 +766,12 @@ impl<H: Handler, ChannelType> Future for ChannelOpen<H, ChannelType> {
             debug!("channelopen loop");
             let is_open = if let Some(ref c) = self.connection {
                 c.channel_is_open(self.channel)
-            }  else { false };
+            } else {
+                false
+            };
             if is_open {
-                return Ok(Async::Ready((std::mem::replace(&mut self.connection, None).unwrap(), self.channel)))
+                return Ok(Async::Ready((std::mem::replace(&mut self.connection, None).unwrap(),
+                                        self.channel)));
             }
             if let Some(ref mut c) = self.connection {
                 try_ready!(c.atomic_poll());
@@ -744,8 +781,7 @@ impl<H: Handler, ChannelType> Future for ChannelOpen<H, ChannelType> {
 }
 
 
-impl<H: Handler, F:Fn(&Connection<H>) -> bool> Future for Wait<H, F> {
-
+impl<H: Handler, F: Fn(&Connection<H>) -> bool> Future for Wait<H, F> {
     type Item = Connection<H>;
     type Error = HandlerError<H::Error>;
 
@@ -759,15 +795,15 @@ impl<H: Handler, F:Fn(&Connection<H>) -> bool> Future for Wait<H, F> {
             debug!("wait loop");
             if let Some(mut connection) = self.connection.take() {
                 if (self.condition)(&connection) {
-                    return Ok(Async::Ready(connection))
+                    return Ok(Async::Ready(connection));
                 } else {
                     match try!(connection.atomic_poll()) {
                         Async::Ready(_) => {
                             self.connection = Some(connection);
-                        },
+                        }
                         Async::NotReady => {
                             self.connection = Some(connection);
-                            return Ok(Async::NotReady)
+                            return Ok(Async::NotReady);
                         }
                     }
                 }
@@ -779,7 +815,6 @@ impl<H: Handler, F:Fn(&Connection<H>) -> bool> Future for Wait<H, F> {
 
 
 impl<H: Handler> Future for Flush<H> {
-
     type Item = Connection<H>;
     type Error = HandlerError<H::Error>;
 
@@ -787,9 +822,11 @@ impl<H: Handler> Future for Flush<H> {
         if let Some(ref mut c) = self.connection {
             try_ready!(c.poll_timeout());
         }
+
         loop {
             debug!("flush loop");
             let completely_written = if let Some(ref mut c) = self.connection {
+                try!(c.session.flush());
                 try_nb!(c.session.0.write_buffer.write_all(c.stream.get_mut()))
             } else {
                 unreachable!()
@@ -797,7 +834,7 @@ impl<H: Handler> Future for Flush<H> {
             if completely_written {
                 if let Some(mut c) = self.connection.take() {
                     c.state = Some(ConnectionState::Write);
-                    return Ok(Async::Ready(c))
+                    return Ok(Async::Ready(c));
                 }
             }
         }
@@ -807,20 +844,22 @@ impl<H: Handler> Future for Flush<H> {
 
 
 impl Session {
-    fn flush(&mut self) {
+    fn flush(&mut self) -> Result<(), Error> {
         if let Some(ref mut enc) = self.0.encrypted {
             if enc.flush(&self.0.config.as_ref().limits,
                          &mut self.0.cipher,
                          &mut self.0.write_buffer) {
                 if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
                     let mut kexinit = KexInit::initiate_rekey(exchange, &enc.session_id);
-                    kexinit.client_write(&self.0.config.as_ref(),
-                                         &mut self.0.cipher,
-                                         &mut self.0.write_buffer);
+                    try!(kexinit.client_write(&self.0.rng,
+                                              &self.0.config.as_ref(),
+                                              &mut self.0.cipher,
+                                              &mut self.0.write_buffer));
                     enc.rekey = Some(Kex::KexInit(kexinit))
                 }
             }
         }
+        Ok(())
     }
 
     /// Retrieves the configuration of this session.
@@ -905,7 +944,7 @@ impl Session {
     /// connection is authenticated, but the channel only becomes
     /// usable when it's confirmed by the server, as indicated by the
     /// `confirmed` field of the corresponding `Channel`.
-    fn channel_open_session(&mut self) -> Option<ChannelId> {
+    fn channel_open_session(&mut self) -> Result<ChannelId, Error> {
         let result = if let Some(ref mut enc) = self.0.encrypted {
             match enc.state {
                 Some(EncryptedState::Authenticated) => {
@@ -927,15 +966,14 @@ impl Session {
                         // max packet size.
                         enc.write.push_u32_be(self.0.config.as_ref().maximum_packet_size);
                     });
-                    Some(sender_channel)
+                    sender_channel
                 }
-                _ => None,
+                _ => return Err(Error::Inconsistent),
             }
         } else {
-            None
+            return Err(Error::Inconsistent);
         };
-        self.flush();
-        result
+        Ok(result)
     }
 
 
@@ -943,7 +981,7 @@ impl Session {
     fn channel_open_x11(&mut self,
                         originator_address: &str,
                         originator_port: u32)
-                        -> Option<ChannelId> {
+                        -> Result<ChannelId, Error> {
         let result = if let Some(ref mut enc) = self.0.encrypted {
             match enc.state {
                 Some(EncryptedState::Authenticated) => {
@@ -967,15 +1005,14 @@ impl Session {
                         enc.write.extend_ssh_string(originator_address.as_bytes());
                         enc.write.push_u32_be(originator_port); // sender channel id.
                     });
-                    Some(sender_channel)
+                    sender_channel
                 }
-                _ => None,
+                _ => return Err(Error::Inconsistent),
             }
         } else {
-            None
+            return Err(Error::Inconsistent);
         };
-        self.flush();
-        result
+        Ok(result)
     }
 
     /// Open a TCP/IP forwarding channel. This is usually done when a
@@ -988,7 +1025,7 @@ impl Session {
                                  port_to_connect: u32,
                                  originator_address: &str,
                                  originator_port: u32)
-                                 -> Option<ChannelId> {
+                                 -> Result<ChannelId, Error> {
         let result = if let Some(ref mut enc) = self.0.encrypted {
             match enc.state {
                 Some(EncryptedState::Authenticated) => {
@@ -1014,21 +1051,19 @@ impl Session {
                         enc.write.extend_ssh_string(originator_address.as_bytes());
                         enc.write.push_u32_be(originator_port); // sender channel id.
                     });
-                    Some(sender_channel)
+                    sender_channel
                 }
-                _ => None,
+                _ => return Err(Error::Inconsistent),
             }
         } else {
-            None
+            return Err(Error::Inconsistent);
         };
-        self.flush();
-        result
+        Ok(result)
     }
 
     /// Send EOF to a channel
     pub fn channel_eof(&mut self, channel: ChannelId) {
         self.0.byte(channel, msg::CHANNEL_EOF);
-        self.flush();
     }
 
     /// Send data or "extended data" to the given channel. Extended
@@ -1044,7 +1079,6 @@ impl Session {
         } else {
             return Err(Error::Inconsistent);
         };
-        self.flush();
         Ok(result)
     }
 
@@ -1084,7 +1118,6 @@ impl Session {
                 });
             }
         }
-        self.flush();
     }
 
     /// Request X11 forwarding through an already opened X11
@@ -1113,7 +1146,6 @@ impl Session {
                 });
             }
         }
-        self.flush();
     }
 
     /// Set a remote environment variable.
@@ -1135,7 +1167,6 @@ impl Session {
                 });
             }
         }
-        self.flush();
     }
 
 
@@ -1152,7 +1183,6 @@ impl Session {
                 });
             }
         }
-        self.flush();
     }
 
     /// Execute a remote program (will be passed to a shell). This can
@@ -1171,7 +1201,6 @@ impl Session {
                 });
             }
         }
-        self.flush();
     }
 
     /// Signal a remote process.
@@ -1188,7 +1217,6 @@ impl Session {
                 });
             }
         }
-        self.flush();
     }
 
     /// Request the start of a subsystem with the given name.
@@ -1205,7 +1233,6 @@ impl Session {
                 });
             }
         }
-        self.flush();
     }
 
     /// Inform the server that our window size has changed.
@@ -1230,7 +1257,6 @@ impl Session {
                 });
             }
         }
-        self.flush();
     }
 
     /// Request the forwarding of a remote port to the client. The
@@ -1246,7 +1272,6 @@ impl Session {
                 enc.write.push_u32_be(port);
             });
         }
-        self.flush();
     }
 
     /// Cancel a previous forwarding request.
@@ -1260,7 +1285,6 @@ impl Session {
                 enc.write.push_u32_be(port);
             });
         }
-        self.flush();
     }
 }
 
