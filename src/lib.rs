@@ -257,7 +257,7 @@ pub enum Error {
 
     /// Remote key changed, this could mean a man-in-the-middle attack
     /// is being performed on the connection.
-    KeyChanged,
+    KeyChanged(usize),
 
     /// Connection closed by the remote side.
     HUP,
@@ -319,7 +319,7 @@ impl std::error::Error for Error {
             Error::WrongChannel => "Inexistent channel",
             Error::Disconnect => "Disconnected",
             Error::NoHomeDir => "Home directory not found",
-            Error::KeyChanged => "Server key changed",
+            Error::KeyChanged(_) => "Server key changed",
             Error::HUP => "Connection closed by the remote side",
             Error::Ring(ref e) => e.description(),
             Error::ConnectionTimeout => "Connection timout",
@@ -739,7 +739,9 @@ pub fn check_known_hosts_path<P: AsRef<Path>>(host: &str,
     } else {
         Cow::Owned(format!("[{}]:{}", host, port))
     };
+    let mut line = 1;
     while f.read_line(&mut buffer).unwrap() > 0 {
+        debug!("check_known_hosts_path: {:?}", buffer);
         {
             if buffer.as_bytes()[0] == b'#' {
                 buffer.clear();
@@ -749,14 +751,17 @@ pub fn check_known_hosts_path<P: AsRef<Path>>(host: &str,
             let hosts = s.next();
             let _ = s.next();
             let key = s.next();
+            debug!("{:?} {:?}", hosts, key);
             match (hosts, key) {
                 (Some(h), Some(k)) => {
                     let host_matches = h.split(',').any(|x| x == host_port);
+                    debug!("host matches: {:?}", host_matches);
+                    debug!("{:?} {:?}", parse_public_key_base64(k), pubkey);
                     if host_matches {
                         if &try!(parse_public_key_base64(k)) == pubkey {
                             return Ok(true);
                         } else {
-                            return Err(Error::KeyChanged);
+                            return Err(Error::KeyChanged(line));
                         }
                     }
 
@@ -765,6 +770,7 @@ pub fn check_known_hosts_path<P: AsRef<Path>>(host: &str,
             }
         }
         buffer.clear();
+        line += 1;
     }
     Ok(false)
 }
