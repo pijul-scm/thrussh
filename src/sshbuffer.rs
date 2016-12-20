@@ -54,6 +54,7 @@ impl SSHBuffer {
     pub fn write_all<W:Write>(&mut self, mut stream: W) -> Result<bool, Error> {
         while self.len < self.buffer.len() {
             let s = try!(self.buffer.write_all_from(self.len, &mut stream));
+            debug!("write_all: written {} bytes", s);
             self.len += s;
             self.bytes += s;
             try!(stream.flush());

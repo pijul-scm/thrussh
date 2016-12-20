@@ -73,7 +73,7 @@ impl Default for Config {
     fn default() -> Config {
         Config {
             server_id: format!("SSH-2.0-{}_{}",
-                               "Thrussh", // env!("CARGO_PKG_NAME"),
+                               env!("CARGO_PKG_NAME"),
                                env!("CARGO_PKG_VERSION")),
             methods: auth::MethodSet::all(),
             auth_banner: None,
@@ -839,7 +839,9 @@ impl<H: Handler> Connection<TcpStream, H> {
 }
 
 impl Session {
-    fn flush(&mut self) -> Result<(), Error> {
+
+    /// Flush the session, i.e. encrypt the pending buffer.
+    pub fn flush(&mut self) -> Result<(), Error> {
         if let Some(ref mut enc) = self.0.encrypted {
             if enc.flush(&self.0.config.as_ref().limits,
                          &mut self.0.cipher,

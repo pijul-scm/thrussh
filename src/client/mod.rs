@@ -62,7 +62,7 @@ impl Default for Config {
     fn default() -> Config {
         Config {
             client_id: format!("SSH-2.0-{}_{}",
-                               "Thrussh", // env!("CARGO_PKG_NAME")
+                               env!("CARGO_PKG_NAME"),
                                env!("CARGO_PKG_VERSION")),
             limits: Limits::default(),
             window_size: 200000,
@@ -717,8 +717,13 @@ impl<H: Handler> Future for Authenticate<H> {
             if is_authenticated {
                 return Ok(Async::Ready(std::mem::replace(&mut self.0, None).unwrap()));
             }
-            if let Some(ref mut c) = self.0 {
-                try_ready!(c.atomic_poll());
+            let disconnected = if let Some(ref mut c) = self.0 {
+                !try_ready!(c.atomic_poll())
+            } else {
+                unreachable!()
+            };
+            if disconnected {
+                return Ok(Async::Ready(self.0.take().unwrap()))
             }
         }
     }
@@ -798,8 +803,11 @@ impl<H: Handler, F: Fn(&Connection<H>) -> bool> Future for Wait<H, F> {
                     return Ok(Async::Ready(connection));
                 } else {
                     match try!(connection.atomic_poll()) {
-                        Async::Ready(_) => {
+                        Async::Ready(true) => {
                             self.connection = Some(connection);
+                        }
+                        Async::Ready(false) => {
+                            return Ok(Async::Ready(connection))
                         }
                         Async::NotReady => {
                             self.connection = Some(connection);
@@ -835,6 +843,8 @@ impl<H: Handler> Future for Flush<H> {
                 if let Some(mut c) = self.connection.take() {
                     c.state = Some(ConnectionState::Write);
                     return Ok(Async::Ready(c));
+                } else {
+                    unreachable!()
                 }
             }
         }
