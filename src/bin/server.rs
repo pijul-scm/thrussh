@@ -10,23 +10,23 @@ struct H {}
 
 impl server::Handler for H {
     type Error = ();
-    type FutureAuth = futures::Finished<server::Auth, ()>;
-    type FutureUnit = futures::Finished<(), ()>;
-    type FutureBool = futures::Finished<bool, ()>;
+    type FutureAuth = futures::Finished<(Self, server::Auth), ()>;
+    type FutureUnit = futures::Finished<(Self, server::Session), ()>;
+    type FutureBool = futures::Finished<(Self, server::Session, bool), ()>;
 
-    fn auth_publickey(&mut self, _: &str, _: &key::PublicKey) -> Self::FutureBool {
-        futures::finished(true)
+    fn auth_publickey(self, _: &str, _: &key::PublicKey) -> Self::FutureAuth {
+        futures::finished((self, server::Auth::Accept))
     }
-    fn data(&mut self,
+    fn data(self,
             channel: ChannelId,
             data: &[u8],
-            session: &mut server::Session)
+            mut session: server::Session)
             -> Self::FutureUnit {
         println!("data on channel {:?}: {:?}",
                  channel,
                  std::str::from_utf8(data));
         session.data(channel, None, data).unwrap();
-        futures::finished(())
+        futures::finished((self, session))
     }
 }
 
@@ -90,12 +90,11 @@ impl Client {
                 connection.authenticate().and_then(|connection| {
 
                     connection.channel_open_session().and_then(|(mut connection, chan)| {
-
+                        let chan = chan.unwrap();
                         connection.data(chan, None, b"First test").unwrap();
                         connection.data(chan, None, b"Second test").unwrap();
                         connection.disconnect(Disconnect::ByApplication, "Ciao", "");
                         connection
-
                     })
                 })
             });
@@ -112,8 +111,8 @@ fn main() {
         config.auth_rejection_time = std::time::Duration::from_secs(3);
         config.keys.push(thrussh::key::Algorithm::generate_keypair(thrussh::key::ED25519).unwrap());
         let config = Arc::new(config);
-        let sh = H {};
-        thrussh::server::run(config, "0.0.0.0:2222", sh);
+        let h = H {};
+        thrussh::server::run::<H>(config, "0.0.0.0:2222", h);
     });
 
     std::thread::sleep(std::time::Duration::from_secs(1));

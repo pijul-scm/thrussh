@@ -759,7 +759,7 @@ pub struct Flush<H: Handler> {
 }
 
 impl<H: Handler, ChannelType> Future for ChannelOpen<H, ChannelType> {
-    type Item = (Connection<H>, ChannelId);
+    type Item = (Connection<H>, Option<ChannelId>);
     type Error = HandlerError<H::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -776,10 +776,17 @@ impl<H: Handler, ChannelType> Future for ChannelOpen<H, ChannelType> {
             };
             if is_open {
                 return Ok(Async::Ready((std::mem::replace(&mut self.connection, None).unwrap(),
-                                        self.channel)));
+                                        Some(self.channel))));
             }
-            if let Some(ref mut c) = self.connection {
-                try_ready!(c.atomic_poll());
+
+            let is_disconnected = if let Some(ref mut c) = self.connection {
+                !try_ready!(c.atomic_poll())
+            } else {
+                unreachable!()
+            };
+
+            if is_disconnected {
+                return Ok(Async::Ready((self.connection.take().unwrap(), None)))
             }
         }
     }

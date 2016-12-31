@@ -34,7 +34,7 @@ fn run<H: Handler + 'static>(config: Arc<Config>, addr: &str, handler: H) {
                 connection.authenticate().and_then(|connection| {
 
                     connection.channel_open_session().and_then(|(mut connection, chan)| {
-
+                        let chan = chan.unwrap();
                         connection.data(chan, None, b"AAAAAA").unwrap();
                         connection.data(chan, None, b"BBBBBB").unwrap();
                         connection
