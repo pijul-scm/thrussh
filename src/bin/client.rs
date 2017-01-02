@@ -23,7 +23,7 @@ fn run<H: Handler + 'static>(config: Arc<Config>, addr: &str, handler: H) {
             .and_then(|socket| {
 
                 println!("connected");
-                let mut connection = Connection::new(config.clone(), socket, handler, None)
+                let connection = Connection::new(config.clone(), socket, handler, None)
                     .unwrap();
 
                 let key = thrussh::load_secret_key("/home/pe/.ssh/id_ed25519").unwrap();

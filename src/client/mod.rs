@@ -85,9 +85,23 @@ pub struct Connection<H: Handler> {
     buffer: CryptoVec,
     buffer2: CryptoVec,
     /// Handler for this connection.
-    pub handler: Option<H>,
+    handler: Option<H>,
     timeout: Option<Timeout>,
 }
+
+impl<H: Handler> std::ops::Deref for Connection<H> {
+    type Target = Session;
+    fn deref(&self) -> &Self::Target {
+        self.session.as_ref().unwrap()
+    }
+}
+
+impl<H: Handler> std::ops::DerefMut for Connection<H> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.session.as_mut().unwrap()
+    }
+}
+
 
 #[derive(Debug)]
 enum ConnectionState {
@@ -753,9 +767,14 @@ impl<H: Handler> Connection<H> {
         Flush { connection: Some(self) }
     }
 
-    /// Gets the connection's session.
-    pub fn session(&mut self) -> &mut Session {
-        self.session.as_mut().unwrap()
+    /// Gets a borrow to the connection's handler.
+    pub fn handler(&self) -> &H {
+        self.handler.as_ref().unwrap()
+    }
+
+    /// Gets a mutable borrow to the connection's handler.
+    pub fn handler_mut(&mut self) -> &mut H {
+        self.handler.as_mut().unwrap()
     }
 }
 
