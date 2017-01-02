@@ -34,17 +34,18 @@
 //!struct H{}
 //!
 //!impl server::Handler for H {
-//!    type FutureAuth = futures::Finished<server::Auth, Error>;
-//!    type FutureUnit = futures::Finished<(), Error>;
-//!    type FutureBool = futures::Finished<bool, Error>;
+//!    type Error = ();
+//!    type FutureAuth = futures::Finished<(Self, server::Auth), Self::Error>;
+//!    type FutureUnit = futures::Finished<(Self, server::Session), Self::Error>;
+//!    type FutureBool = futures::Finished<(Self, server::Session, bool), Self::Error>;
 //!
-//!    fn auth_publickey(&mut self, _: &str, _: &key::PublicKey) -> Self::FutureBool {
-//!        futures::finished(true)
+//!    fn auth_publickey(mut self, _: &str, _: &key::PublicKey) -> Self::FutureAuth {
+//!        futures::finished((self, server::Auth::Accept))
 //!    }
-//!    fn data(&mut self, channel: ChannelId, data: &[u8], session: &mut server::Session) -> Self::FutureUnit {
+//!    fn data(mut self, channel: ChannelId, data: &[u8], mut session: server::Session) -> Self::FutureUnit {
 //!        println!("data on channel {:?}: {:?}", channel, std::str::from_utf8(data));
 //!        session.data(channel, None, data).unwrap();
-//!        futures::finished(())
+//!        futures::finished((self, session))
 //!    }
 //!}
 //!
@@ -58,19 +59,21 @@
 //!struct Client { }
 //!
 //!impl client::Handler for Client {
-//!    type FutureBool = futures::Finished<bool, Error>;
-//!    type FutureUnit = futures::Finished<(), Error>;
-//!    fn check_server_key(&mut self, server_public_key: &key::PublicKey) -> Self::FutureBool {
+//!    type Error = ();
+//!    type FutureBool = futures::Finished<(Self, bool), Self::Error>;
+//!    type FutureUnit = futures::Finished<Self, Self::Error>;
+//!    type SessionUnit = futures::Finished<(Self, client::Session), Self::Error>;
+//!    fn check_server_key(mut self, server_public_key: &key::PublicKey) -> Self::FutureBool {
 //!        println!("check_server_key: {:?}", server_public_key);
-//!        futures::finished(true)
+//!        futures::finished((self, true))
 //!    }
-//!    fn channel_open_confirmation(&mut self, channel: ChannelId, _: &mut client::Session) -> Self::FutureUnit {
+//!    fn channel_open_confirmation(mut self, channel: ChannelId, session: client::Session) -> Self::SessionUnit {
 //!        println!("channel_open_confirmation: {:?}", channel);
-//!        futures::finished(())
+//!        futures::finished((self, session))
 //!    }
-//!    fn data(&mut self, channel: ChannelId, ext: Option<u32>, data: &[u8], _: &mut client::Session) -> Self::FutureUnit {
+//!    fn data(mut self, channel: ChannelId, ext: Option<u32>, data: &[u8], session: client::Session) -> Self::SessionUnit {
 //!        println!("data on channel {:?} {:?}: {:?}", ext, channel, std::str::from_utf8(data));
-//!        futures::finished(())
+//!        futures::finished((self, session))
 //!    }
 //!}
 //!
@@ -81,7 +84,7 @@
 //!        let mut l = Core::new().unwrap();
 //!        let handle = l.handle();
 //!        let done =
-//!            TcpStream::connect(&addr, &handle).map_err(|err| thrussh::Error::IO(err)).and_then(|socket| {
+//!            TcpStream::connect(&addr, &handle).map_err(|err| HandlerError::Error(thrussh::Error::IO(err))).and_then(|socket| {
 //!
 //!                println!("connected");
 //!                let mut connection = client::Connection::new(
@@ -89,18 +92,16 @@
 //!                    socket,
 //!                    self,
 //!                    None
-//!                );
+//!                ).unwrap();
 //!
-//!                connection.set_auth_user("pe");
-//!                connection.set_auth_public_key(thrussh::load_secret_key("/home/pe/.ssh/id_ed25519").unwrap());
-//!                // debug!("connection");
-//!                connection.authenticate().and_then(|connection| {
+//!                let key = thrussh::load_secret_key("/home/pe/.ssh/id_ed25519").unwrap();
+//!                connection.authenticate_key("pe", key).and_then(|connection| {
 //!
 //!                    connection.channel_open_session().and_then(|(mut connection, chan)| {
 //!
-//!                        connection.data(chan, None, b"First test").unwrap();
-//!                        connection.data(chan, None, b"Second test").unwrap();
-//!                        connection.disconnect(Disconnect::ByApplication, "Ciao", "");
+//!                        connection.session().data(chan, None, b"First test").unwrap();
+//!                        connection.session().data(chan, None, b"Second test").unwrap();
+//!                        connection.session().disconnect(Disconnect::ByApplication, "Ciao", "");
 //!                        connection
 //!
 //!                    })
@@ -267,6 +268,9 @@ pub enum Error {
 
     /// Connection timeout.
     ConnectionTimeout,
+
+    /// Missing authentication method.
+    NoAuthMethod,
 }
 
 /// Errors including those coming from handler. These are not included
@@ -323,6 +327,7 @@ impl std::error::Error for Error {
             Error::HUP => "Connection closed by the remote side",
             Error::Ring(ref e) => e.description(),
             Error::ConnectionTimeout => "Connection timout",
+            Error::NoAuthMethod => "No authentication method",
         }
     }
     fn cause(&self) -> Option<&std::error::Error> {

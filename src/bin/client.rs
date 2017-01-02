@@ -26,17 +26,15 @@ fn run<H: Handler + 'static>(config: Arc<Config>, addr: &str, handler: H) {
                 let mut connection = Connection::new(config.clone(), socket, handler, None)
                     .unwrap();
 
-                connection.set_auth_user("pe");
-                connection.set_auth_public_key(thrussh::load_secret_key("/home/pe/.\
-                                                                         ssh/id_ed25519")
-                    .unwrap());
-                debug!("connection");
-                connection.authenticate().and_then(|connection| {
+                let key = thrussh::load_secret_key("/home/pe/.ssh/id_ed25519").unwrap();
+                connection.authenticate_key("pe", key).and_then(|connection| {
 
                     connection.channel_open_session().and_then(|(mut connection, chan)| {
-                        let chan = chan.unwrap();
-                        connection.data(chan, None, b"AAAAAA").unwrap();
-                        connection.data(chan, None, b"BBBBBB").unwrap();
+
+                        if let Some(ref mut session) = connection.session {
+                            session.data(chan, None, b"AAAAAA").unwrap();
+                            session.data(chan, None, b"BBBBBB").unwrap();
+                        }
                         connection
 
                     })
@@ -49,30 +47,31 @@ struct H { }
 
 impl Handler for H {
     type Error = ();
-    type FutureBool = futures::Finished<bool, ()>;
-    type FutureUnit = futures::Finished<(), ()>;
-    fn check_server_key(&mut self, server_public_key: &key::PublicKey) -> Self::FutureBool {
+    type FutureBool = futures::Finished<(Self, bool), ()>;
+    type FutureUnit = futures::Finished<Self, ()>;
+    type SessionUnit = futures::Finished<(Self, Session), ()>;
+    fn check_server_key(self, server_public_key: &key::PublicKey) -> Self::FutureBool {
         debug!("check_server_key: {:?}", server_public_key);
-        futures::finished(true)
+        futures::finished((self, true))
     }
-    fn channel_open_confirmation(&mut self,
+    fn channel_open_confirmation(self,
                                  channel: ChannelId,
-                                 _: &mut Session)
-                                 -> Self::FutureUnit {
+                                 session: Session)
+                                 -> Self::SessionUnit {
         debug!("channel_open_confirmation: {:?}", channel);
-        futures::finished(())
+        futures::finished((self, session))
     }
-    fn data(&mut self,
+    fn data(self,
             channel: ChannelId,
             ext: Option<u32>,
             data: &[u8],
-            _: &mut Session)
-            -> Self::FutureUnit {
+            session: Session)
+            -> Self::SessionUnit {
         println!("data on channel {:?} {:?}: {:?}",
                  ext,
                  channel,
                  std::str::from_utf8(data));
-        futures::finished(())
+        futures::finished((self, session))
     }
 }
 

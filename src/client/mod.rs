@@ -78,14 +78,14 @@ impl Default for Config {
 pub struct Connection<H: Handler> {
     read_buffer: SSHBuffer,
     /// Session of this connection.
-    pub session: Session,
+    pub session: Option<Session>,
     stream: BufReader<TcpStream>,
     state: Option<ConnectionState>,
     pending_future: Option<PendingFuture<H>>,
     buffer: CryptoVec,
     buffer2: CryptoVec,
     /// Handler for this connection.
-    pub handler: H,
+    pub handler: Option<H>,
     timeout: Option<Timeout>,
 }
 
@@ -98,95 +98,91 @@ enum ConnectionState {
     Flush,
 }
 
-impl<H: Handler> std::ops::Deref for Connection<H> {
-    type Target = Session;
-    fn deref(&self) -> &Session {
-        &self.session
-    }
-}
-
-impl<H: Handler> std::ops::DerefMut for Connection<H> {
-    fn deref_mut(&mut self) -> &mut Session {
-        &mut self.session
-    }
-}
-
 /// The type of a client session.
 pub struct Session(CommonSession<Config>);
 
 /// A client handler. Note that messages can be received from the
 /// server at any time during a session.
-pub trait Handler {
+pub trait Handler:Sized {
+
     /// Error type returned by the futures.
     type Error: std::fmt::Debug;
+
     /// A future ultimately resolving into a boolean, which can be
     /// returned by some parts of this handler.
-    type FutureBool: Future<Item = bool, Error = Self::Error> + FromFinished<bool, Self::Error>;
+    type FutureBool: Future<Item = (Self, bool), Error = Self::Error> + FromFinished<(Self, bool), Self::Error>;
+
+    /// A future ultimately resolving into a boolean, which can be
+    /// returned by some parts of this handler.
+    type FutureUnit: Future<Item = Self, Error = Self::Error> + FromFinished<Self, Self::Error>;
+
     /// A future ultimately resolving into unit, which can be returned
     /// by some parts of this handler.
-    type FutureUnit: Future<Item = (), Error = Self::Error> + FromFinished<(), Self::Error>;
+    type SessionUnit: Future<Item = (Self, Session), Error = Self::Error> + FromFinished<(Self, Session), Self::Error>;
 
     /// Called when the server sends us an authentication banner. This
     /// is usually meant to be shown to the user, see
     /// [RFC4252](https://tools.ietf.org/html/rfc4252#section-5.4) for
     /// more details.
     #[allow(unused_variables)]
-    fn auth_banner(&mut self, banner: &str) {}
+    fn auth_banner(self, banner: &str) -> Self::FutureUnit {
+        Self::FutureUnit::finished(self)
+    }
 
     /// Called to check the server's public key. This is a very important
     /// step to help prevent man-in-the-middle attacks. The default
     /// implementation rejects all keys.
     #[allow(unused_variables)]
-    fn check_server_key(&mut self, server_public_key: &key::PublicKey) -> Self::FutureBool {
-        Self::FutureBool::finished(false)
+    fn check_server_key(self, server_public_key: &key::PublicKey) -> Self::FutureBool {
+        Self::FutureBool::finished((self, false))
     }
 
     /// Called when the server confirmed our request to open a
     /// channel. A channel can only be written to after receiving this
     /// message (this library panics otherwise).
     #[allow(unused_variables)]
-    fn channel_open_confirmation(&mut self,
+    fn channel_open_confirmation(self,
                                  channel: ChannelId,
-                                 session: &mut Session)
-                                 -> Self::FutureUnit {
-        Self::FutureUnit::finished(())
+                                 session: Session)
+                                 -> Self::SessionUnit {
+        Self::SessionUnit::finished((self, session))
     }
 
     /// Called when the server closes a channel.
     #[allow(unused_variables)]
-    fn channel_close(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
-        Self::FutureUnit::finished(())
+    fn channel_close(self, channel: ChannelId, session: Session) -> Self::SessionUnit {
+        Self::SessionUnit::finished((self, session))
     }
 
     /// Called when the server sends EOF to a channel.
     #[allow(unused_variables)]
-    fn channel_eof(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
-        Self::FutureUnit::finished(())
+    fn channel_eof(self, channel: ChannelId, session: Session) -> Self::SessionUnit {
+        Self::SessionUnit::finished((self, session))
     }
 
     /// Called when the server rejected our request to open a channel.
     #[allow(unused_variables)]
-    fn channel_open_failure(&mut self,
+    fn channel_open_failure(self,
                             channel: ChannelId,
                             reason: ChannelOpenFailure,
                             description: &str,
                             language: &str,
-                            session: &mut Session)
-                            -> Self::FutureUnit {
-        Self::FutureUnit::finished(())
+                            session: Session)
+                            -> Self::SessionUnit {
+        Self::SessionUnit::finished((self, session))
     }
 
     /// Called when a new channel is created.
     #[allow(unused_variables)]
-    fn channel_open_forwarded_tcpip(&mut self,
+    fn channel_open_forwarded_tcpip(self,
                                     channel: ChannelId,
                                     connected_address: &str,
                                     connected_port: u32,
                                     originator_address: &str,
                                     originator_port: u32,
-                                    session: &mut Session)
-                                    -> Self::FutureUnit {
-        Self::FutureUnit::finished(())
+                                    session: Session)
+                                    -> Self::SessionUnit {
+        Self::SessionUnit::finished((self, session))
     }
 
     /// Called when the server sends us data. The `extended_code`
@@ -194,48 +190,48 @@ pub trait Handler {
     /// standard output, and `Some(1)` is the standard error. See
     /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-5.2).
     #[allow(unused_variables)]
-    fn data(&mut self,
+    fn data(self,
             channel: ChannelId,
             extended_code: Option<u32>,
             data: &[u8],
-            session: &mut Session)
-            -> Self::FutureUnit {
-        Self::FutureUnit::finished(())
+            session: Session)
+            -> Self::SessionUnit {
+        Self::SessionUnit::finished((self, session))
     }
 
     /// The server informs this client of whether the client may
     /// perform control-S/control-Q flow control. See
     /// [RFC4254](https://tools.ietf.org/html/rfc4254#section-6.8).
     #[allow(unused_variables)]
-    fn xon_xoff(&mut self,
+    fn xon_xoff(self,
                 channel: ChannelId,
                 client_can_do: bool,
-                session: &mut Session)
-                -> Self::FutureUnit {
-        Self::FutureUnit::finished(())
+                session: Session)
+                -> Self::SessionUnit {
+        Self::SessionUnit::finished((self, session))
     }
 
     /// The remote process has exited, with the given exit status.
     #[allow(unused_variables)]
-    fn exit_status(&mut self,
+    fn exit_status(self,
                    channel: ChannelId,
                    exit_status: u32,
-                   session: &mut Session)
-                   -> Self::FutureUnit {
-        Self::FutureUnit::finished(())
+                   session: Session)
+                   -> Self::SessionUnit {
+        Self::SessionUnit::finished((self, session))
     }
 
     /// The remote process exited upon receiving a signal.
     #[allow(unused_variables)]
-    fn exit_signal(&mut self,
+    fn exit_signal(self,
                    channel: ChannelId,
                    signal_name: Sig,
                    core_dumped: bool,
                    error_message: &str,
                    lang_tag: &str,
-                   session: &mut Session)
-                   -> Self::FutureUnit {
-        Self::FutureUnit::finished(())
+                   session: Session)
+                   -> Self::SessionUnit {
+        Self::SessionUnit::finished((self, session))
     }
 
     /// Called when the network window is adjusted, meaning that we
@@ -244,8 +240,8 @@ pub trait Handler {
     /// `Session::data` before, and it returned less than the
     /// full amount of data.
     #[allow(unused_variables)]
-    fn window_adjusted(&mut self, channel: ChannelId, session: &mut Session) -> Self::FutureUnit {
-        Self::FutureUnit::finished(())
+    fn window_adjusted(self, channel: ChannelId, session: Session) -> Self::SessionUnit {
+        Self::SessionUnit::finished((self, session))
     }
 }
 
@@ -329,7 +325,7 @@ impl<H: Handler> Connection<H> {
         let mut connection = Connection {
             read_buffer: SSHBuffer::new(),
             timeout: timeout,
-            session: Session(CommonSession {
+            session: Some(Session(CommonSession {
                 write_buffer: write_buffer,
                 kex: None,
                 auth_user: String::new(),
@@ -340,15 +336,17 @@ impl<H: Handler> Connection<H> {
                 wants_reply: false,
                 disconnected: false,
                 rng: ring::rand::SystemRandom::new(),
-            }),
+            })),
             stream: BufReader::new(stream),
             state: Some(ConnectionState::WriteSshId),
             pending_future: None,
-            handler: handler,
+            handler: Some(handler),
             buffer: CryptoVec::new(),
             buffer2: CryptoVec::new(),
         };
-        try!(connection.session.flush());
+        if let Some(ref mut s) = connection.session {
+            try!(s.flush())
+        }
         Ok(connection)
     }
 }
@@ -377,7 +375,8 @@ pub enum PendingFuture<H: Handler> {
         kexdhdone: KexDhDone,
         buf_len: usize,
     },
-    FutureUnit(H::FutureUnit),
+    SessionUnit(H::SessionUnit),
+    Done(H, Session)
 }
 
 
@@ -387,7 +386,9 @@ impl<H: Handler> Connection<H> {
             if let Async::Ready(()) = try!(timeout.poll()) {
                 debug!("Timeout, shutdown");
                 try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
-                self.session.0.disconnected = true;
+                if let Some(ref mut s) = self.session {
+                    s.0.disconnected = true;
+                }
                 return Err(HandlerError::Error(Error::ConnectionTimeout))
             }
         }
@@ -395,20 +396,31 @@ impl<H: Handler> Connection<H> {
     }
 
     fn pending_poll(&mut self) -> Poll<(), HandlerError<H::Error>> {
-        match std::mem::replace(&mut self.pending_future, None) {
 
-            Some(PendingFuture::FutureUnit(mut f)) => {
-                if let Async::Ready(()) = try!(f.poll().map_err(HandlerError::Handler)) {
+        match self.pending_future.take() {
+
+            Some(PendingFuture::SessionUnit(mut f)) => {
+                if let Async::Ready((h, session)) = try!(f.poll().map_err(HandlerError::Handler)) {
+                    self.session = Some(session);
+                    self.handler = Some(h);
                     Ok(Async::Ready(()))
                 } else {
-                    self.pending_future = Some(PendingFuture::FutureUnit(f));
+                    self.pending_future = Some(PendingFuture::SessionUnit(f));
                     Ok(Async::NotReady)
                 }
+            }
+            Some(PendingFuture::Done(h, session)) => {
+                self.session = Some(session);
+                self.handler = Some(h);
+                Ok(Async::Ready(()))
             }
             Some(PendingFuture::ServerKeyCheck { mut check, mut kexdhdone, buf_len }) => {
 
                 match try!(check.poll().map_err(HandlerError::Handler)) {
-                    Async::Ready(false) => Err(HandlerError::Error(Error::UnknownKey)),
+                    Async::Ready((h, false)) => {
+                        self.handler = Some(h);
+                        Err(HandlerError::Error(Error::UnknownKey))
+                    },
                     Async::NotReady => {
                         self.pending_future = Some(PendingFuture::ServerKeyCheck {
                             check: check,
@@ -417,7 +429,8 @@ impl<H: Handler> Connection<H> {
                         });
                         Ok(Async::NotReady)
                     }
-                    Async::Ready(true) => {
+                    Async::Ready((h, true)) => {
+                        self.handler = Some(h);
                         let buf = &self.read_buffer.buffer[5..5 + buf_len];
                         let hash = {
                             let mut reader = buf.reader(1);
@@ -455,13 +468,11 @@ impl<H: Handler> Connection<H> {
                         };
                         let mut newkeys = try!(kexdhdone.compute_keys(
                             hash, &mut self.buffer, &mut self.buffer2, false));
-                        self.session
-                            .0
-                            .cipher
-                            .write(&[msg::NEWKEYS], &mut self.session.0.write_buffer);
+                        if let Some(ref mut s) = self.session {
+                            s.0.cipher.write(&[msg::NEWKEYS], &mut s.0.write_buffer);
+                            s.0.kex = Some(Kex::NewKeys(newkeys));
+                        }
                         newkeys.sent = true;
-                        self.session.0.kex = Some(Kex::NewKeys(newkeys));
-
                         Ok(Async::Ready(()))
                     }
                 }
@@ -479,12 +490,19 @@ impl<H: Handler> Connection<H> {
         try_ready!(self.pending_poll());
 
         // Special case for the beginning.
-        match std::mem::replace(&mut self.state, None) {
-            None if self.session.0.disconnected => Ok(Async::Ready(false)),
+        match self.state.take() {
             None => {
-                try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
-                self.session.0.disconnected = true;
-                Ok(Async::Ready(false))
+                if let Some(ref mut s) = self.session {
+                    if s.0.disconnected {
+                        Ok(Async::Ready(false))
+                    } else {
+                        try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
+                        s.0.disconnected = true;
+                        Ok(Async::Ready(false))
+                    }
+                } else {
+                    unreachable!()
+                }
             }
             Some(ConnectionState::WriteSshId) => {
                 self.state = Some(ConnectionState::ReadSshId { sshid: read_ssh_id() });
@@ -502,25 +520,28 @@ impl<H: Handler> Connection<H> {
                         Ok(Async::NotReady)
                     }
                     Err(e) => Err(HandlerError::Error(e)),
-                    _ => {
+                    Ok(Async::Ready(())) => {
                         self.read_buffer.bytes += sshid.id_len + 2;
                         let mut exchange = Exchange::new();
                         exchange.server_id.extend(sshid.id());
                         // Preparing the response
-                        exchange.client_id
-                            .extend(self.session.0.config.as_ref().client_id.as_bytes());
-                        let mut kexinit = KexInit {
-                            exchange: exchange,
-                            algo: None,
-                            sent: false,
-                            session_id: None,
-                        };
-                        try!(kexinit.client_write(&self.session.0.rng,
-                                                  self.session.0.config.as_ref(),
-                                                  &mut self.session.0.cipher,
-                                                  &mut self.session.0.write_buffer));
-                        self.session.0.kex = Some(Kex::KexInit(kexinit));
-                        self.state = Some(ConnectionState::Write);
+                        if let Some(ref mut s) = self.session {
+                            exchange.client_id.extend(s.0.config.as_ref().client_id.as_bytes());
+                            let mut kexinit = KexInit {
+                                exchange: exchange,
+                                algo: None,
+                                sent: false,
+                                session_id: None,
+                            };
+                            try!(kexinit.client_write(&s.0.rng,
+                                                      s.0.config.as_ref(),
+                                                      &mut s.0.cipher,
+                                                      &mut s.0.write_buffer));
+                            s.0.kex = Some(Kex::KexInit(kexinit));
+                            self.state = Some(ConnectionState::Write);
+                        } else {
+                            unreachable!()
+                        }
                         Ok(Async::Ready(true))
                     }
                 }
@@ -528,8 +549,10 @@ impl<H: Handler> Connection<H> {
             Some(ConnectionState::Write) => {
                 debug!("writing");
                 self.state = Some(ConnectionState::Write);
-                try!(self.session.flush());
-                try_nb!(self.session.0.write_buffer.write_all(self.stream.get_mut()));
+                if let Some(ref mut s) = self.session {
+                    try!(s.flush());
+                    try_nb!(s.0.write_buffer.write_all(self.stream.get_mut()));
+                }
                 self.state = Some(ConnectionState::Flush);
                 Ok(Async::Ready(true))
             }
@@ -542,96 +565,122 @@ impl<H: Handler> Connection<H> {
             }
             Some(ConnectionState::Read) => {
                 debug!("reading");
-                self.state = Some(ConnectionState::Read);
-                // In all other cases:
-                let buf =
-                    try_nb!(self.session.0.cipher.read(&mut self.stream, &mut self.read_buffer));
+                let buf = if let Some(ref mut s) = self.session {
 
-                // Handle the transport layer.
-                if buf.len() == 0 || buf[0] == msg::DISCONNECT {
-                    // transport
-                    return Ok(Async::Ready(false));
-                }
-                // If we don't disconnect, keep the state.
-                self.state = Some(ConnectionState::Write);
+                    self.state = Some(ConnectionState::Read);
+                    // In all other cases:
+                    let buf = try_nb!(s.0.cipher.read(&mut self.stream, &mut self.read_buffer));
 
-                // Handle transport layer packets.
-                if buf[0] <= 4 {
-                    return Ok(Async::Ready(true));
-                }
+                    // Handle the transport layer.
+                    if buf.len() == 0 || buf[0] == msg::DISCONNECT {
+                        // transport
+                        return Ok(Async::Ready(false));
+                    }
+                    // If we don't disconnect, keep the state.
+                    self.state = Some(ConnectionState::Write);
 
-                // Handle key exchange/re-exchange.
-                match std::mem::replace(&mut self.session.0.kex, None) {
-                    Some(Kex::KexInit(kexinit)) => {
-                        if kexinit.algo.is_some() || buf[0] == msg::KEXINIT ||
-                           self.session.0.encrypted.is_none() {
-                            let kexdhdone = kexinit.client_parse(&self.session.0.rng,
-                                                                 self.session.0.config.as_ref(),
-                                                                 &mut self.session.0.cipher,
-                                                                 buf,
-                                                                 &mut self.session.0.write_buffer);
+                    // Handle transport layer packets.
+                    if buf[0] <= 4 {
+                        return Ok(Async::Ready(true));
+                    }
 
-                            match kexdhdone {
-                                Ok(kexdhdone) => {
-                                    self.session.0.kex = Some(Kex::KexDhDone(kexdhdone));
-                                    return Ok(Async::Ready(true));
+                    // Handle key exchange/re-exchange.
+                    match s.0.kex.take() {
+                        Some(Kex::KexInit(kexinit)) => {
+                            if kexinit.algo.is_some() || buf[0] == msg::KEXINIT || s.0.encrypted.is_none() {
+                                let kexdhdone = kexinit.client_parse(&s.0.rng,
+                                                                     s.0.config.as_ref(),
+                                                                     &mut s.0.cipher,
+                                                                     buf,
+                                                                     &mut s.0.write_buffer);
+                                match kexdhdone {
+                                    Ok(kexdhdone) => {
+                                        s.0.kex = Some(Kex::KexDhDone(kexdhdone));
+                                        return Ok(Async::Ready(true))
+                                    }
+                                    Err(e) => return Err(HandlerError::Error(e)),
                                 }
-                                Err(e) => return Err(HandlerError::Error(e)),
-                            }
-                        } else {
-                            try_nb!(self.session
-                                .client_read_encrypted(&mut self.handler, buf, &mut self.buffer));
-                        }
-                    }
-                    Some(Kex::KexDhDone(mut kexdhdone)) => {
-                        if kexdhdone.names.ignore_guessed {
-                            kexdhdone.names.ignore_guessed = false;
-                            self.session.0.kex = Some(Kex::KexDhDone(kexdhdone));
-                        } else {
-                            // We've sent ECDH_INIT, waiting for ECDH_REPLY
-                            if buf[0] == msg::KEX_ECDH_REPLY {
-                                let mut reader = buf.reader(1);
-                                let pubkey = try!(reader.read_string()); // server public key.
-                                let pubkey = try!(parse_public_key(pubkey));
-                                self.pending_future = Some(PendingFuture::ServerKeyCheck {
-                                    check: self.handler.check_server_key(&pubkey),
-                                    kexdhdone: kexdhdone,
-                                    buf_len: buf.len(),
-                                });
                             } else {
-                                return Err(HandlerError::Error(Error::Inconsistent));
+                                unreachable!()
                             }
                         }
-                    }
-                    Some(Kex::NewKeys(newkeys)) => {
-                        if buf[0] != msg::NEWKEYS {
-                            return Err(HandlerError::Error(Error::Kex));
+                        Some(Kex::KexDhDone(mut kexdhdone)) => {
+                            if kexdhdone.names.ignore_guessed {
+                                kexdhdone.names.ignore_guessed = false;
+                                s.0.kex = Some(Kex::KexDhDone(kexdhdone));
+                                return Ok(Async::Ready(true))
+                            } else {
+                                // We've sent ECDH_INIT, waiting for ECDH_REPLY
+                                if buf[0] == msg::KEX_ECDH_REPLY {
+                                    let mut reader = buf.reader(1);
+                                    let pubkey = try!(reader.read_string()); // server public key.
+                                    let pubkey = try!(parse_public_key(pubkey));
+                                    self.pending_future = Some(PendingFuture::ServerKeyCheck {
+                                        check: self.handler.take().unwrap().check_server_key(&pubkey),
+                                        kexdhdone: kexdhdone,
+                                        buf_len: buf.len(),
+                                    });
+                                    return Ok(Async::Ready(true))
+                                } else {
+                                    return Err(HandlerError::Error(Error::Inconsistent))
+                                }
+                            }
                         }
-                        self.session.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
-                        // Ok, NEWKEYS received, now encrypted.
-                        let p = b"\x05\0\0\0\x0Cssh-userauth";
-                        self.session.0.cipher.write(p, &mut self.session.0.write_buffer);
+                        Some(Kex::NewKeys(newkeys)) => {
+                            if buf[0] != msg::NEWKEYS {
+                                return Err(HandlerError::Error(Error::Kex));
+                            }
+                            s.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
+                            // Ok, NEWKEYS received, now encrypted.
+                            let p = b"\x05\0\0\0\x0Cssh-userauth";
+                            s.0.cipher.write(p, &mut s.0.write_buffer);
+                            return Ok(Async::Ready(true))
+                        }
+                        Some(kex) => {
+                            s.0.kex = Some(kex);
+                            return Ok(Async::Ready(true))
+                        },
+                        None => buf
                     }
-                    Some(kex) => self.session.0.kex = Some(kex),
-                    None => {
-                        try_nb!(self.session
-                            .client_read_encrypted(&mut self.handler, buf, &mut self.buffer));
-                    }
+                } else {
+                    unreachable!()
+                };
+
+                if let (Some(s), Some(h)) = (self.session.take(), self.handler.take()) {
+                    self.pending_future = Some(try_nb!(s.client_read_encrypted(h, buf, &mut self.buffer)));
+                } else {
+                    unreachable!()
                 }
                 Ok(Async::Ready(true))
             }
         }
     }
 
-    /// Try to authenticate this client. Authentication methods must
-    /// have been setup before this function is called.
-    pub fn authenticate(self) -> Authenticate<H> {
+    /// Try to authenticate this client using a password.
+    pub fn authenticate_password(mut self, user: &str, password: String) -> Authenticate<H> {
+        if let Some(ref mut s) = self.session {
+            s.set_auth_user(user);
+            s.set_auth_password(password);
+        }
+        Authenticate(Some(self))
+    }
+
+    /// Try to authenticate this client using a key pair.
+    pub fn authenticate_key(mut self, user: &str, key: key::Algorithm) -> Authenticate<H> {
+        if let Some(ref mut s) = self.session {
+            s.set_auth_user(user);
+            s.set_auth_public_key(key);
+        }
         Authenticate(Some(self))
     }
 
     /// Ask the server to open a session channel.
     pub fn channel_open_session(mut self) -> ChannelOpen<H, SessionChannel> {
-        let num = self.session.channel_open_session().unwrap();
+        let num = if let Some(ref mut s) = self.session {
+            s.channel_open_session().unwrap()
+        } else {
+            unreachable!()
+        };
         self.state = Some(ConnectionState::Write);
         ChannelOpen {
             connection: Some(self),
@@ -645,7 +694,11 @@ impl<H: Handler> Connection<H> {
                             originator_address: &str,
                             originator_port: u32)
                             -> ChannelOpen<H, X11Channel> {
-        let num = self.session.channel_open_x11(originator_address, originator_port).unwrap();
+        let num = if let Some(ref mut s) = self.session {
+            s.channel_open_x11(originator_address, originator_port).unwrap()
+        } else {
+            unreachable!()
+        };
         self.state = Some(ConnectionState::Write);
         ChannelOpen {
             connection: Some(self),
@@ -661,12 +714,15 @@ impl<H: Handler> Connection<H> {
                                      originator_address: &str,
                                      originator_port: u32)
                                      -> ChannelOpen<H, DirectTcpIpChannel> {
-        let num = self.session
-            .channel_open_direct_tcpip(host_to_connect,
-                                       port_to_connect,
-                                       originator_address,
-                                       originator_port)
-            .unwrap();
+        let num = if let Some(ref mut s) = self.session {
+            s.channel_open_direct_tcpip(host_to_connect,
+                                        port_to_connect,
+                                        originator_address,
+                                        originator_port)
+                .unwrap()
+        } else {
+            unreachable!()
+        };
         self.state = Some(ConnectionState::Write);
         ChannelOpen {
             connection: Some(self),
@@ -677,7 +733,9 @@ impl<H: Handler> Connection<H> {
 
     /// Ask the server to close a channel, finishing any pending write and read.
     pub fn channel_close(mut self, channel: ChannelId) {
-        self.0.byte(channel, msg::CHANNEL_CLOSE);
+        if let Some(ref mut s) = self.session {
+            s.0.byte(channel, msg::CHANNEL_CLOSE);
+        }
         self.state = Some(ConnectionState::Write);
     }
 
@@ -693,6 +751,11 @@ impl<H: Handler> Connection<H> {
     pub fn flush(mut self) -> Flush<H> {
         self.state = Some(ConnectionState::Write);
         Flush { connection: Some(self) }
+    }
+
+    /// Gets the connection's session.
+    pub fn session(&mut self) -> &mut Session {
+        self.session.as_mut().unwrap()
     }
 }
 
@@ -710,12 +773,16 @@ impl<H: Handler> Future for Authenticate<H> {
         loop {
             debug!("authenticated loop");
             let is_authenticated = if let Some(ref c) = self.0 {
-                c.is_authenticated()
+                if let Some(ref s) = c.session {
+                    s.is_authenticated()
+                } else {
+                    false
+                }
             } else {
                 false
             };
             if is_authenticated {
-                return Ok(Async::Ready(std::mem::replace(&mut self.0, None).unwrap()));
+                return Ok(Async::Ready(self.0.take().unwrap()))
             }
             let disconnected = if let Some(ref mut c) = self.0 {
                 !try_ready!(c.atomic_poll())
@@ -759,7 +826,7 @@ pub struct Flush<H: Handler> {
 }
 
 impl<H: Handler, ChannelType> Future for ChannelOpen<H, ChannelType> {
-    type Item = (Connection<H>, Option<ChannelId>);
+    type Item = (Connection<H>, ChannelId);
     type Error = HandlerError<H::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -770,13 +837,16 @@ impl<H: Handler, ChannelType> Future for ChannelOpen<H, ChannelType> {
         loop {
             debug!("channelopen loop");
             let is_open = if let Some(ref c) = self.connection {
-                c.channel_is_open(self.channel)
+                if let Some(ref s) = c.session {
+                    s.channel_is_open(self.channel)
+                } else {
+                    false
+                }
             } else {
                 false
             };
             if is_open {
-                return Ok(Async::Ready((std::mem::replace(&mut self.connection, None).unwrap(),
-                                        Some(self.channel))));
+                return Ok(Async::Ready((self.connection.take().unwrap(), self.channel)));
             }
 
             let is_disconnected = if let Some(ref mut c) = self.connection {
@@ -786,7 +856,7 @@ impl<H: Handler, ChannelType> Future for ChannelOpen<H, ChannelType> {
             };
 
             if is_disconnected {
-                return Ok(Async::Ready((self.connection.take().unwrap(), None)))
+                return Err(HandlerError::Error(Error::Disconnect))
             }
         }
     }
@@ -841,8 +911,12 @@ impl<H: Handler> Future for Flush<H> {
         loop {
             debug!("flush loop");
             let completely_written = if let Some(ref mut c) = self.connection {
-                try!(c.session.flush());
-                try_nb!(c.session.0.write_buffer.write_all(c.stream.get_mut()))
+                if let Some(ref mut s) = c.session {
+                    try!(s.flush());
+                    try_nb!(s.0.write_buffer.write_all(c.stream.get_mut()))
+                } else {
+                    unreachable!()
+                }
             } else {
                 unreachable!()
             };
@@ -895,18 +969,18 @@ impl Session {
     }
 
     /// Set the user.
-    pub fn set_auth_user(&mut self, user: &str) {
+    fn set_auth_user(&mut self, user: &str) {
         self.0.auth_user.clear();
         self.0.auth_user.push_str(user)
     }
 
     /// Set the authentication method.
-    pub fn set_auth_public_key(&mut self, key: key::Algorithm) {
+    fn set_auth_public_key(&mut self, key: key::Algorithm) {
         self.0.auth_method = Some(auth::Method::PublicKey { key: key });
     }
 
     /// Set the authentication method.
-    pub fn set_auth_password(&mut self, password: String) {
+    fn set_auth_password(&mut self, password: String) {
         self.0.auth_method = Some(auth::Method::Password { password: password });
     }
 
