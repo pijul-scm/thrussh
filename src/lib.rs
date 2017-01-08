@@ -99,9 +99,9 @@
 //!
 //!                    connection.channel_open_session().and_then(|(mut connection, chan)| {
 //!
-//!                        connection.session().data(chan, None, b"First test").unwrap();
-//!                        connection.session().data(chan, None, b"Second test").unwrap();
-//!                        connection.session().disconnect(Disconnect::ByApplication, "Ciao", "");
+//!                        connection.data(chan, None, b"First test").unwrap();
+//!                        connection.data(chan, None, b"Second test").unwrap();
+//!                        connection.disconnect(Disconnect::ByApplication, "Ciao", "");
 //!                        connection
 //!
 //!                    })
@@ -205,11 +205,6 @@ impl<T, E> FromFinished<T, E> for futures::Finished<T, E> {
     }
 }
 
-impl<T, E> FromFinished<T, E> for futures::Done<T, E> {
-    fn finished(t: T) -> Self {
-        futures::done(Ok(t))
-    }
-}
 
 
 #[derive(Debug)]

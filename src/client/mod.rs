@@ -754,7 +754,8 @@ impl<H: Handler> Connection<H> {
     }
 
     /// Wait until a condition is met on the connection.
-    pub fn wait<F: Fn(&Connection<H>) -> bool>(self, f: F) -> Wait<H, F> {
+    pub fn wait<F: Fn(&Connection<H>) -> bool>(mut self, f: F) -> Wait<H, F> {
+        self.state = Some(ConnectionState::Write);
         Wait {
             connection: Some(self),
             condition: f,
@@ -895,7 +896,7 @@ impl<H: Handler, F: Fn(&Connection<H>) -> bool> Future for Wait<H, F> {
         loop {
             debug!("wait loop");
             if let Some(mut connection) = self.connection.take() {
-                if (self.condition)(&connection) {
+                if connection.handler.is_some() && (self.condition)(&connection) {
                     return Ok(Async::Ready(connection));
                 } else {
                     match try!(connection.atomic_poll()) {
