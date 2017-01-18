@@ -105,9 +105,14 @@ impl super::Session {
                                 auth_request.methods &= m
                             }
                         }
+                        let no_more_methods = auth_request.methods.is_empty();
                         self.0.auth_method = None;
                         enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
 
+                        // If no other authentication method is allowed by the server, give up.
+                        if no_more_methods {
+                            return Err(HandlerError::Error(Error::NoAuthMethod));
+                        }
                     } else if buf[0] == msg::USERAUTH_PK_OK {
 
                         if let Some(auth::CurrentRequest::PublicKey { ref mut sent_pk_ok, .. }) = auth_request.current {

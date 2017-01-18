@@ -322,7 +322,7 @@ impl std::error::Error for Error {
             Error::HUP => "Connection closed by the remote side",
             Error::Ring(ref e) => e.description(),
             Error::ConnectionTimeout => "Connection timout",
-            Error::NoAuthMethod => "No authentication method",
+            Error::NoAuthMethod => "No more authentication method available",
         }
     }
     fn cause(&self) -> Option<&std::error::Error> {
