@@ -19,11 +19,11 @@ use auth;
 use session::*;
 use msg;
 use encoding::{Encoding, Reader};
-use negociation::Named;
+use negotiation::Named;
 use key;
 use key::PubKey;
-use negociation;
-use negociation::Select;
+use negotiation;
+use negotiation::Select;
 use super::PendingFuture;
 const SSH_CONNECTION: &'static [u8] = b"ssh-connection";
 
@@ -44,7 +44,7 @@ impl super::Session {
                 if let Some(exchange) = std::mem::replace(&mut enc.exchange, None) {
                     let kexinit = KexInit::received_rekey(
                         exchange,
-                        try!(negociation::Client::read_kex(buf, &self.0.config.as_ref().preferred)),
+                        try!(negotiation::Client::read_kex(buf, &self.0.config.as_ref().preferred)),
                         &enc.session_id
                     );
                     self.0.kex =

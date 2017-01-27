@@ -16,7 +16,7 @@
 use std;
 
 use auth;
-use negociation;
+use negotiation;
 use kex;
 use cipher;
 use msg;
@@ -357,7 +357,7 @@ pub enum Kex {
 
 #[derive(Debug)]
 pub struct KexInit {
-    pub algo: Option<negociation::Names>,
+    pub algo: Option<negotiation::Names>,
     pub exchange: Exchange,
     pub session_id: Option<digest::Digest>,
     pub sent: bool,
@@ -366,7 +366,7 @@ pub struct KexInit {
 
 impl KexInit {
     pub fn received_rekey(ex: Exchange,
-                          algo: negociation::Names,
+                          algo: negotiation::Names,
                           session_id: &digest::Digest)
                           -> Self {
         let mut kexinit = KexInit {
@@ -400,7 +400,7 @@ impl KexInit {
 #[derive(Debug)]
 pub struct KexDh {
     pub exchange: Exchange,
-    pub names: negociation::Names,
+    pub names: negotiation::Names,
     pub key: usize,
     pub session_id: Option<digest::Digest>,
 }
@@ -411,7 +411,7 @@ pub struct KexDhDone {
     pub kex: kex::Algorithm,
     pub key: usize,
     pub session_id: Option<digest::Digest>,
-    pub names: negociation::Names,
+    pub names: negotiation::Names,
 }
 
 impl KexDhDone {
@@ -449,7 +449,7 @@ impl KexDhDone {
 #[derive(Debug)]
 pub struct NewKeys {
     pub exchange: Exchange,
-    pub names: negociation::Names,
+    pub names: negotiation::Names,
     pub kex: kex::Algorithm,
     pub key: usize,
     pub cipher: cipher::CipherPair,

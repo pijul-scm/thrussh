@@ -17,7 +17,7 @@ use byteorder::{ByteOrder, BigEndian};
 use Error;
 use cryptovec::CryptoVec;
 use key;
-use negociation::Named;
+use negotiation::Named;
 
 pub trait Bytes {
     fn bytes(&self) -> &[u8];

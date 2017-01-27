@@ -13,7 +13,7 @@
 // limitations under the License.
 //
 use cryptovec::CryptoVec;
-use negociation::Named;
+use negotiation::Named;
 use Error;
 use encoding::{Encoding, Reader};
 use ring::{digest, rand, signature};

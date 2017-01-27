@@ -16,13 +16,12 @@ use std;
 use byteorder::{ByteOrder, BigEndian};
 use super::super::*;
 use super::*;
-use session::*;
 use msg;
 use encoding::{Encoding, Reader};
 use auth::*;
 use key::Verify;
-use negociation;
-use negociation::Select;
+use negotiation;
+use negotiation::Select;
 use futures::{Async, Future};
 use futures;
 use futures::Poll;
@@ -45,7 +44,7 @@ impl Session {
                 if let Some(exchange) = enc.exchange.take() {
                     let kexinit = KexInit::received_rekey(
                         exchange,
-                        try!(negociation::Server::read_kex(buf, &self.0.config.as_ref().preferred)),
+                        try!(negotiation::Server::read_kex(buf, &self.0.config.as_ref().preferred)),
                         &enc.session_id
                     );
                     self.0.kex = Some(try!(kexinit.server_parse(self.0.config.as_ref(),

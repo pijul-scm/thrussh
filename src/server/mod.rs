@@ -27,12 +27,12 @@ use ring;
 
 use super::*;
 use cipher;
-use negociation::{Select, Named};
+use negotiation::{Select, Named};
 use msg;
 use cipher::CipherPair;
 use encoding;
 use sshbuffer::*;
-use negociation;
+use negotiation;
 use key::PubKey;
 use encoding::{Encoding, Reader};
 
@@ -405,7 +405,7 @@ impl KexInit {
             let algo = if self.algo.is_none() {
                 // read algorithms from packet.
                 self.exchange.client_kex_init.extend(buf);
-                try!(super::negociation::Server::read_kex(buf, &config.preferred))
+                try!(super::negotiation::Server::read_kex(buf, &config.preferred))
             } else {
                 return Err(Error::Kex);
             };
@@ -441,7 +441,7 @@ impl KexInit {
                         write_buffer: &mut SSHBuffer)
                         -> Result<(), Error> {
         self.exchange.server_kex_init.clear();
-        try!(negociation::write_kex(rng, &config.preferred, &mut self.exchange.server_kex_init));
+        try!(negotiation::write_kex(rng, &config.preferred, &mut self.exchange.server_kex_init));
         self.sent = true;
         cipher.write(&self.exchange.server_kex_init, write_buffer);
         Ok(())
@@ -850,7 +850,7 @@ impl<H: Handler> Connection<TcpStream, H> {
                                 let pref = &session.0.config.as_ref().preferred;
                                 let kexinit =
                                     KexInit::received_rekey(exchange,
-                                                            try!(negociation::Server::read_kex(buf,
+                                                            try!(negotiation::Server::read_kex(buf,
                                                                                                pref)),
                                                             &enc.session_id);
                                 session.0.kex = Some(try!(kexinit.server_parse(

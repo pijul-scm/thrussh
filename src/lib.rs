@@ -383,9 +383,9 @@ impl<E> From<rustc_serialize::base64::FromBase64Error> for HandlerError<E> {
 }
 
 
-mod negociation;
-use negociation::Named;
-pub use negociation::Preferred;
+mod negotiation;
+use negotiation::Named;
+pub use negotiation::Preferred;
 mod pty;
 pub use pty::Pty;
 mod msg;

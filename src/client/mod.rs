@@ -28,9 +28,9 @@ use key;
 use msg;
 use auth;
 use cipher::CipherPair;
-use negociation;
+use negotiation;
 use cryptovec::CryptoVec;
-use negociation::Select;
+use negotiation::Select;
 use session::*;
 use sshbuffer::*;
 use cipher;
@@ -53,7 +53,7 @@ pub struct Config {
     /// The maximal size of a single packet.
     pub maximum_packet_size: u32,
     /// Lists of preferred algorithms.
-    pub preferred: negociation::Preferred,
+    pub preferred: negotiation::Preferred,
     /// Time after which the connection is garbage-collected.
     pub connection_timeout: Option<std::time::Duration>,
 }
@@ -279,7 +279,7 @@ impl KexInit {
         let algo = if self.algo.is_none() {
             // read algorithms from packet.
             self.exchange.server_kex_init.extend(buf);
-            try!(super::negociation::Client::read_kex(buf, &config.preferred))
+            try!(super::negotiation::Client::read_kex(buf, &config.preferred))
         } else {
             return Err(Error::Kex);
         };
@@ -318,7 +318,7 @@ impl KexInit {
                         write_buffer: &mut SSHBuffer)
                         -> Result<(), Error> {
         self.exchange.client_kex_init.clear();
-        try!(negociation::write_kex(rng, &config.preferred, &mut self.exchange.client_kex_init));
+        try!(negotiation::write_kex(rng, &config.preferred, &mut self.exchange.client_kex_init));
         self.sent = true;
         cipher.write(&self.exchange.client_kex_init, write_buffer);
         Ok(())
