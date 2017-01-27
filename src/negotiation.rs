@@ -17,6 +17,7 @@ use key;
 use kex;
 use cipher;
 use msg;
+use std::str::from_utf8;
 // use super::mac; // unimplemented
 // use super::compression; // unimplemented
 use cryptovec::CryptoVec;
@@ -76,22 +77,30 @@ pub trait Select {
 
     fn read_kex(buffer: &[u8], pref: &Preferred) -> Result<Names, Error> {
         let mut r = buffer.reader(17);
+        let kex_string = try!(r.read_string());
         let (kex_both_first, kex_algorithm) = if let Some(x) =
-                                                     Self::select(pref.kex, try!(r.read_string())) {
+                                                     Self::select(pref.kex, kex_string) {
             x
         } else {
-            return Err(Error::KexInit);
+            debug!("Could not find common kex algorithm, other side only supports {:?}, we only support {:?}", from_utf8(kex_string), pref.kex);
+            return Err(Error::NoCommonKexAlgo);
         };
 
+        let key_string = try!(r.read_string());
         let (key_both_first, key_algorithm) = if let Some(x) =
-                                                     Self::select(pref.key, try!(r.read_string())) {
+                                                     Self::select(pref.key, key_string) {
             x
         } else {
-            return Err(Error::KexInit);
+            debug!("Could not find common key algorithm, other side only supports {:?}, we only support {:?}", from_utf8(key_string), pref.key);
+            return Err(Error::NoCommonKeyAlgo);
         };
 
-        let cipher = Self::select(pref.cipher, try!(r.read_string()));
-
+        let cipher_string = try!(r.read_string());
+        let cipher = Self::select(pref.cipher, cipher_string);
+        if cipher.is_none() {
+            debug!("Could not find common cipher, other side only supports {:?}, we only support {:?}", from_utf8(cipher_string), pref.cipher);
+            return Err(Error::NoCommonCipher);
+        }
         try!(r.read_string()); // SERVER_TO_CLIENT
         let mac = Self::select(pref.mac, try!(r.read_string()));
         let mac = mac.and_then(|(_, x)| Some(x));

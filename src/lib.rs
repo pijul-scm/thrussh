@@ -215,8 +215,17 @@ pub enum Error {
     /// Base 64 decoding error.
     Base64(rustc_serialize::base64::FromBase64Error),
 
-    /// Could not find common algorithms.
+    /// Unspecified problem with the beginning of key exchange.
     KexInit,
+
+    /// No common key exchange algorithm.
+    NoCommonKexAlgo,
+
+    /// No common signature algorithm.
+    NoCommonKeyAlgo,
+
+    /// No common cipher.
+    NoCommonCipher,
 
     /// Invalid SSH version string.
     Version,
@@ -308,7 +317,10 @@ impl std::error::Error for Error {
             Error::Utf8(ref e) => e.description(),
             Error::IO(ref e) => e.description(),
             Error::CouldNotReadKey => "Could not read key",
-            Error::KexInit => "No common algorithms were found",
+            Error::KexInit => "KexInit problem",
+            Error::NoCommonKexAlgo => "No common key exchange algorithms were found",
+            Error::NoCommonKeyAlgo => "No common signature algorithms were found",
+            Error::NoCommonCipher => "No common ciphers were found",
             Error::Kex => "Received invalid key exchange packet",
             Error::Version => "Invalid version string from the remote side",
             Error::PacketAuth => "Incorrect packet authentication code",
