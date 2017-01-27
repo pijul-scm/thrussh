@@ -2,7 +2,7 @@
 name = "thrussh"
 description = "A client and server SSH library. Memory-safe, doesn't do its own crypto (based on *ring*)."
 keywords = ["ssh"]
-version = "0.8.2"
+version = "0.8.3"
 authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
 repository = "https://pijul.org/thrussh"
 homepage = "https://pijul.org/thrussh"
@@ -37,7 +37,7 @@ byteorder = "0.5"
 bitflags = "0.7"
 libc = "0.2"
 log = "0.3"
-ring = "0.6.1"
+ring = "0.6.3"
 rustc-serialize = "0.3"
 time = "0.1"
 untrusted = "0.3.1"
