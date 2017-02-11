@@ -912,25 +912,32 @@ impl<H: Handler> Future for Flush<H> {
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
 
+        if let Some(ref mut c) = self.connection {
+            c.state = Some(ConnectionState::Write)
+        }
         loop {
             debug!("flush loop");
-            let completely_written = if let Some(ref mut c) = self.connection {
-                if let Some(ref mut s) = c.session {
-                    try!(s.flush());
-                    try_nb!(s.0.write_buffer.write_all(c.stream.get_mut()))
-                } else {
-                    unreachable!()
+            if let Some(mut c) = self.connection.take() {
+                match try!(c.atomic_poll()) {
+                    Async::Ready(false) => return Ok(Async::Ready(c)),
+                    Async::NotReady => {
+                        self.connection = Some(c);
+                        return Ok(Async::NotReady)
+                    },
+                    Async::Ready(true) => {
+                        match c.state {
+                            Some(ConnectionState::Write) |
+                            Some(ConnectionState::Flush) => {
+                                self.connection = Some(c);
+                            },
+                            _ => {
+                                return Ok(Async::Ready(c))
+                            }
+                        }
+                    }
                 }
             } else {
                 unreachable!()
-            };
-            if completely_written {
-                if let Some(mut c) = self.connection.take() {
-                    c.state = Some(ConnectionState::Write);
-                    return Ok(Async::Ready(c));
-                } else {
-                    unreachable!()
-                }
             }
         }
     }
