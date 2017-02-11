@@ -787,9 +787,6 @@ impl<H: Handler> Future for Authenticate<H> {
     type Error = HandlerError<H::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        if let Some(ref mut c) = self.0 {
-            try_ready!(c.poll_timeout());
-        }
         loop {
             debug!("authenticated loop");
             let is_authenticated = if let Some(ref c) = self.0 {
@@ -850,10 +847,6 @@ impl<H: Handler, ChannelType> Future for ChannelOpen<H, ChannelType> {
     type Error = HandlerError<H::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        if let Some(ref mut c) = self.connection {
-            try_ready!(c.poll_timeout());
-        }
-
         loop {
             debug!("channelopen loop");
             let is_open = if let Some(ref c) = self.connection {
@@ -889,10 +882,6 @@ impl<H: Handler, F: Fn(&Connection<H>) -> bool> Future for Wait<H, F> {
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
 
-        if let Some(ref mut c) = self.connection {
-            try_ready!(c.poll_timeout());
-        }
-
         loop {
             debug!("wait loop");
             if let Some(mut connection) = self.connection.take() {
@@ -924,9 +913,6 @@ impl<H: Handler> Future for Flush<H> {
     type Error = HandlerError<H::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        if let Some(ref mut c) = self.connection {
-            try_ready!(c.poll_timeout());
-        }
 
         loop {
             debug!("flush loop");

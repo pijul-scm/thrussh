@@ -51,32 +51,49 @@ impl ReadSshId {
         &self.id[..self.id_len]
     }
     pub fn poll<R: BufRead>(&mut self, stream: &mut R) -> Poll<(), Error> {
-        let i = {
-            let buf = try!(stream.fill_buf());
-            let mut i = 0;
-            while i < buf.len() {
-                match (buf.get(i), buf.get(i + 1)) {
-                    (Some(&u), Some(&v)) if u == b'\r' && v == b'\n' => break,
-                    _ => {}
+        loop {
+
+            let mut bytes_read = 0;
+
+            {
+                let mut i = 0;
+                let buf = try_nb!(stream.fill_buf());
+                debug!("{:?}", std::str::from_utf8(buf));
+                if buf.len() == 0 {
+                    return Err(Error::Disconnect)
                 }
-                i += 1
+                while let (Some(&u), Some(&v)) = (buf.get(i), buf.get(i + 1)) {
+                    if u == b'\r' && v == b'\n' {
+                        bytes_read = i + 2;
+                        break
+                    } else if v == b'\n' {
+                        bytes_read = i + 2;
+                        break
+                    } else {
+                        i += 1
+                    }
+                }
+
+                if bytes_read > 0 {
+                    // If we have a full line, handle it.
+                    if i >= 8 {
+                        if &buf[0..8] == b"SSH-2.0-" {
+                            // Either the line starts with "SSH-2.0-"
+                            (&mut self.id[..i]).clone_from_slice(&buf[..i]);
+                            self.id_len = i;
+                        }
+                    }
+                    // Else, it is a "preliminary" (see
+                    // https://tools.ietf.org/html/rfc4253#section-4.2),
+                    // and we can discard it and read the next one.
+                }
             }
-            if buf.len() <= 8 {
-                // Not enough bytes. Don't consume, wait until we have more bytes.
-                return Ok(Async::NotReady);
-            } else if i >= buf.len() - 1 {
-                return Err(Error::Version);
+            debug!("bytes_read: {:?}", bytes_read);
+            stream.consume(bytes_read);
+            if self.id_len > 0 {
+                return Ok(Async::Ready(()))
             }
-            if &buf[0..8] == b"SSH-2.0-" {
-                (&mut self.id[..i]).clone_from_slice(&buf[..i]);
-                self.id_len = i;
-                i
-            } else {
-                return Err(Error::Version);
-            }
-        };
-        stream.consume(i + 2);
-        Ok(Async::Ready(()))
+        }
     }
 }
 
