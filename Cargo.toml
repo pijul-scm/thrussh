@@ -16,7 +16,7 @@ include = [
         "src/key.rs",
         "src/lib.rs",
         "src/msg.rs",
-        "src/negociation.rs",
+        "src/negotiation.rs",
         "src/pty.rs",
         "src/session.rs",
         "src/sshbuffer.rs",
