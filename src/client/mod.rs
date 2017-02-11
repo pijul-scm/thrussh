@@ -496,9 +496,7 @@ impl<H: Handler> Connection<H> {
     }
 
     /// Process all packets available in the buffer, and returns
-    /// whether at least one complete packet was read.  `buffer` and
-    /// `buffer2` are work spaces mostly used to compute keys. They
-    /// are cleared before using, hence nothing is expected from them.
+    /// whether the connection should continue.
     fn atomic_poll(&mut self) -> Poll<bool, HandlerError<H::Error>> {
 
         try_ready!(self.pending_poll());

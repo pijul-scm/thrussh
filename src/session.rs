@@ -228,7 +228,7 @@ impl Encrypted {
             };
             let buf_len = buf.len();
 
-            while buf.len() > 0 && channel.recipient_window_size > 0 {
+            while buf.len() > 0 {
                 // Compute the length we're allowed to send.
                 let off = std::cmp::min(buf.len(), channel.recipient_maximum_packet_size as usize);
                 let off = std::cmp::min(off, channel.recipient_window_size as usize);
@@ -247,6 +247,7 @@ impl Encrypted {
                 channel.recipient_window_size -= off as u32;
                 buf = &buf[off..]
             }
+            debug!("buf.len() = {:?}, buf_len = {:?}", buf.len(), buf_len);
             Ok(buf_len)
         } else {
             Err(Error::WrongChannel)
