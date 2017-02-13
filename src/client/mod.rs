@@ -123,7 +123,7 @@ impl<R:Read+Write, H:Handler, T:AsRef<[u8]>> Future for Data<R, H, T> {
             debug!("Data loop");
             // std::thread::sleep(std::time::Duration::from_secs(1));
             // Do everything we can do.
-            let mut hit_notready = false;
+            let hit_notready;
             loop {
                 let status = try!(connection.atomic_poll());
                 match status {
@@ -182,13 +182,11 @@ impl<R:Read+Write, H:Handler, T:AsRef<[u8]>> Future for Data<R, H, T> {
             }
 
             // Then, try to write.
-            let data_len;
             {
                 let mut session = connection.session.as_mut().unwrap();
                 {
                     let mut enc = session.0.encrypted.as_mut().unwrap();
                     let data_ = data.as_ref();
-                    data_len = data_.len();
                     self.position += enc.data(self.channel, self.extended, &data_[self.position..])?;
                 }
                 session.flush()?;

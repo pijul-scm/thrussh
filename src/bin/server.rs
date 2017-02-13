@@ -88,13 +88,13 @@ impl Client {
 
                 connection.authenticate_key("pe", key).and_then(|connection| {
 
-                    connection.channel_open_session().and_then(|(mut connection, chan)| {
-                        if let Some(ref mut s) = connection.session {
-                            s.data(chan, None, b"First test").unwrap();
-                            s.data(chan, None, b"Second test").unwrap();
-                            s.disconnect(Disconnect::ByApplication, "Ciao", "");
-                        }
-                        connection
+                    connection.channel_open_session().and_then(|(connection, chan)| {
+                        connection.data(chan, None, b"First test").and_then(move |(connection, _)| {
+                            connection.data(chan, None, b"Second test").and_then(|(mut connection, _)|{
+                                connection.disconnect(Disconnect::ByApplication, "Ciao", "");
+                                connection
+                            })
+                        })
                     })
                 })
             });

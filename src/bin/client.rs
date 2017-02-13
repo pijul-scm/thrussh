@@ -29,13 +29,13 @@ fn run<H: Handler + 'static>(config: Arc<Config>, addr: &str, handler: H) {
                 let key = thrussh::load_secret_key("/home/pe/.ssh/id_ed25519").unwrap();
                 connection.authenticate_key("pe", key).and_then(|connection| {
 
-                    connection.channel_open_session().and_then(|(mut connection, chan)| {
+                    connection.channel_open_session().and_then(|(connection, chan)| {
 
-                        if let Some(ref mut session) = connection.session {
-                            session.data(chan, None, b"AAAAAA").unwrap();
-                            session.data(chan, None, b"BBBBBB").unwrap();
-                        }
-                        connection
+                        connection.data(chan, None, b"AAAAAA").and_then(move |(connection, _)| {
+                            connection.data(chan, None, b"BBBBBB").and_then(|(connection, _)|{
+                                connection
+                            })
+                        })
 
                     })
                 })

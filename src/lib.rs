@@ -140,10 +140,7 @@
 
 #[macro_use]
 extern crate arrayref;
-extern crate libc;
-extern crate mio;
 extern crate ring;
-extern crate time;
 #[macro_use]
 extern crate bitflags;
 
@@ -153,7 +150,6 @@ extern crate byteorder;
 
 extern crate rustc_serialize; // Reading keys in base64.
 extern crate untrusted;
-extern crate regex;
 extern crate cryptovec;
 
 #[macro_use]
