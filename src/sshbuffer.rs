@@ -43,6 +43,9 @@ impl SSHBuffer {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.buffer.len() - self.len
+    }
 
     pub fn send_ssh_id(&mut self, id: &[u8]) {
         self.buffer.extend(id);
@@ -51,16 +54,15 @@ impl SSHBuffer {
     }
 
     /// Returns true iff the write buffer has been completely written.
-    pub fn write_all<W:Write>(&mut self, mut stream: W) -> Result<bool, Error> {
+    pub fn write_all<W:Write>(&mut self, mut stream: W) -> Result<(), Error> {
         while self.len < self.buffer.len() {
             let s = try!(self.buffer.write_all_from(self.len, &mut stream));
             debug!("write_all: written {} bytes", s);
             self.len += s;
             self.bytes += s;
-            try!(stream.flush());
         }
         self.buffer.clear();
         self.len = 0;
-        Ok(true)
+        Ok(())
     }
 }

@@ -193,6 +193,27 @@ macro_rules! push_packet {
 
 mod session;
 
+
+
+#[derive(Clone, Copy)]
+enum Status {
+    Ok,
+    Disconnect,
+}
+
+/// Run one step of the protocol. This trait is currently not used,
+/// but both the client and the server implement it. It was meant to
+/// factor out code in common between client::Data and a former
+/// server::Data.
+///
+/// The reason the server cannot have a useful `Data` future is that
+/// the main interactions between the server and the library user are
+/// through callbacks (whereas the client is mostly used by
+/// manipulating `Connection`s directly).
+trait AtomicPoll<E> {
+    fn atomic_poll(&mut self) -> futures::Poll<Status, E>;
+}
+
 /// Since handlers are large, their associated future types must implement this trait to provide reasonable default implementations (basically, rejecting all requests).
 pub trait FromFinished<T, E>:futures::Future<Item=T, Error=E> {
     /// Turns type `T` into `Self`, a future yielding `T`.

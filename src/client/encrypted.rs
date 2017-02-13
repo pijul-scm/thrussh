@@ -34,7 +34,7 @@ impl super::Session {
                                                     buf: &[u8],
                                                     buffer: &mut CryptoVec)
                                                     -> Result<PendingFuture<C>, HandlerError<C::Error>> {
-
+        debug!("client_read_encrypted");
         // Either this packet is a KEXINIT, in which case we start a key re-exchange.
         if buf[0] == msg::KEXINIT {
             // Now, if we're encrypted:
@@ -75,7 +75,7 @@ impl super::Session {
                                 current: None,
                                 rejection_count: 0,
                             };
-
+                            debug!("auth_method: {:?}", self.0.auth_method);
                             if let Some(ref meth) = self.0.auth_method {
                                 if enc.write_auth_request(&self.0.auth_user, meth) {
                                     enc.state = Some(EncryptedState::WaitingAuthRequest(auth_request));
@@ -94,9 +94,12 @@ impl super::Session {
                 Some(EncryptedState::WaitingAuthRequest(mut auth_request)) => {
                     if buf[0] == msg::USERAUTH_SUCCESS {
 
+                        debug!("userauth_success");
                         enc.state = Some(EncryptedState::Authenticated);
 
                     } else if buf[0] == msg::USERAUTH_FAILURE {
+
+                        debug!("userauth_failure");
 
                         let mut r = buf.reader(1);
                         let remaining_methods = try!(r.read_string());
@@ -257,17 +260,21 @@ impl super::Session {
                     }
                 }
                 msg::CHANNEL_WINDOW_ADJUST => {
+                    debug!("channel_window_adjust");
                     let mut r = buf.reader(1);
                     let channel_num = ChannelId(try!(r.read_u32()));
                     let amount = try!(r.read_u32());
+                    let mut new_value = 0;
+                    debug!("amount: {:?}", amount);
                     if let Some(ref mut enc) = self.0.encrypted {
                         if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
-                            channel.recipient_window_size += amount
+                            channel.recipient_window_size += amount;
+                            new_value = channel.recipient_window_size;
                         } else {
                             return Err(HandlerError::Error(Error::WrongChannel));
                         }
                     }
-                    Ok(PendingFuture::SessionUnit(client.window_adjusted(channel_num, self)))
+                    Ok(PendingFuture::SessionUnit(client.window_adjusted(channel_num, new_value as usize, self)))
                 }
                 msg::GLOBAL_REQUEST => {
                     let mut r = buf.reader(1);

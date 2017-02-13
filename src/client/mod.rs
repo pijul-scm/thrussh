@@ -14,15 +14,14 @@
 //
 
 use std::sync::Arc;
-use std::io::{Write, BufReader};
+use std::io::{Write, Read};
 use std;
 use futures::{Poll, Async};
 use futures::future::Future;
-use tokio_core::net::TcpStream;
 use tokio_core::reactor::Timeout;
 use ring;
 use {Disconnect, Error, Limits, Sig, ChannelOpenFailure, parse_public_key, ChannelId,
-     FromFinished, HandlerError};
+     FromFinished, HandlerError, Status, AtomicPoll};
 use encoding::Reader;
 use key;
 use msg;
@@ -75,11 +74,11 @@ impl Default for Config {
 
 
 /// Client connection.
-pub struct Connection<H: Handler> {
+pub struct Connection<R:Read+Write, H: Handler> {
     read_buffer: SSHBuffer,
     /// Session of this connection.
     pub session: Option<Session>,
-    stream: BufReader<TcpStream>,
+    stream: SshRead<R>,
     state: Option<ConnectionState>,
     pending_future: Option<PendingFuture<H>>,
     buffer: CryptoVec,
@@ -89,23 +88,120 @@ pub struct Connection<H: Handler> {
     timeout: Option<Timeout>,
 }
 
-impl<H: Handler> std::ops::Deref for Connection<H> {
+
+impl<R:Read+Write, H: Handler> std::ops::Deref for Connection<R, H> {
     type Target = Session;
     fn deref(&self) -> &Self::Target {
         self.session.as_ref().unwrap()
     }
 }
 
-impl<H: Handler> std::ops::DerefMut for Connection<H> {
+impl<R:Read+Write, H: Handler> std::ops::DerefMut for Connection<R, H> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.session.as_mut().unwrap()
     }
 }
 
 
+/// Future for sending data.
+pub struct Data<R:Read+Write, H:Handler, T: AsRef<[u8]>> {
+    connection: Option<Connection<R, H>>,
+    data: Option<T>,
+    extended: Option<u32>,
+    channel: ChannelId,
+    position: usize,
+}
+
+impl<R:Read+Write, H:Handler, T:AsRef<[u8]>> Future for Data<R, H, T> {
+
+    type Item = (Connection<R, H>, T);
+    type Error = HandlerError<H::Error>;
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        let mut connection = self.connection.take().unwrap();
+        let data = self.data.take().unwrap();
+        loop {
+            debug!("Data loop");
+            // std::thread::sleep(std::time::Duration::from_secs(1));
+            // Do everything we can do.
+            let mut hit_notready = false;
+            loop {
+                let status = try!(connection.atomic_poll());
+                match status {
+                    Async::Ready(Status::Ok) => {},
+                    Async::Ready(Status::Disconnect) => return Err(From::from(Error::Disconnect)),
+                    Async::NotReady => {
+                        hit_notready = true;
+                        break
+                    }
+                }
+            }
+            // Not ready:
+            match connection.state {
+                Some(ConnectionState::Read) => {
+                    // This is Ok. We are done writing/flushing, and
+                    // do not need to read just right now.
+                    if self.position >= data.as_ref().len() {
+                        debug!("done !");
+                        return Ok(Async::Ready((connection, data)))
+                    } else {
+                        let needs_larger_window = {
+                            let session = connection.session.as_mut().unwrap();
+                            if let Some(ref channel) = session.0.encrypted.as_ref()
+                                .unwrap().channels.get(&self.channel) {
+
+                                    channel.recipient_window_size == 0
+                            } else {
+                                debug!("read, just starting");
+                                false
+                            }
+                        };
+
+                        if needs_larger_window {
+                            debug!("not ready, needs larger window");
+                            if hit_notready {
+                                debug!("was not_ready");
+                                self.connection = Some(connection);
+                                self.data = Some(data);
+                                return Ok(Async::NotReady)
+                            } else {
+                                continue
+                            }
+                        } else {
+                            debug!("does not need larger window");
+                        }
+                    }
+                },
+                _ => {
+                    debug!("really not ready");
+                    // Either we're don done writing/flushing, or else
+                    // we need to read.
+                    self.connection = Some(connection);
+                    self.data = Some(data);
+                    return Ok(Async::NotReady)
+                }
+            }
+
+            // Then, try to write.
+            let data_len;
+            {
+                let mut session = connection.session.as_mut().unwrap();
+                {
+                    let mut enc = session.0.encrypted.as_mut().unwrap();
+                    let data_ = data.as_ref();
+                    data_len = data_.len();
+                    self.position += enc.data(self.channel, self.extended, &data_[self.position..])?;
+                }
+                session.flush()?;
+            }
+            connection.state = Some(ConnectionState::Write)
+        }
+    }
+}
+
+
 #[derive(Debug)]
 enum ConnectionState {
-    ReadSshId { sshid: ReadSshId },
+    ReadSshId,
     WriteSshId,
     Read,
     Write,
@@ -254,7 +350,7 @@ pub trait Handler:Sized {
     /// `Session::data` before, and it returned less than the
     /// full amount of data.
     #[allow(unused_variables)]
-    fn window_adjusted(self, channel: ChannelId, session: Session) -> Self::SessionUnit {
+    fn window_adjusted(self, channel: ChannelId, new_window_size: usize, session: Session) -> Self::SessionUnit {
         Self::SessionUnit::finished((self, session))
     }
 }
@@ -327,10 +423,10 @@ impl KexInit {
 
 
 
-impl<H: Handler> Connection<H> {
+impl<R:Read+Write, H: Handler> Connection<R, H> {
     /// Create a new client connection.
     pub fn new(config: Arc<Config>,
-               stream: TcpStream,
+               stream: R,
                handler: H,
                timeout: Option<Timeout>)
                -> Result<Self, Error> {
@@ -351,7 +447,7 @@ impl<H: Handler> Connection<H> {
                 disconnected: false,
                 rng: ring::rand::SystemRandom::new(),
             })),
-            stream: BufReader::new(stream),
+            stream: SshRead::new(stream),
             state: Some(ConnectionState::WriteSshId),
             pending_future: None,
             handler: Some(handler),
@@ -366,7 +462,7 @@ impl<H: Handler> Connection<H> {
 }
 
 
-impl<H: Handler> Future for Connection<H> {
+impl<R:Read+Write, H: Handler> Future for Connection<R, H> {
     type Item = ();
     type Error = HandlerError<H::Error>;
 
@@ -375,7 +471,7 @@ impl<H: Handler> Future for Connection<H> {
         try_ready!(self.poll_timeout());
         loop {
             debug!("client polling");
-            if !try_ready!(self.atomic_poll()) {
+            if let Status::Disconnect = try_ready!(self.atomic_poll()) {
                 return Ok(Async::Ready(()));
             }
         }
@@ -394,12 +490,12 @@ pub enum PendingFuture<H: Handler> {
 }
 
 
-impl<H: Handler> Connection<H> {
+impl<R:Read+Write, H: Handler> Connection<R, H> {
     fn poll_timeout(&mut self) -> Poll<(), HandlerError<H::Error>> {
         if let Some(ref mut timeout) = self.timeout {
             if let Async::Ready(()) = try!(timeout.poll()) {
                 debug!("Timeout, shutdown");
-                try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
+                // try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
                 if let Some(ref mut s) = self.session {
                     s.0.disconnected = true;
                 }
@@ -410,7 +506,7 @@ impl<H: Handler> Connection<H> {
     }
 
     fn pending_poll(&mut self) -> Poll<(), HandlerError<H::Error>> {
-
+        debug!("pending poll {:?}", self.pending_future.is_some());
         match self.pending_future.take() {
 
             Some(PendingFuture::SessionUnit(mut f)) => {
@@ -495,181 +591,8 @@ impl<H: Handler> Connection<H> {
         }
     }
 
-    /// Process all packets available in the buffer, and returns
-    /// whether the connection should continue.
-    fn atomic_poll(&mut self) -> Poll<bool, HandlerError<H::Error>> {
-
-        try_ready!(self.pending_poll());
-
-        // Special case for the beginning.
-        match self.state.take() {
-            None => {
-                if let Some(ref mut s) = self.session {
-                    if s.0.disconnected {
-                        Ok(Async::Ready(false))
-                    } else {
-                        try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
-                        s.0.disconnected = true;
-                        Ok(Async::Ready(false))
-                    }
-                } else {
-                    unreachable!()
-                }
-            }
-            Some(ConnectionState::WriteSshId) => {
-                self.state = Some(ConnectionState::ReadSshId { sshid: read_ssh_id() });
-                Ok(Async::Ready(true))
-            }
-            Some(ConnectionState::ReadSshId { mut sshid }) => {
-
-                match sshid.poll(&mut self.stream) {
-                    Ok(Async::NotReady) => {
-                        self.state = Some(ConnectionState::ReadSshId { sshid: sshid });
-                        Ok(Async::NotReady)
-                    }
-                    Err(Error::IO(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        self.state = Some(ConnectionState::ReadSshId { sshid: sshid });
-                        Ok(Async::NotReady)
-                    }
-                    Err(e) => Err(HandlerError::Error(e)),
-                    Ok(Async::Ready(())) => {
-                        self.read_buffer.bytes += sshid.id_len + 2;
-                        let mut exchange = Exchange::new();
-                        exchange.server_id.extend(sshid.id());
-                        // Preparing the response
-                        if let Some(ref mut s) = self.session {
-                            exchange.client_id.extend(s.0.config.as_ref().client_id.as_bytes());
-                            let mut kexinit = KexInit {
-                                exchange: exchange,
-                                algo: None,
-                                sent: false,
-                                session_id: None,
-                            };
-                            try!(kexinit.client_write(&s.0.rng,
-                                                      s.0.config.as_ref(),
-                                                      &mut s.0.cipher,
-                                                      &mut s.0.write_buffer));
-                            s.0.kex = Some(Kex::KexInit(kexinit));
-                            self.state = Some(ConnectionState::Write);
-                        } else {
-                            unreachable!()
-                        }
-                        Ok(Async::Ready(true))
-                    }
-                }
-            }
-            Some(ConnectionState::Write) => {
-                debug!("writing");
-                self.state = Some(ConnectionState::Write);
-                if let Some(ref mut s) = self.session {
-                    try!(s.flush());
-                    try_nb!(s.0.write_buffer.write_all(self.stream.get_mut()));
-                }
-                self.state = Some(ConnectionState::Flush);
-                Ok(Async::Ready(true))
-            }
-            Some(ConnectionState::Flush) => {
-                debug!("flushing");
-                self.state = Some(ConnectionState::Flush);
-                try_nb!(self.stream.get_mut().flush());
-                self.state = Some(ConnectionState::Read);
-                Ok(Async::Ready(true))
-            }
-            Some(ConnectionState::Read) => {
-                debug!("reading");
-                let buf = if let Some(ref mut s) = self.session {
-
-                    self.state = Some(ConnectionState::Read);
-                    // In all other cases:
-                    let buf = try_nb!(s.0.cipher.read(&mut self.stream, &mut self.read_buffer));
-
-                    // Handle the transport layer.
-                    if buf.len() == 0 || buf[0] == msg::DISCONNECT {
-                        // transport
-                        return Ok(Async::Ready(false));
-                    }
-                    // If we don't disconnect, keep the state.
-                    self.state = Some(ConnectionState::Write);
-
-                    // Handle transport layer packets.
-                    if buf[0] <= 4 {
-                        return Ok(Async::Ready(true));
-                    }
-
-                    // Handle key exchange/re-exchange.
-                    match s.0.kex.take() {
-                        Some(Kex::KexInit(kexinit)) => {
-                            if kexinit.algo.is_some() || buf[0] == msg::KEXINIT || s.0.encrypted.is_none() {
-                                let kexdhdone = kexinit.client_parse(&s.0.rng,
-                                                                     s.0.config.as_ref(),
-                                                                     &mut s.0.cipher,
-                                                                     buf,
-                                                                     &mut s.0.write_buffer);
-                                match kexdhdone {
-                                    Ok(kexdhdone) => {
-                                        s.0.kex = Some(Kex::KexDhDone(kexdhdone));
-                                        return Ok(Async::Ready(true))
-                                    }
-                                    Err(e) => return Err(HandlerError::Error(e)),
-                                }
-                            } else {
-                                unreachable!()
-                            }
-                        }
-                        Some(Kex::KexDhDone(mut kexdhdone)) => {
-                            if kexdhdone.names.ignore_guessed {
-                                kexdhdone.names.ignore_guessed = false;
-                                s.0.kex = Some(Kex::KexDhDone(kexdhdone));
-                                return Ok(Async::Ready(true))
-                            } else {
-                                // We've sent ECDH_INIT, waiting for ECDH_REPLY
-                                if buf[0] == msg::KEX_ECDH_REPLY {
-                                    let mut reader = buf.reader(1);
-                                    let pubkey = try!(reader.read_string()); // server public key.
-                                    let pubkey = try!(parse_public_key(pubkey));
-                                    self.pending_future = Some(PendingFuture::ServerKeyCheck {
-                                        check: self.handler.take().unwrap().check_server_key(&pubkey),
-                                        kexdhdone: kexdhdone,
-                                        buf_len: buf.len(),
-                                    });
-                                    return Ok(Async::Ready(true))
-                                } else {
-                                    return Err(HandlerError::Error(Error::Inconsistent))
-                                }
-                            }
-                        }
-                        Some(Kex::NewKeys(newkeys)) => {
-                            if buf[0] != msg::NEWKEYS {
-                                return Err(HandlerError::Error(Error::Kex));
-                            }
-                            s.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
-                            // Ok, NEWKEYS received, now encrypted.
-                            let p = b"\x05\0\0\0\x0Cssh-userauth";
-                            s.0.cipher.write(p, &mut s.0.write_buffer);
-                            return Ok(Async::Ready(true))
-                        }
-                        Some(kex) => {
-                            s.0.kex = Some(kex);
-                            return Ok(Async::Ready(true))
-                        },
-                        None => buf
-                    }
-                } else {
-                    unreachable!()
-                };
-
-                if let (Some(s), Some(h)) = (self.session.take(), self.handler.take()) {
-                    self.pending_future = Some(try_nb!(s.client_read_encrypted(h, buf, &mut self.buffer)));
-                } else {
-                    unreachable!()
-                }
-                Ok(Async::Ready(true))
-            }
-        }
-    }
-
     /// Try to authenticate this client using a password.
-    pub fn authenticate_password(mut self, user: &str, password: String) -> Authenticate<H> {
+    pub fn authenticate_password(mut self, user: &str, password: String) -> Authenticate<R, H> {
         if let Some(ref mut s) = self.session {
             s.set_auth_user(user);
             s.set_auth_password(password);
@@ -678,7 +601,7 @@ impl<H: Handler> Connection<H> {
     }
 
     /// Try to authenticate this client using a key pair.
-    pub fn authenticate_key(mut self, user: &str, key: key::Algorithm) -> Authenticate<H> {
+    pub fn authenticate_key(mut self, user: &str, key: key::Algorithm) -> Authenticate<R, H> {
         if let Some(ref mut s) = self.session {
             s.set_auth_user(user);
             s.set_auth_public_key(key);
@@ -687,7 +610,7 @@ impl<H: Handler> Connection<H> {
     }
 
     /// Ask the server to open a session channel.
-    pub fn channel_open_session(mut self) -> ChannelOpen<H, SessionChannel> {
+    pub fn channel_open_session(mut self) -> ChannelOpen<R, H, SessionChannel> {
         let num = if let Some(ref mut s) = self.session {
             s.channel_open_session().unwrap()
         } else {
@@ -705,7 +628,7 @@ impl<H: Handler> Connection<H> {
     pub fn channel_open_x11(mut self,
                             originator_address: &str,
                             originator_port: u32)
-                            -> ChannelOpen<H, X11Channel> {
+                            -> ChannelOpen<R, H, X11Channel> {
         let num = if let Some(ref mut s) = self.session {
             s.channel_open_x11(originator_address, originator_port).unwrap()
         } else {
@@ -725,7 +648,7 @@ impl<H: Handler> Connection<H> {
                                      port_to_connect: u32,
                                      originator_address: &str,
                                      originator_port: u32)
-                                     -> ChannelOpen<H, DirectTcpIpChannel> {
+                                     -> ChannelOpen<R, H, DirectTcpIpChannel> {
         let num = if let Some(ref mut s) = self.session {
             s.channel_open_direct_tcpip(host_to_connect,
                                         port_to_connect,
@@ -752,7 +675,7 @@ impl<H: Handler> Connection<H> {
     }
 
     /// Wait until a condition is met on the connection.
-    pub fn wait<F: Fn(&Connection<H>) -> bool>(mut self, f: F) -> Wait<H, F> {
+    pub fn wait<F: Fn(&Connection<R, H>) -> bool>(mut self, f: F) -> Wait<R, H, F> {
         self.state = Some(ConnectionState::Write);
         Wait {
             connection: Some(self),
@@ -761,9 +684,16 @@ impl<H: Handler> Connection<H> {
     }
 
     /// Flush the session, sending any pending message.
-    pub fn flush(mut self) -> Flush<H> {
+    pub fn wait_flush(mut self) -> WaitFlush<R, H> {
         self.state = Some(ConnectionState::Write);
-        Flush { connection: Some(self) }
+        WaitFlush { connection: Some(self) }
+    }
+
+    /// Wait until the next message is read from the remote.
+    pub fn wait_read(mut self) -> WaitRead<R, H> {
+        debug!("starting wait_read: {:?}", self.session.is_some());
+        self.state = Some(ConnectionState::Read);
+        WaitRead { connection: Some(self) }
     }
 
     /// Gets a borrow to the connection's handler.
@@ -775,13 +705,202 @@ impl<H: Handler> Connection<H> {
     pub fn handler_mut(&mut self) -> &mut H {
         self.handler.as_mut().unwrap()
     }
+
+    /// Send data to a channel. On session channels, `extended` can be
+    /// used to encode standard error by passing `Some(1)`, and stdout
+    /// by passing `None`.
+    pub fn data<T:AsRef<[u8]>>(mut self,
+                               channel: ChannelId,
+                               extended: Option<u32>,
+                               data: T)
+                               -> Data<R, H, T> {
+
+        self.state = Some(ConnectionState::Write);
+        Data {
+            connection: Some(self),
+            channel: channel,
+            extended: extended,
+            data: Some(data),
+            position: 0,
+        }
+    }
+}
+
+
+impl<R:Read+Write, H:Handler> AtomicPoll<HandlerError<H::Error>> for Connection<R, H> {
+    /// Process all packets available in the buffer, and returns
+    /// whether the connection should continue.
+    fn atomic_poll(&mut self) -> Poll<Status, HandlerError<H::Error>> {
+
+        try_ready!(self.pending_poll());
+        let state = self.state.take();
+        debug!("atomic poll: take {:?}", state);
+        // Special case for the beginning.
+        match state {
+            None => {
+                if let Some(ref mut s) = self.session {
+                    if s.0.disconnected {
+                        Ok(Async::Ready(Status::Disconnect))
+                    } else {
+                        // try_nb!(self.stream.get_mut().shutdown(std::net::Shutdown::Both));
+                        s.0.disconnected = true;
+                        Ok(Async::Ready(Status::Disconnect))
+                    }
+                } else {
+                    unreachable!()
+                }
+            }
+            Some(ConnectionState::WriteSshId) => {
+                self.state = Some(ConnectionState::ReadSshId);
+                self.stream.id = Some(read_ssh_id());
+                Ok(Async::Ready(Status::Ok))
+            }
+            Some(ConnectionState::ReadSshId) => {
+                self.state = Some(ConnectionState::ReadSshId);
+                let sshid = try_ready!(self.stream.read_ssh_id());
+                // self.read_buffer.bytes += sshid.bytes_read + 2;
+                let mut exchange = Exchange::new();
+                exchange.server_id.extend(sshid);
+                debug!("sshid: {:?}", std::str::from_utf8(sshid));
+                // Preparing the response
+                if let Some(ref mut s) = self.session {
+                    exchange.client_id.extend(s.0.config.as_ref().client_id.as_bytes());
+                    let mut kexinit = KexInit {
+                        exchange: exchange,
+                        algo: None,
+                        sent: false,
+                        session_id: None,
+                    };
+                    try!(kexinit.client_write(&s.0.rng,
+                                              s.0.config.as_ref(),
+                                              &mut s.0.cipher,
+                                              &mut s.0.write_buffer));
+                    s.0.kex = Some(Kex::KexInit(kexinit));
+                    self.state = Some(ConnectionState::Write);
+                } else {
+                    unreachable!()
+                }
+                Ok(Async::Ready(Status::Ok))
+            }
+            Some(ConnectionState::Write) => {
+                debug!("writing");
+                self.state = Some(ConnectionState::Write);
+                if let Some(ref mut s) = self.session {
+                    try!(s.flush());
+                    try_nb!(s.0.write_buffer.write_all(&mut self.stream));
+                }
+                self.state = Some(ConnectionState::Flush);
+                Ok(Async::Ready(Status::Ok))
+            }
+            Some(ConnectionState::Flush) => {
+                debug!("flushing");
+                self.state = Some(ConnectionState::Flush);
+                try_nb!(self.stream.flush());
+                self.state = Some(ConnectionState::Read);
+                Ok(Async::Ready(Status::Ok))
+            }
+            Some(ConnectionState::Read) => {
+                debug!("reading");
+                let buf = if let Some(ref mut s) = self.session {
+
+                    self.state = Some(ConnectionState::Read);
+                    // In all other cases:
+                    debug!("trying to read buf");
+                    let buf = try_nb!(s.0.cipher.read(&mut self.stream, &mut self.read_buffer));
+                    debug!("buf: {:?} {:?}", buf.len(), &buf[..std::cmp::min(buf.len(), 100)]);
+
+                    // Handle the transport layer.
+                    if buf.len() == 0 || buf[0] == msg::DISCONNECT {
+                        // transport
+                        return Ok(Async::Ready(Status::Disconnect));
+                    }
+                    // If we don't disconnect, keep the state.
+                    self.state = Some(ConnectionState::Write);
+
+                    // Handle transport layer packets.
+                    if buf[0] <= 4 {
+                        return Ok(Async::Ready(Status::Ok));
+                    }
+
+                    // Handle key exchange/re-exchange.
+                    match s.0.kex.take() {
+                        Some(Kex::KexInit(kexinit)) => {
+                            if kexinit.algo.is_some() || buf[0] == msg::KEXINIT || s.0.encrypted.is_none() {
+                                let kexdhdone = kexinit.client_parse(&s.0.rng,
+                                                                     s.0.config.as_ref(),
+                                                                     &mut s.0.cipher,
+                                                                     buf,
+                                                                     &mut s.0.write_buffer);
+                                match kexdhdone {
+                                    Ok(kexdhdone) => {
+                                        s.0.kex = Some(Kex::KexDhDone(kexdhdone));
+                                        return Ok(Async::Ready(Status::Ok))
+                                    }
+                                    Err(e) => return Err(HandlerError::Error(e)),
+                                }
+                            } else {
+                                unreachable!()
+                            }
+                        }
+                        Some(Kex::KexDhDone(mut kexdhdone)) => {
+                            if kexdhdone.names.ignore_guessed {
+                                kexdhdone.names.ignore_guessed = false;
+                                s.0.kex = Some(Kex::KexDhDone(kexdhdone));
+                                return Ok(Async::Ready(Status::Ok))
+                            } else {
+                                // We've sent ECDH_INIT, waiting for ECDH_REPLY
+                                if buf[0] == msg::KEX_ECDH_REPLY {
+                                    let mut reader = buf.reader(1);
+                                    let pubkey = try!(reader.read_string()); // server public key.
+                                    let pubkey = try!(parse_public_key(pubkey));
+                                    self.pending_future = Some(PendingFuture::ServerKeyCheck {
+                                        check: self.handler.take().unwrap().check_server_key(&pubkey),
+                                        kexdhdone: kexdhdone,
+                                        buf_len: buf.len(),
+                                    });
+                                    return Ok(Async::Ready(Status::Ok))
+                                } else {
+                                    return Err(HandlerError::Error(Error::Inconsistent))
+                                }
+                            }
+                        }
+                        Some(Kex::NewKeys(newkeys)) => {
+                            if buf[0] != msg::NEWKEYS {
+                                return Err(HandlerError::Error(Error::Kex));
+                            }
+                            s.0.encrypted(EncryptedState::WaitingServiceRequest, newkeys);
+                            // Ok, NEWKEYS received, now encrypted.
+                            let p = b"\x05\0\0\0\x0Cssh-userauth";
+                            s.0.cipher.write(p, &mut s.0.write_buffer);
+                            return Ok(Async::Ready(Status::Ok))
+                        }
+                        Some(kex) => {
+                            s.0.kex = Some(kex);
+                            return Ok(Async::Ready(Status::Ok))
+                        },
+                        None => buf
+                    }
+                } else {
+                    unreachable!()
+                };
+
+                debug!("atomic poll: take 2");
+                if let (Some(s), Some(h)) = (self.session.take(), self.handler.take()) {
+                    self.pending_future = Some(try_nb!(s.client_read_encrypted(h, buf, &mut self.buffer)));
+                } else {
+                    unreachable!()
+                }
+                Ok(Async::Ready(Status::Ok))
+            }
+        }
+    }
 }
 
 /// An authenticating future, ultimately resolving into an authenticated connection.
-pub struct Authenticate<H: Handler>(Option<Connection<H>>);
+pub struct Authenticate<R:Read+Write, H: Handler>(Option<Connection<R, H>>);
 
-impl<H: Handler> Future for Authenticate<H> {
-    type Item = Connection<H>;
+impl<R:Read+Write, H: Handler> Future for Authenticate<R, H> {
+    type Item = Connection<R, H>;
     type Error = HandlerError<H::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -799,12 +918,12 @@ impl<H: Handler> Future for Authenticate<H> {
             if is_authenticated {
                 return Ok(Async::Ready(self.0.take().unwrap()))
             }
-            let disconnected = if let Some(ref mut c) = self.0 {
-                !try_ready!(c.atomic_poll())
+            let status = if let Some(ref mut c) = self.0 {
+                try_ready!(c.atomic_poll())
             } else {
                 unreachable!()
             };
-            if disconnected {
+            if let Status::Disconnect = status {
                 return Ok(Async::Ready(self.0.take().unwrap()))
             }
         }
@@ -823,25 +942,30 @@ pub enum DirectTcpIpChannel {}
 /// A future resolving into an open channel number of type
 /// `ChannelType`, which can be either `SessionChannel`, `X11Channel`
 /// or `DirectTcpIdChannel`.
-pub struct ChannelOpen<H: Handler, ChannelType> {
-    connection: Option<Connection<H>>,
+pub struct ChannelOpen<R:Read+Write, H: Handler, ChannelType> {
+    connection: Option<Connection<R, H>>,
     channel: ChannelId,
     channel_type: PhantomData<ChannelType>,
 }
 
 /// A future waiting for a channel to be closed.
-pub struct Wait<H: Handler, F> {
-    connection: Option<Connection<H>>,
+pub struct Wait<R:Read+Write, H: Handler, F> {
+    connection: Option<Connection<R, H>>,
     condition: F,
 }
 
 /// A future waiting for a flush request to complete.
-pub struct Flush<H: Handler> {
-    connection: Option<Connection<H>>,
+pub struct WaitFlush<R:Read+Write, H: Handler> {
+    connection: Option<Connection<R, H>>,
 }
 
-impl<H: Handler, ChannelType> Future for ChannelOpen<H, ChannelType> {
-    type Item = (Connection<H>, ChannelId);
+/// A future waiting for a read to complete.
+pub struct WaitRead<R:Read+Write, H: Handler> {
+    connection: Option<Connection<R, H>>,
+}
+
+impl<R:Read+Write, H: Handler, ChannelType> Future for ChannelOpen<R, H, ChannelType> {
+    type Item = (Connection<R, H>, ChannelId);
     type Error = HandlerError<H::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -860,13 +984,13 @@ impl<H: Handler, ChannelType> Future for ChannelOpen<H, ChannelType> {
                 return Ok(Async::Ready((self.connection.take().unwrap(), self.channel)));
             }
 
-            let is_disconnected = if let Some(ref mut c) = self.connection {
-                !try_ready!(c.atomic_poll())
+            let status = if let Some(ref mut c) = self.connection {
+                try_ready!(c.atomic_poll())
             } else {
                 unreachable!()
             };
 
-            if is_disconnected {
+            if let Status::Disconnect = status {
                 return Err(HandlerError::Error(Error::Disconnect))
             }
         }
@@ -874,8 +998,8 @@ impl<H: Handler, ChannelType> Future for ChannelOpen<H, ChannelType> {
 }
 
 
-impl<H: Handler, F: Fn(&Connection<H>) -> bool> Future for Wait<H, F> {
-    type Item = Connection<H>;
+impl<R:Read+Write, H: Handler, F: Fn(&Connection<R, H>) -> bool> Future for Wait<R, H, F> {
+    type Item = Connection<R, H>;
     type Error = HandlerError<H::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -887,10 +1011,10 @@ impl<H: Handler, F: Fn(&Connection<H>) -> bool> Future for Wait<H, F> {
                     return Ok(Async::Ready(connection));
                 } else {
                     match try!(connection.atomic_poll()) {
-                        Async::Ready(true) => {
+                        Async::Ready(Status::Ok) => {
                             self.connection = Some(connection);
                         }
-                        Async::Ready(false) => {
+                        Async::Ready(Status::Disconnect) => {
                             return Ok(Async::Ready(connection))
                         }
                         Async::NotReady => {
@@ -904,30 +1028,63 @@ impl<H: Handler, F: Fn(&Connection<H>) -> bool> Future for Wait<H, F> {
     }
 }
 
+impl<R:Read+Write, H: Handler> Future for WaitRead<R, H> {
 
-
-impl<H: Handler> Future for Flush<H> {
-    type Item = Connection<H>;
+    type Item = Connection<R, H>;
     type Error = HandlerError<H::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
 
-        if let Some(ref mut c) = self.connection {
-            c.state = Some(ConnectionState::Write)
-        }
         loop {
-            debug!("flush loop");
+            debug!("WaitRead loop");
+
             if let Some(mut c) = self.connection.take() {
+                debug!("wait_read: {:?}", c.session.is_some());
                 match try!(c.atomic_poll()) {
-                    Async::Ready(false) => return Ok(Async::Ready(c)),
+                    Async::Ready(Status::Disconnect) => return Ok(Async::Ready(c)),
                     Async::NotReady => {
                         self.connection = Some(c);
                         return Ok(Async::NotReady)
                     },
-                    Async::Ready(true) => {
-                        match c.state {
-                            Some(ConnectionState::Write) |
-                            Some(ConnectionState::Flush) => {
+                    Async::Ready(Status::Ok) => {
+                        match (&c.state, c.pending_future.is_some()) {
+                            (&Some(ConnectionState::Read), _) | (_, true) => self.connection = Some(c),
+                            _ => return Ok(Async::Ready(c))
+                        }
+                    }
+                }
+            } else {
+                unreachable!()
+            }
+        }
+    }
+}
+
+
+
+impl<R:Read+Write, H: Handler> Future for WaitFlush<R, H> {
+
+    type Item = Connection<R, H>;
+    type Error = HandlerError<H::Error>;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        if let Some(ref mut c) = self.connection {
+            c.state = Some(ConnectionState::Write)
+        }
+        loop {
+            debug!("WaitFlush loop");
+            if let Some(mut c) = self.connection.take() {
+                match try!(c.atomic_poll()) {
+                    Async::Ready(Status::Disconnect) => return Ok(Async::Ready(c)),
+                    Async::NotReady => {
+                        self.connection = Some(c);
+                        return Ok(Async::NotReady)
+                    },
+                    Async::Ready(Status::Ok) => {
+                        match (&c.state, c.pending_future.is_some()) {
+                            (&Some(ConnectionState::Write), _) |
+                            (&Some(ConnectionState::Flush), _) |
+                            (_, true) => {
                                 self.connection = Some(c);
                             },
                             _ => {
@@ -1166,22 +1323,6 @@ impl Session {
     /// Send EOF to a channel
     pub fn channel_eof(&mut self, channel: ChannelId) {
         self.0.byte(channel, msg::CHANNEL_EOF);
-    }
-
-    /// Send data or "extended data" to the given channel. Extended
-    /// data can be used to multiplex different data streams into a
-    /// single channel.
-    pub fn data(&mut self,
-                channel: ChannelId,
-                extended: Option<u32>,
-                data: &[u8])
-                -> Result<usize, Error> {
-        let result = if let Some(ref mut enc) = self.0.encrypted {
-            try!(enc.data(channel, extended, data))
-        } else {
-            return Err(Error::Inconsistent);
-        };
-        Ok(result)
     }
 
     /// Request a pseudo-terminal with the given characteristics.

@@ -33,11 +33,19 @@ use encoding::Encoding;
 use std::num::Wrapping;
 use futures::{Async, Poll};
 use ring;
-use std::io::BufRead;
+use std::io::{Read, Write};
 
 pub struct ReadSshId {
-    pub id: [u8; 256],
-    pub id_len: usize,
+    pub buf: CryptoVec,
+    pub total: usize,
+    pub bytes_read: usize,
+    pub sshid_len: usize,
+}
+
+impl ReadSshId {
+    pub fn id(&self) -> &[u8] {
+        &self.buf[..self.sshid_len]
+    }
 }
 
 impl std::fmt::Debug for ReadSshId {
@@ -46,64 +54,108 @@ impl std::fmt::Debug for ReadSshId {
     }
 }
 
-impl ReadSshId {
-    pub fn id(&self) -> &[u8] {
-        &self.id[..self.id_len]
+
+pub fn read_ssh_id() -> ReadSshId {
+    let mut buf = CryptoVec::new();
+    buf.resize(256);
+    ReadSshId {
+        buf: buf,
+        sshid_len: 0,
+        bytes_read: 0,
+        total: 0,
     }
-    pub fn poll<R: BufRead>(&mut self, stream: &mut R) -> Poll<(), Error> {
+}
+
+pub struct SshRead<R> {
+    pub id: Option<ReadSshId>,
+    pub r: R
+}
+
+impl<R:Read> Read for SshRead<R> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
+        if let Some(mut id) = self.id.take() {
+            if id.total > id.bytes_read {
+                let result = {
+                    let mut readable = &id.buf[ id.bytes_read .. id.total ];
+                    readable.read(buf).unwrap()
+                };
+                debug!("read {:?} bytes from id.buf", result);
+                id.bytes_read += result;
+                self.id = Some(id);
+                return Ok(result)
+            }
+        }
+        self.r.read(buf)
+    }
+}
+
+impl<R:Write> Write for SshRead<R> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
+        self.r.write(buf)
+    }
+    fn flush(&mut self) -> Result<(), std::io::Error> {
+        self.r.flush()
+    }
+}
+
+impl<R:Read> SshRead<R> {
+    pub fn new(r: R) -> Self {
+        SshRead {
+            id: Some(read_ssh_id()),
+            r: r
+        }
+    }
+    pub fn read_ssh_id(&mut self) -> Poll<&[u8], Error> {
+        let ssh_id = self.id.as_mut().unwrap();
         loop {
+            let mut i = 0;
+            debug!("read_ssh_id: reading");
+            let n = try_nb!(self.r.read(&mut ssh_id.buf[ssh_id.total..]));
+            debug!("read {:?}", n);
 
-            let mut bytes_read = 0;
-
-            {
-                let mut i = 0;
-                let buf = try_nb!(stream.fill_buf());
-                debug!("{:?}", std::str::from_utf8(buf));
-                if buf.len() == 0 {
-                    return Err(Error::Disconnect)
+            // let buf = try_nb!(stream.fill_buf());
+            ssh_id.total += n;
+            debug!("{:?}", std::str::from_utf8(&ssh_id.buf[..ssh_id.total]));
+            if n == 0 {
+                return Err(Error::Disconnect);
+            }
+            loop {
+                if i >= ssh_id.total - 1 {
+                    break
                 }
-                while let (Some(&u), Some(&v)) = (buf.get(i), buf.get(i + 1)) {
-                    if u == b'\r' && v == b'\n' {
-                        bytes_read = i + 2;
-                        break
-                    } else if v == b'\n' {
-                        bytes_read = i + 2;
-                        break
-                    } else {
-                        i += 1
-                    }
-                }
-
-                if bytes_read > 0 {
-                    // If we have a full line, handle it.
-                    if i >= 8 {
-                        if &buf[0..8] == b"SSH-2.0-" {
-                            // Either the line starts with "SSH-2.0-"
-                            (&mut self.id[..i]).clone_from_slice(&buf[..i]);
-                            self.id_len = i;
-                        }
-                    }
-                    // Else, it is a "preliminary" (see
-                    // https://tools.ietf.org/html/rfc4253#section-4.2),
-                    // and we can discard it and read the next one.
+                if ssh_id.buf[i] == b'\r' && ssh_id.buf[i+1] == b'\n' {
+                    ssh_id.bytes_read = i + 2;
+                    break;
+                } else if ssh_id.buf[i+1] == b'\n' {
+                    // This is really wrong, but OpenSSH 7.4 uses
+                    // it.
+                    ssh_id.bytes_read = i + 2;
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
                 }
             }
-            debug!("bytes_read: {:?}", bytes_read);
-            stream.consume(bytes_read);
-            if self.id_len > 0 {
-                return Ok(Async::Ready(()))
+
+            if ssh_id.bytes_read > 0 {
+                // If we have a full line, handle it.
+                if i >= 8 {
+                    if &ssh_id.buf[0..8] == b"SSH-2.0-" {
+                        // Either the line starts with "SSH-2.0-"
+                        ssh_id.sshid_len = i;
+                        return Ok(Async::Ready(&ssh_id.buf[..ssh_id.sshid_len]))
+                    }
+                }
+                // Else, it is a "preliminary" (see
+                // https://tools.ietf.org/html/rfc4253#section-4.2),
+                // and we can discard it and read the next one.
+                ssh_id.total = 0;
+                ssh_id.bytes_read = 0;
             }
+            debug!("bytes_read: {:?}", ssh_id.bytes_read);
         }
     }
 }
-
-pub fn read_ssh_id() -> ReadSshId {
-    ReadSshId {
-        id: [0; 256],
-        id_len: 0,
-    }
-}
-
 
 
 #[derive(Debug)]
@@ -198,9 +250,17 @@ impl<C> CommonSession<C> {
 
 impl Encrypted {
     pub fn adjust_window_size(&mut self, channel: ChannelId, data: &[u8], target: u32) {
+        debug!("adjust_window_size");
         if let Some(ref mut channel) = self.channels.get_mut(&channel) {
-            channel.sender_window_size -= data.len() as u32;
+            // Ignore extra data.
+            // https://tools.ietf.org/html/rfc4254#section-5.2
+            if data.len() as u32 <= channel.sender_window_size {
+                channel.sender_window_size -= data.len() as u32;
+            }
             if channel.sender_window_size < target / 2 {
+                debug!("sender_window_size {:?}, target {:?}",
+                       channel.sender_window_size,
+                       target);
                 push_packet!(self.write, {
                     self.write.push(msg::CHANNEL_WINDOW_ADJUST);
                     self.write.push_u32_be(channel.recipient_channel);
@@ -219,7 +279,7 @@ impl Encrypted {
         use std::ops::Deref;
         if let Some(channel) = self.channels.get_mut(&channel) {
             assert!(channel.confirmed);
-            debug!("output {:?} {:?}", channel, buf);
+            debug!("output {:?} {:?} {:?}", channel, buf.len(), &buf[..std::cmp::min(buf.len(), 100)]);
             debug!("output {:?}", self.write.deref());
             let mut buf = if buf.len() as u32 > channel.recipient_window_size {
                 &buf[0..channel.recipient_window_size as usize]
@@ -243,7 +303,7 @@ impl Encrypted {
                     }
                     self.write.extend_ssh_string(&buf[..off]);
                 });
-                debug!("buffer: {:?}", self.write.deref());
+                debug!("buffer: {:?}", self.write.deref().len());
                 channel.recipient_window_size -= off as u32;
                 buf = &buf[off..]
             }
@@ -323,6 +383,9 @@ impl Encrypted {
         }
     }
 }
+
+
+
 
 #[derive(Debug)]
 pub enum EncryptedState {
