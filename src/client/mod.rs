@@ -665,7 +665,7 @@ impl<R:Read+Write, H: Handler> Connection<R, H> {
     }
 
     /// Ask the server to close a channel, finishing any pending write and read.
-    pub fn channel_close(mut self, channel: ChannelId) {
+    pub fn channel_close(&mut self, channel: ChannelId) {
         if let Some(ref mut s) = self.session {
             s.0.byte(channel, msg::CHANNEL_CLOSE);
         }
