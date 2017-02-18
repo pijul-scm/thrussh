@@ -97,13 +97,14 @@
 //!                let key = thrussh::load_secret_key("/home/pe/.ssh/id_ed25519").unwrap();
 //!                connection.authenticate_key("pe", key).and_then(|connection| {
 //!
-//!                    connection.channel_open_session().and_then(|(mut connection, chan)| {
+//!                    connection.channel_open_session().and_then(move |(mut connection, chan)| {
 //!
-//!                        connection.data(chan, None, b"First test").unwrap();
-//!                        connection.data(chan, None, b"Second test").unwrap();
-//!                        connection.disconnect(Disconnect::ByApplication, "Ciao", "");
-//!                        connection
-//!
+//!                        connection.data(chan, None, b"First test").and_then(move |(connection, _)| {
+//!                           connection.data(chan, None, b"Second test").and_then(move |(mut connection, _)| {
+//!                              connection.disconnect(Disconnect::ByApplication, "Ciao", "");
+//!                              connection
+//!                           })
+//!                        })
 //!                    })
 //!                })
 //!            });
